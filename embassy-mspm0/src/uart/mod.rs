@@ -28,9 +28,9 @@ pub enum ClockSel {
     ///
     /// The MCLK runs at 4 MHz.
     MfClk,
-    // BusClk,
-    // BusClk depends on the timer's power domain.
-    // This will be implemented later.
+
+    /// Use the bus clock (ULPCLK), which runs at the MCLK rate.
+    BusClk,
 }
 
 #[non_exhaustive]
@@ -768,11 +768,17 @@ fn configure(
             w.set_lfclk_sel(false);
             w.set_busclk_sel(false);
         }
+        ClockSel::BusClk => {
+            w.set_busclk_sel(true);
+            w.set_lfclk_sel(false);
+            w.set_mfclk_sel(false);
+        }
     });
 
     let clock = match config.clock_source {
         ClockSel::LfClk => 32768,
         ClockSel::MfClk => 4_000_000,
+        ClockSel::BusClk => crate::sysctl::mclk_frequency(),
     };
 
     state.clock.store(clock, Ordering::Relaxed);
