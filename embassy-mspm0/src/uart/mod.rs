@@ -158,6 +158,10 @@ pub struct Config {
 
     /// Set the pull configuration for the CTS pin.
     pub cts_pull: Pull,
+
+    /// Let the chip deep-sleep (down to STANDBY0) while an async [`BufferedUart`] receiver is
+    /// listening, waking on an incoming RX start bit.
+    pub low_power_rx_wake: bool,
 }
 
 impl Default for Config {
@@ -181,6 +185,7 @@ impl Default for Config {
             rx_pull: Pull::None,
             rts_pull: Pull::None,
             cts_pull: Pull::None,
+            low_power_rx_wake: false,
         }
     }
 }
