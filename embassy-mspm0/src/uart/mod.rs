@@ -27,10 +27,13 @@ pub enum ClockSel {
 
     /// Use the middle frequency clock.
     ///
-    /// The MCLK runs at 4 MHz.
+    /// MFCLK runs at 4 MHz.
     MfClk,
 
-    /// Use the bus clock (ULPCLK), which runs at the MCLK rate.
+    /// Use the bus clock.
+    ///
+    /// Which clock that is depends on the power domain the instance is in: MCLK for PD1, ULPCLK for
+    /// PD0. The two differ on G-series, where the ULPCLK ceiling is half MCLK's.
     BusClk,
 }
 
@@ -797,7 +800,7 @@ fn configure(
     let clock = match config.clock_source {
         ClockSel::LfClk => 32768,
         ClockSel::MfClk => 4_000_000,
-        ClockSel::BusClk => crate::sysctl::mclk_frequency(),
+        ClockSel::BusClk => crate::sysctl::bus_clock_hz(info.sleep.power_domain),
     };
 
     state.clock.store(clock, Ordering::Relaxed);

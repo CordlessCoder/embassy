@@ -201,35 +201,25 @@ impl Config {
             .unwrap();
     }
 
-    #[cfg(any(mspm0c110x, mspm0c1105_c1106))]
     pub(crate) fn calculate_clock_source(&self) -> u32 {
-        // Assume that BusClk has default value.
-        // TODO: calculate BusClk more precisely.
-        match self.clock_source {
-            ClockSel::MfClk => 4_000_000 / self.clock_div.divider(),
-            ClockSel::BusClk => 24_000_000 / self.clock_div.divider(),
-        }
+        self.source_hz() / self.clock_div.divider()
     }
 
-    #[cfg(any(
-        mspm0g110x, mspm0g150x, mspm0g151x, mspm0g310x, mspm0g350x, mspm0g351x, mspm0h321x, mspm0l110x, mspm0l122x,
-        mspm0l130x, mspm0l134x, mspm0l222x
-    ))]
-    pub(crate) fn calculate_clock_source(&self) -> u32 {
-        // Assume that BusClk has default value.
-        // TODO: calculate BusClk more precisely.
+    /// Rate of the clock feeding the peripheral, before its own divider.
+    ///
+    /// `BusClk` is ULPCLK rather than MCLK because every I2C instance is in PD0 — asserted per
+    /// instance in `impl_i2c_instance!`, so this does not have to ask for the domain.
+    fn source_hz(&self) -> u32 {
         match self.clock_source {
-            ClockSel::MfClk => 4_000_000 / self.clock_div.divider(),
-            ClockSel::BusClk => 32_000_000 / self.clock_div.divider(),
+            ClockSel::MfClk => 4_000_000,
+            ClockSel::BusClk => crate::sysctl::ULPCLK_HZ,
         }
     }
 
     pub(crate) fn wake_floor(&self, power_domain: PowerDomain) -> Option<SleepLevel> {
-        let source_hz = match self.clock_source {
-            ClockSel::MfClk => 4_000_000,
-            ClockSel::BusClk => 32_000_000,
-        };
-        power_domain.floor_to_keep_running(source_hz)
+        // Undivided on purpose: the question is whether the source still runs at the rate the
+        // peripheral was configured for, not what it was divided down to.
+        power_domain.floor_to_keep_running(self.source_hz())
     }
 
     fn check_clock_i2c(&self) -> bool {
@@ -1121,6 +1111,15 @@ pub(crate) trait SealedInstance {
 
 macro_rules! impl_i2c_instance {
     ($instance: ident, $fifo_size: expr) => {
+        // `Config::source_hz` reads `BusClk` as ULPCLK on the strength of this.
+        const _: () = core::assert!(
+            matches!(
+                <crate::peripherals::$instance as crate::sysctl::LowPowerInstance>::SLEEP.power_domain,
+                crate::sysctl::PowerDomain::Pd0
+            ),
+            "this I2C instance is in PD1, so its bus clock is MCLK rather than ULPCLK"
+        );
+
         impl crate::i2c::SealedInstance for crate::peripherals::$instance {
             fn info() -> &'static crate::i2c::Info {
                 use crate::i2c::Info;

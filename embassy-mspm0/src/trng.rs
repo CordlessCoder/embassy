@@ -342,24 +342,32 @@ impl TrngInner<'_> {
     }
 
     fn set_div(&mut self) {
-        // L-series TRM 13.2.2: The TRNG is derived from MCLK. Datasheets specify 9.5-20 MHz range.
-        let freq = crate::sysctl::mclk_frequency();
-        let ratio = if freq > 160_000_000 {
-            panic!("MCLK frequency {} > 160 MHz is not compatible with the TRNG", freq)
-        } else if freq >= 80_000_000 {
-            Ratio::DivBy8
-        } else if freq >= 60_000_000 {
-            Ratio::DivBy6
-        } else if freq >= 40_000_000 {
-            Ratio::DivBy4
-        } else if freq >= 20_000_000 {
-            Ratio::DivBy2
-        } else if freq >= 9_500_000 {
-            Ratio::DivBy1
-        } else {
-            panic!("MCLK frequency {} < 9.5 MHz is not compatible with the TRNG", freq)
+        // L-series TRM 13.2.2: the TRNG is derived from MCLK, and the datasheets specify a 9.5-20 MHz
+        // input range. MCLK is a compile-time constant, so an unusable rate is a build failure rather
+        // than a panic on first use. The bands stop at the chip's own ceiling instead of a made-up one.
+        const RATIO: Ratio = {
+            let hz = crate::sysctl::MCLK_HZ;
+            if hz >= 80_000_000 {
+                Ratio::DivBy8
+            } else if hz >= 60_000_000 {
+                Ratio::DivBy6
+            } else if hz >= 40_000_000 {
+                Ratio::DivBy4
+            } else if hz >= 20_000_000 {
+                Ratio::DivBy2
+            } else if hz >= 9_500_000 {
+                Ratio::DivBy1
+            } else {
+                core::panic!("MCLK is below 9.5 MHz, which the TRNG cannot be divided down from")
+            }
         };
-        regs().clkdiv().write(|w| w.set_ratio(ratio));
+
+        const _: () = core::assert!(
+            crate::sysctl::MAX_MCLK_HZ <= 160_000_000,
+            "MCLK can exceed 160 MHz, which no TRNG divider brings into range"
+        );
+
+        regs().clkdiv().write(|w| w.set_ratio(RATIO));
     }
 
     fn set_decim_rate(&mut self) {
@@ -436,7 +444,7 @@ impl TrngInner<'_> {
     async fn async_read_u32(&mut self) -> Result<u32, Error> {
         let _guard = <TRNG as LowPowerInstance>::SLEEP
             .power_domain
-            .floor_to_keep_running(crate::sysctl::mclk_frequency())
+            .floor_to_keep_running(crate::sysctl::MCLK_HZ)
             .map(WakeGuard::new);
 
         poll_fn(|cx| {

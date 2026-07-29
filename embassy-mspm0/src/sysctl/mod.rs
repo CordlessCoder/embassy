@@ -268,21 +268,50 @@ impl Drop for WakeGuard {
     }
 }
 
-/// Frequency of MCLK, which is also the rate of the ULPCLK ("bus clock") driving PD0 peripherals.
-// TODO: Compute this once the MCLK rate can be adjusted.
-#[cfg(any(mspm0c110x, mspm0c1105_c1106))]
-#[allow(dead_code)]
-pub(crate) fn mclk_frequency() -> u32 {
-    24_000_000
-}
+/// Highest frequency MCLK may run at on this chip.
+///
+/// A ceiling, not the rate the chip runs at: G-series reaches it only through the PLL. See [`MCLK_HZ`].
+pub const MAX_MCLK_HZ: u32 = crate::_generated::MAX_MCLK_HZ;
 
-#[cfg(any(
-    mspm0g110x, mspm0g150x, mspm0g151x, mspm0g310x, mspm0g350x, mspm0g351x, mspm0h321x, mspm0l110x, mspm0l122x,
-    mspm0l130x, mspm0l134x, mspm0l222x
-))]
-#[allow(dead_code)]
-pub(crate) fn mclk_frequency() -> u32 {
-    32_000_000
+/// Highest frequency ULPCLK may run at on this chip, in RUN and SLEEP.
+///
+/// Lower than [`MAX_MCLK_HZ`] on G-series. Deep sleep throttles ULPCLK far below this — 4 MHz in STOP
+/// and 32 kHz in STANDBY, on every family — which is what [`PowerDomain::floor_to_keep_running`] uses.
+pub const MAX_ULPCLK_HZ: u32 = crate::_generated::MAX_ULPCLK_HZ;
+
+/// Rate SYSOSC comes up at, where the chip's ceiling does not cap it lower.
+const SYSOSC_BOOT_HZ: u32 = 32_000_000;
+
+/// Frequency MCLK runs at after [`crate::init`].
+///
+/// The clock tree is not configurable yet, so this is the reset SYSOSC rate: 32 MHz, or the chip's
+/// ceiling where that is lower, as on the 24 MHz C-series parts.
+// TODO: Compute this once the MCLK rate can be adjusted.
+pub const MCLK_HZ: u32 = if MAX_MCLK_HZ < SYSOSC_BOOT_HZ {
+    MAX_MCLK_HZ
+} else {
+    SYSOSC_BOOT_HZ
+};
+
+/// Frequency ULPCLK runs at, the "bus clock" driving PD0 peripherals.
+///
+/// ULPCLK follows MCLK, capped at its own lower ceiling. Equal to [`MCLK_HZ`] on every family today,
+/// and lower as soon as G-series MCLK can be raised past 40 MHz.
+pub const ULPCLK_HZ: u32 = if MCLK_HZ < MAX_ULPCLK_HZ {
+    MCLK_HZ
+} else {
+    MAX_ULPCLK_HZ
+};
+
+/// Rate an instance sees when it selects the bus clock, which depends on the domain it is in.
+///
+/// PD1 is clocked from MCLK and PD0 from ULPCLK. Backup-domain logic runs from LFCLK, but its
+/// registers are reached over the PD0 bus, so it answers with ULPCLK too.
+pub const fn bus_clock_hz(domain: PowerDomain) -> u32 {
+    match domain {
+        PowerDomain::Pd1 => MCLK_HZ,
+        PowerDomain::Pd0 | PowerDomain::Backup => ULPCLK_HZ,
+    }
 }
 
 /// Divider applied to the clock source of the CLK_OUT pin.
