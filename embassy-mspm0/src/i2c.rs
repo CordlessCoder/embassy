@@ -17,7 +17,7 @@ use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::i2c::{I2c as Regs, vals};
 use crate::pac::{self};
-use crate::sysctl::{PowerDomain, SleepInfo, SleepLevel, WakeGuard};
+use crate::sysctl::{SleepInfo, SleepLevel, WakeGuard};
 
 /// The clock source for the I2C.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -216,10 +216,10 @@ impl Config {
         }
     }
 
-    pub(crate) fn wake_floor(&self, power_domain: PowerDomain) -> Option<SleepLevel> {
+    pub(crate) fn wake_floor(&self, sleep: &SleepInfo) -> Option<SleepLevel> {
         // Undivided on purpose: the question is whether the source still runs at the rate the
         // peripheral was configured for, not what it was divided down to.
-        power_domain.floor_to_keep_running(self.source_hz())
+        sleep.floor_for_operation(self.source_hz())
     }
 
     fn check_clock_i2c(&self) -> bool {
@@ -425,7 +425,7 @@ impl<'d, M: Mode> I2c<'d, M> {
             .clock
             .store(config.calculate_clock_source(), Ordering::Relaxed);
 
-        self.wake_floor = config.wake_floor(self.info.sleep.power_domain);
+        self.wake_floor = config.wake_floor(&self.info.sleep);
 
         self.info
             .regs

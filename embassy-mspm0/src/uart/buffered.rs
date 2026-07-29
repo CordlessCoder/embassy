@@ -236,8 +236,7 @@ impl<'d> BufferedUartRx<'d> {
         } else {
             self.info
                 .sleep
-                .power_domain
-                .floor_to_keep_running(self.state.state.clock.load(Ordering::Relaxed))
+                .floor_for_operation(self.state.state.clock.load(Ordering::Relaxed))
                 .map(WakeGuard::new)
         }
     }
@@ -908,8 +907,7 @@ impl<'d> BufferedUartTx<'d> {
         let _guard = self
             .info
             .sleep
-            .power_domain
-            .floor_to_keep_running(self.state.state.clock.load(Ordering::Relaxed))
+            .floor_for_operation(self.state.state.clock.load(Ordering::Relaxed))
             .map(WakeGuard::new);
 
         poll_fn(move |cx| {

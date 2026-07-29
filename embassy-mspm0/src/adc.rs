@@ -14,6 +14,7 @@ use embassy_sync::waitqueue::AtomicWaker;
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::adc::{Adc as Regs, regs, vals};
+use crate::sysctl::WakeGuard;
 use crate::{Peri, interrupt};
 
 /// Maximum length allowed for [`Adc::irq_read_sequence`].
@@ -276,8 +277,21 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         }
     }
 
+    /// Shallowest sleep level to block while a conversion is in flight.
+    ///
+    /// The datasheets mark the ADC usable only down to SLEEP, and idling into a deep sleep partway
+    /// through a conversion also leaves the following wake unreliable. Only the `async` reads need
+    /// this; the blocking ones busy-poll, so the executor never idles.
+    fn conversion_guard() -> Option<WakeGuard> {
+        // The sample clock is SYSOSC, which is what MCLK runs from until the clock tree is configurable.
+        <T as crate::sysctl::LowPowerInstance>::SLEEP
+            .floor_for_operation(crate::sysctl::MCLK_HZ)
+            .map(WakeGuard::new)
+    }
+
     /// Read an ADC pin asynchronously using the irq handler.
     pub async fn irq_read<'a>(&mut self, channel: impl BorrowedChannel<'a, T>, conversion: Conversion) -> u16 {
+        let _guard = Self::conversion_guard();
         let r = T::info().regs;
         let channel = channel.reborrow_adc();
 
@@ -323,6 +337,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
             MAX_SEQUENCE_LEN
         );
 
+        let _guard = Self::conversion_guard();
         let sequence_len = sequence.len();
         let r = T::info().regs;
 
@@ -359,7 +374,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
 
 /// Peripheral instance trait.
 #[allow(private_bounds)]
-pub trait Instance: PeripheralType + SealedInstance + 'static {
+pub trait Instance: PeripheralType + SealedInstance + crate::sysctl::LowPowerInstance + 'static {
     type Interrupt: crate::interrupt::typelevel::Interrupt;
 }
 

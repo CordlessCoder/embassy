@@ -47,6 +47,17 @@ impl SleepLevel {
         SleepLevel::Standby0,
         SleepLevel::Standby1,
     ];
+
+    /// The more restrictive of two floors, where `None` restricts nothing.
+    ///
+    /// A floor names the shallowest blocked level, so blocking from a shallower level is stricter.
+    pub const fn stricter(a: Option<Self>, b: Option<Self>) -> Option<Self> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(if (a as u8) <= (b as u8) { a } else { b }),
+            (Some(only), None) | (None, Some(only)) => Some(only),
+            (None, None) => None,
+        }
+    }
 }
 
 /// An operating mode, ordered from shallowest to deepest.
@@ -103,6 +114,44 @@ pub struct SleepInfo {
     /// Whether this timer keeps being clocked in STANDBY1, making it able to wake the core from the
     /// deepest sleep. `None` for anything that is not a timer.
     pub clocked_in_standby1: Option<bool>,
+}
+
+impl SleepInfo {
+    /// Shallowest level to block so the datasheet still supports operating this instance, or `None` to
+    /// block nothing.
+    ///
+    /// Distinct from [`PowerDomain::floor_to_keep_running`], which asks whether the clock survives.
+    /// This is the datasheet's answer for the peripheral as a whole, and it catches the case a clock
+    /// rate cannot: `NS`, "not automatically disabled, but use in this mode is unsupported".
+    ///
+    /// Concerns an *operation in flight*, not mere configuration — an ADC may sit configured through a
+    /// STOP as long as no conversion spans it.
+    ///
+    /// `usable_through: None` yields `None` here. That reads the datasheet's silence as permission,
+    /// deliberately: the table cannot resolve a large minority of instances, and blocking deep sleep
+    /// for all of them would cost far more than the gap it closes. Where the question is specifically
+    /// whether a timer can wake the core, [`Self::clocked_in_standby1`] answers it and this does not.
+    pub const fn floor_to_stay_usable(&self) -> Option<SleepLevel> {
+        match self.usable_through {
+            // Usable in STANDBY, or the datasheet does not say. Nothing to add.
+            Some(PowerMode::Standby | PowerMode::Shutdown) | None => None,
+            // Usable in STOP but not STANDBY.
+            Some(PowerMode::Stop) => Some(SleepLevel::Standby0),
+            // Not usable below SLEEP, so no deep sleep at all.
+            Some(PowerMode::Run | PowerMode::Sleep) => Some(SleepLevel::Stop0),
+        }
+    }
+
+    /// Shallowest level to block for the duration of an operation on this instance, clocked at
+    /// `clock_hz`, or `None` to block nothing.
+    ///
+    /// The stricter of "does its clock survive" and "does the datasheet support using it there".
+    pub const fn floor_for_operation(&self, clock_hz: u32) -> Option<SleepLevel> {
+        SleepLevel::stricter(
+            self.power_domain.floor_to_keep_running(clock_hz),
+            self.floor_to_stay_usable(),
+        )
+    }
 }
 
 /// The power domain a peripheral instance belongs to.
@@ -203,6 +252,50 @@ const _: () = {
     core::assert!(Pd0.is_powered_in_deep_sleep());
     core::assert!(!Pd1.is_powered_in_deep_sleep());
     core::assert!(Backup.is_powered_in_deep_sleep());
+};
+
+// Boundary checks for `SleepLevel::stricter`, `floor_to_stay_usable` and `floor_for_operation`.
+const _: () = {
+    use SleepLevel::{Standby0, Standby1, Stop0, Stop2};
+
+    core::assert!(matches!(SleepLevel::stricter(None, None), None));
+    core::assert!(matches!(SleepLevel::stricter(Some(Standby1), None), Some(Standby1)));
+    core::assert!(matches!(SleepLevel::stricter(None, Some(Stop0)), Some(Stop0)));
+    // Blocking from a shallower level is stricter, either way round.
+    core::assert!(matches!(SleepLevel::stricter(Some(Standby0), Some(Stop2)), Some(Stop2)));
+    core::assert!(matches!(SleepLevel::stricter(Some(Stop2), Some(Standby0)), Some(Stop2)));
+
+    const fn usable(mode: Option<PowerMode>) -> SleepInfo {
+        SleepInfo {
+            power_domain: PowerDomain::Pd0,
+            retained_through: None,
+            usable_through: mode,
+            block_async: None,
+            clocked_in_standby1: None,
+        }
+    }
+
+    core::assert!(matches!(usable(None).floor_to_stay_usable(), None));
+    core::assert!(matches!(usable(Some(PowerMode::Standby)).floor_to_stay_usable(), None));
+    core::assert!(matches!(
+        usable(Some(PowerMode::Stop)).floor_to_stay_usable(),
+        Some(Standby0)
+    ));
+    core::assert!(matches!(
+        usable(Some(PowerMode::Sleep)).floor_to_stay_usable(),
+        Some(Stop0)
+    ));
+
+    // An LFCLK-clocked instance the datasheet only supports to STOP takes the usability floor, not the
+    // clock one; a fast-clocked instance usable to STANDBY takes the clock floor instead.
+    core::assert!(matches!(
+        usable(Some(PowerMode::Stop)).floor_for_operation(32_768),
+        Some(Standby0)
+    ));
+    core::assert!(matches!(
+        usable(Some(PowerMode::Standby)).floor_for_operation(32_000_000),
+        Some(Stop0)
+    ));
 };
 
 /// What deep sleep does to a peripheral instance.
