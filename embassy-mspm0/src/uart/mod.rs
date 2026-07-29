@@ -14,7 +14,7 @@ use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Blocking, Mode};
 use crate::pac::uart::{Uart as Regs, vals};
-use crate::sysctl::SleepInfo;
+use crate::sysctl::{SleepInfo, WakeGuard};
 
 /// The clock source for the UART.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -271,6 +271,8 @@ pub struct UartRx<'d, M: Mode> {
     state: &'static State,
     rx: Option<Peri<'d, AnyPin>>,
     rts: Option<Peri<'d, AnyPin>>,
+    /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
+    _retention_guard: Option<WakeGuard>,
     _phantom: PhantomData<M>,
 }
 
@@ -363,6 +365,8 @@ pub struct UartTx<'d, M: Mode> {
     state: &'static State,
     tx: Option<Peri<'d, AnyPin>>,
     cts: Option<Peri<'d, AnyPin>>,
+    /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
+    _retention_guard: Option<WakeGuard>,
     _phantom: PhantomData<M>,
 }
 
@@ -591,6 +595,14 @@ pub trait RtsPin<T: Instance>: crate::gpio::Pin {
     fn pf_num(&self) -> u8;
 }
 
+/// Guard keeping a PD1 instance set up, held for the driver's lifetime.
+///
+/// A PD1 UART is forced to a disabled state on deep-sleep entry, so without this a receiver that was
+/// idle across a STOP comes back deaf with nothing reporting it. PD0 instances get `None`.
+pub(crate) fn retention_guard(info: &'static Info) -> Option<WakeGuard> {
+    info.sleep.floor_to_keep_configured().map(WakeGuard::new)
+}
+
 // ==== IMPL types ====
 
 pub(crate) struct Info {
@@ -624,6 +636,7 @@ impl<'d, M: Mode> UartRx<'d, M> {
             state: T::state(),
             rx,
             rts,
+            _retention_guard: retention_guard(T::info()),
             _phantom: PhantomData,
         };
         this.enable_and_configure(&config)?;
@@ -653,6 +666,7 @@ impl<'d, M: Mode> UartTx<'d, M> {
             state: T::state(),
             tx,
             cts,
+            _retention_guard: retention_guard(T::info()),
             _phantom: PhantomData,
         };
         this.enable_and_configure(&config)?;
@@ -689,6 +703,7 @@ impl<'d, M: Mode> Uart<'d, M> {
                 state,
                 tx,
                 cts,
+                _retention_guard: retention_guard(info),
                 _phantom: PhantomData,
             },
             rx: UartRx {
@@ -696,6 +711,7 @@ impl<'d, M: Mode> Uart<'d, M> {
                 state,
                 rx,
                 rts,
+                _retention_guard: retention_guard(info),
                 _phantom: PhantomData,
             },
         };

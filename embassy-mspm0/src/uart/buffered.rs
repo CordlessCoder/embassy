@@ -140,6 +140,7 @@ impl<'d> BufferedUart<'d> {
                 tx: self.tx.tx.as_mut().map(Peri::reborrow),
                 cts: self.tx.cts.as_mut().map(Peri::reborrow),
                 reborrowed: true,
+                _retention_guard: None,
             },
             BufferedUartRx {
                 info: self.rx.info,
@@ -148,6 +149,7 @@ impl<'d> BufferedUart<'d> {
                 rts: self.rx.rts.as_mut().map(Peri::reborrow),
                 reborrowed: true,
                 wake_guard: None,
+                _retention_guard: None,
             },
         )
     }
@@ -164,6 +166,9 @@ pub struct BufferedUartRx<'d> {
     rts: Option<Peri<'d, AnyPin>>,
     reborrowed: bool,
     wake_guard: Option<WakeGuard>,
+    /// Held for as long as the driver exists; see
+    /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
+    _retention_guard: Option<WakeGuard>,
 }
 
 impl SetConfig for BufferedUartRx<'_> {
@@ -280,6 +285,9 @@ pub struct BufferedUartTx<'d> {
     tx: Option<Peri<'d, AnyPin>>,
     cts: Option<Peri<'d, AnyPin>>,
     reborrowed: bool,
+    /// Held for as long as the driver exists; see
+    /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
+    _retention_guard: Option<WakeGuard>,
 }
 
 impl SetConfig for BufferedUartTx<'_> {
@@ -618,6 +626,7 @@ impl<'d> BufferedUart<'d> {
                 tx,
                 cts,
                 reborrowed: false,
+                _retention_guard: super::retention_guard(info),
             },
             rx: BufferedUartRx {
                 info,
@@ -626,6 +635,7 @@ impl<'d> BufferedUart<'d> {
                 rts,
                 reborrowed: false,
                 wake_guard: None,
+                _retention_guard: super::retention_guard(info),
             },
         };
         this.enable_and_configure(tx_buffer, rx_buffer, &config)?;
@@ -684,6 +694,7 @@ impl<'d> BufferedUartRx<'d> {
             rts,
             reborrowed: false,
             wake_guard: None,
+            _retention_guard: super::retention_guard(T::info()),
         };
         this.enable_and_configure(rx_buffer, &config)?;
         this.wake_guard = this.rx_wake_guard(config.low_power_rx_wake);
@@ -842,6 +853,7 @@ impl<'d> BufferedUartTx<'d> {
             tx,
             cts,
             reborrowed: false,
+            _retention_guard: super::retention_guard(T::info()),
         };
 
         this.enable_and_configure(tx_buffer, &config)?;

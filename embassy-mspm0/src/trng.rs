@@ -14,7 +14,6 @@ use rand_core::{TryCryptoRng, TryRngCore};
 
 use crate::peripherals::TRNG;
 use crate::sealed;
-#[cfg(feature = "rt")]
 use crate::sysctl::{LowPowerInstance, WakeGuard};
 
 static WAKER: AtomicWaker = AtomicWaker::new();
@@ -285,6 +284,13 @@ impl TryCryptoRng for Trng<'_, Crypto> {}
 // Inner TRNG driver implementation. Used to reduce monomorphization bloat.
 struct TrngInner<'d> {
     decim_rate: vals::DecimRate,
+    /// Held for as long as the driver exists; see
+    /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
+    ///
+    /// The TRNG is in PD1, so deep sleep disables it and — per the L-series TRM 13.2.3 — discards its
+    /// configuration entirely. Dropping this in exchange for re-running `init()` on wake is the
+    /// follow-up that would let a program with a TRNG still reach STANDBY.
+    _retention_guard: Option<WakeGuard>,
     _phantom: PhantomData<&'d ()>,
 }
 
@@ -292,6 +298,9 @@ impl TrngInner<'_> {
     fn new(decim_rate: vals::DecimRate) -> Result<Self, Error> {
         let mut trng = TrngInner {
             decim_rate: decim_rate,
+            _retention_guard: <TRNG as LowPowerInstance>::SLEEP
+                .floor_to_keep_configured()
+                .map(WakeGuard::new),
             _phantom: PhantomData,
         };
 

@@ -12,6 +12,7 @@ use micromath::F32Ext;
 
 use crate::Peri;
 use crate::pac::mathacl::{Mathacl as Regs, vals};
+use crate::sysctl::WakeGuard;
 
 const ERROR_TOLERANCE: f32 = 0.00001;
 
@@ -34,6 +35,11 @@ pub enum Error {
 
 pub struct Mathacl<'d> {
     regs: &'static Regs,
+    /// Held for as long as the driver exists; see
+    /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
+    ///
+    /// MATHACL is in PD1, so deep sleep powers it down and it comes back needing to be enabled again.
+    _retention_guard: Option<WakeGuard>,
     _phantom: PhantomData<&'d mut ()>,
 }
 
@@ -58,6 +64,9 @@ impl<'d> Mathacl<'d> {
 
         Self {
             regs: T::regs(),
+            _retention_guard: <T as crate::sysctl::LowPowerInstance>::SLEEP
+                .floor_to_keep_configured()
+                .map(WakeGuard::new),
             _phantom: PhantomData,
         }
     }
@@ -209,7 +218,7 @@ pub(crate) trait SealedInstance {
 
 /// Mathacl instance trait
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + PeripheralType {}
+pub trait Instance: SealedInstance + PeripheralType + crate::sysctl::LowPowerInstance {}
 
 macro_rules! impl_mathacl_instance {
     ($instance: ident) => {

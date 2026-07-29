@@ -152,6 +152,26 @@ impl SleepInfo {
             self.floor_to_stay_usable(),
         )
     }
+
+    /// Shallowest level to block so the instance is still set up and enabled on the other side, or
+    /// `None` if deep sleep leaves it alone.
+    ///
+    /// Keyed on the power domain rather than on [`Self::retained_through`], because SYSCTL forces
+    /// *every* PD1 peripheral to a disabled state on deep-sleep entry: whether the configuration
+    /// registers survived does not change that something has to be done on wake, only how much.
+    ///
+    /// Unlike [`Self::floor_for_operation`] this is a property of the instance being set up at all, so
+    /// a driver holds it for its whole lifetime.
+    ///
+    /// Blocking is the conservative answer, not the only possible one. A driver that can re-apply its
+    /// configuration after wake may drop this and do that instead, which is what
+    /// [`Self::retained_through`] is there to inform.
+    pub const fn floor_to_keep_configured(&self) -> Option<SleepLevel> {
+        match self.power_domain {
+            PowerDomain::Pd1 => Some(SleepLevel::Stop0),
+            PowerDomain::Pd0 | PowerDomain::Backup => None,
+        }
+    }
 }
 
 /// The power domain a peripheral instance belongs to.
