@@ -945,22 +945,28 @@ fn select_gpio_features(cfgs: &mut CfgSet) {
         "gpioc_group",
     ]);
 
-    for interrupt in METADATA.interrupts.iter() {
-        match interrupt.name {
-            "GPIOA" => cfgs.enable("gpioa_interrupt"),
-            "GPIOB" => cfgs.enable("gpiob_interrupt"),
-            _ => (),
-        }
-    }
+    // A GPIO port either owns an NVIC line or shares an interrupt group, and `gpio.rs` needs a
+    // different handler for each. Ask the port which interrupt is its own instead of matching port
+    // names against the flat interrupt and group lists.
+    for peripheral in METADATA.peripherals.iter().filter(|p| p.kind == "gpio") {
+        let Some(interrupt) = peripheral.interrupt else {
+            continue;
+        };
 
-    for group in METADATA.interrupt_groups.iter() {
-        for interrupt in group.interrupts {
-            match interrupt.name {
-                "GPIOA" => cfgs.enable("gpioa_group"),
-                "GPIOB" => cfgs.enable("gpiob_group"),
-                "GPIOC" => cfgs.enable("gpioc_group"),
-                _ => (),
-            }
+        let grouped = interrupt.group_iidx.is_some();
+
+        match (peripheral.name, grouped) {
+            ("GPIOA", false) => cfgs.enable("gpioa_interrupt"),
+            ("GPIOA", true) => cfgs.enable("gpioa_group"),
+            ("GPIOB", false) => cfgs.enable("gpiob_interrupt"),
+            ("GPIOB", true) => cfgs.enable("gpiob_group"),
+            ("GPIOC", true) => cfgs.enable("gpioc_group"),
+            // No chip has a GPIOC on its own NVIC line, and `gpio.rs` has no handler for one, so it
+            // would silently take no interrupts. Fail instead of losing them.
+            (name, grouped) => panic!(
+                "{name} has {} interrupt, which the GPIO driver has no handler for",
+                if grouped { "a group" } else { "its own NVIC" }
+            ),
         }
     }
 }
