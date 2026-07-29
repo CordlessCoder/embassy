@@ -962,6 +962,56 @@ impl PfType {
     }
 }
 
+/// The level on a pin that wakes the device from SHUTDOWN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum WakeLevel {
+    /// Wake when the pin is driven low.
+    Low,
+
+    /// Wake when the pin is driven high.
+    High,
+}
+
+/// Arms a wake-capable pin to bring the device out of SHUTDOWN.
+///
+/// SHUTDOWN powers down `VCORE`, so the GPIO peripheral is off and none of the ordinary pin APIs
+/// survive it; the wake controller watches the pin instead, and waking is a reset rather than a
+/// resume. Hold one of these across [`low_power::shutdown`](crate::low_power::shutdown) and identify
+/// the cause on the next boot with
+/// [`ResetCause::BorWakeFromShutdown`](crate::ResetCause::BorWakeFromShutdown).
+///
+/// Only pins with wakeup logic can do this, which [`WakeCapablePin`] enforces at compile time. For
+/// waking from STOP or STANDBY use the ordinary edge-wait methods on [`Flex`], which work on any pin.
+pub struct ShutdownWake<'d> {
+    pin: Peri<'d, AnyPin>,
+}
+
+impl<'d> ShutdownWake<'d> {
+    /// Wake the device from SHUTDOWN when `pin` reaches `level`.
+    ///
+    /// Takes the pin so that nothing else reconfigures it while armed. Pull it to the opposite level
+    /// first if it would otherwise float, since the comparison is against the pin, not an edge.
+    pub fn new(pin: Peri<'d, impl WakeCapablePin>, level: WakeLevel) -> Self {
+        let this = Self { pin: pin.into() };
+
+        pac::IOMUX.pincm(this.pin.pin_cm() as usize).modify(|w| {
+            w.set_wcomp(matches!(level, WakeLevel::High));
+            w.set_wuen(true);
+        });
+
+        this
+    }
+}
+
+impl Drop for ShutdownWake<'_> {
+    fn drop(&mut self) {
+        pac::IOMUX.pincm(self.pin.pin_cm() as usize).modify(|w| {
+            w.set_wuen(false);
+        });
+    }
+}
+
 /// The pin function to disconnect peripherals from the pin.
 ///
 /// This is also the pin function used to connect to analog peripherals, such as an ADC.
@@ -971,6 +1021,23 @@ const DISCONNECT_PF: u8 = 0;
 ///
 /// This is fixed to `1` for every part.
 const GPIO_PF: u8 = 1;
+
+/// A pin with wakeup logic, able to bring the device out of SHUTDOWN.
+///
+/// Distinct from waking the device at all: `FASTWAKE`, which [`Flex::wait_for_any_edge`] and friends
+/// use, works on any GPIO pin but only down to STANDBY. SHUTDOWN powers the GPIO logic off entirely,
+/// and only these pins keep a path to the wake controller. See [`ShutdownWake`].
+///
+/// Which pins qualify comes from the chip metadata. For the few families whose vendor data does not
+/// carry the information at all, every pin is accepted rather than none — no MSPM0 actually lacks
+/// wake-capable IO, so refusing all of them would be the wrong reading of missing data.
+pub trait WakeCapablePin: Pin {}
+
+macro_rules! impl_wake_capable_pin {
+    ($name: ident) => {
+        impl crate::gpio::WakeCapablePin for crate::peripherals::$name {}
+    };
+}
 
 macro_rules! impl_pin {
     ($name: ident, $port: expr, $pin_num: expr) => {

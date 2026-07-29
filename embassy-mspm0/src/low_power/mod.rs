@@ -142,6 +142,11 @@ pub unsafe fn sleep(cs: CriticalSection) {
 /// sources are a wake-capable IO event, NRST, or SWD activity. Does not return as the wake results
 /// in a reset.
 /// You can respond to the reset on boot using [`ResetCause::BorWakeFromShutdown`](crate::ResetCause).
+///
+/// Arm an IO wake with [`ShutdownWake`](crate::gpio::ShutdownWake), which accepts only the pins that
+/// have wakeup logic. The `FASTWAKE` path the edge-wait methods on
+/// [`Flex`](crate::gpio::Flex) use does not reach this far — it stops at STANDBY — so a pin armed only
+/// that way will not bring the device back.
 //
 // From the TRM: SYSCTL "Operating Modes": set `PMODECFG.DSLEEP = SHUTDOWN`, arm `SLEEPDEEP`,
 // then `WFI`. This is identical across every MSPM0 family.
