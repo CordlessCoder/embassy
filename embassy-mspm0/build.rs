@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use std::{env, fs};
 
 use common::CfgSet;
-use mspm0_metapac::metadata::{ALL_CHIPS, METADATA, Peripheral, PowerDomain, PowerMode};
+use mspm0_metapac::metadata::{ALL_CHIPS, METADATA, MemoryKind, Peripheral, PowerDomain, PowerMode};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 
@@ -20,6 +20,7 @@ fn main() {
     common::set_target_cfgs(&mut cfgs);
 
     check_nvic_priority_bits();
+    check_sram_retention();
     generate_code(&mut cfgs);
     select_gpio_features(&mut cfgs);
     interrupt_group_linker_magic();
@@ -278,6 +279,29 @@ fn generate_clock_ceilings() -> TokenStream {
 /// metadata. Every MSPM0 has two bits, and this fails the build rather than silently mis-encoding
 /// priorities if a part ever turns up that does not. Note the SVDs claim three and are wrong; the
 /// metadata takes the CMSIS header's value.
+/// Check that the RAM the linker places `.data`/`.bss` in survives deep sleep.
+///
+/// `sleep()` says nothing about memory because there is nothing to say: SRAM comes back intact from
+/// STOP and STANDBY. That holds for the `RAM` region on every part today. The four G-series parts with
+/// a second bank whose contents are lost past SLEEP keep it out of the default region — `RAM_BANK` is
+/// opt-in in the metapac's own `memory.x` — so this only has to hold for `RAM`.
+fn check_sram_retention() {
+    let Some(ram) = METADATA
+        .memory
+        .iter()
+        .find(|region| region.kind == MemoryKind::Ram && region.name == "RAM")
+    else {
+        panic!("{} has no RAM region named RAM", METADATA.name);
+    };
+
+    assert!(
+        ram.retained_through >= PowerMode::Standby,
+        "{}'s RAM is only retained through {:?}, so deep sleep would lose .data and .bss",
+        METADATA.name,
+        ram.retained_through,
+    );
+}
+
 fn check_nvic_priority_bits() {
     const HAL_PRIO_BITS: u8 = 2;
 
