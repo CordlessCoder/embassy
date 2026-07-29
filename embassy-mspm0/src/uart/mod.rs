@@ -595,6 +595,29 @@ pub trait RtsPin<T: Instance>: crate::gpio::Pin {
     fn pf_num(&self) -> u8;
 }
 
+/// Let this instance raise an asynchronous fast clock request.
+///
+/// A PD0 UART is not clocked in STANDBY, so it detects the start bit that wakes the chip by raising an
+/// asynchronous request, which brings SYSOSC and the bus clock back to full rate for the duration.
+/// Two masks can suppress it: the instance's own `CLKCFG.BLOCKASYNC`, and `SYSOSCCFG.BLOCKASYNCALL`
+/// for every peripheral at once.
+///
+/// Both are clear after reset, so receive-wake has been working by default rather than by intent. A
+/// masked request is a receiver that never wakes and reports nothing, so say it explicitly.
+fn arm_async_clock_request(info: &Info) {
+    // `Some(false)` means the instance has no mask of its own and is gated only by `BLOCKASYNCALL`.
+    // `None` means no SVD is published for the family, so leave the register alone rather than guess
+    // at a bit that may not exist.
+    if info.sleep.block_async == Some(true) {
+        info.regs.gprcm(0).clkcfg().modify(|w| {
+            w.set_key(vals::ClkcfgKey::Key);
+            w.set_blockasync(false);
+        });
+    }
+
+    crate::pac::SYSCTL.sysosccfg().modify(|w| w.set_blockasyncall(false));
+}
+
 /// Guard keeping a PD1 instance set up, held for the driver's lifetime.
 ///
 /// A PD1 UART is forced to a disabled state on deep-sleep entry, so without this a receiver that was
@@ -790,8 +813,12 @@ fn configure(
         return Err(ConfigError::RxOrTxNotEnabled);
     }
 
-    if config.low_power_rx_wake && !info.sleep.power_domain.is_powered_in_deep_sleep() {
-        return Err(ConfigError::NoDeepSleepWake);
+    if config.low_power_rx_wake {
+        if !info.sleep.power_domain.is_powered_in_deep_sleep() {
+            return Err(ConfigError::NoDeepSleepWake);
+        }
+
+        arm_async_clock_request(info);
     }
 
     // SLAU846B says that clocks should be enabled before disabling the uart.
