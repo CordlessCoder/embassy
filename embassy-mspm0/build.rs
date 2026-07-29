@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -444,7 +444,19 @@ fn generate_pin() -> TokenStream {
     }
 }
 
+/// Whether a timer instance keeps being clocked in STANDBY1, and so can wake the core from it.
+fn clocked_in_standby1(name: &str) -> bool {
+    METADATA
+        .peripherals
+        .iter()
+        .find(|peripheral| peripheral.name == name)
+        .and_then(|peripheral| peripheral.clocked_in_standby1)
+        .unwrap_or(false)
+}
+
 fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
+    let low_power = env::var_os("CARGO_FEATURE_LOW_POWER").is_some();
+
     // Timer features
     for (timer, _) in TIMERS.iter() {
         let name = timer.to_lowercase();
@@ -495,7 +507,7 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
             // 6. Advanced timers
             //
             // TODO: 32-bit timers are not considered yet
-            [
+            const CANDIDATES: &[&str] = &[
                 // basic timers. No PWM pins
                 // "TIMB0", // 16-bit, 2 channel
                 "TIMG0", "TIMG1", "TIMG2", "TIMG3", // 16-bit, 2 channel with shadow registers
@@ -503,13 +515,38 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
                 "TIMG14", // 16-bit with QEI
                 "TIMG8", "TIMG9", "TIMG10", "TIMG11", // Advanced timers
                 "TIMA0", "TIMA1",
-            ]
-            .iter()
-            .find(|tim| singletons.iter().any(|s| s.name == **tim))
-            .expect("Could not find any timer")
+            ];
+
+            let available = |tim: &&&str| singletons.iter().any(|s| s.name == **tim);
+
+            // A low-power build has to wake from STANDBY1, so prefer a timer that is still clocked
+            // there. Every family has at least one that this list can select, but fall back rather
+            // than fail: the const assertion in the time driver is what actually enforces it.
+            CANDIDATES
+                .iter()
+                .filter(|tim| !low_power || clocked_in_standby1(tim))
+                .find(available)
+                .or_else(|| CANDIDATES.iter().find(available))
+                .expect("Could not find any timer")
         }
         _ => panic!("unknown time_driver {:?}", time_driver),
     };
+
+    if low_power && !selected_timer.is_empty() && !clocked_in_standby1(selected_timer) {
+        let usable = TIMERS
+            .keys()
+            .filter(|tim| clocked_in_standby1(tim) && singletons.iter().any(|s| &s.name == *tim))
+            .map(|tim| format!("time-driver-{}", tim.to_lowercase()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        panic!(
+            "the `low-power` feature needs a time driver that is still clocked in STANDBY1, and \
+             {selected_timer} on {chip} is not. Enable one of: {usable} (or `time-driver-any`, which \
+             now picks one).",
+            chip = METADATA.name,
+        );
+    }
 
     if !selected_timer.is_empty() {
         cfgs.enable(format!("time_driver_{}", selected_timer.to_lowercase()));
@@ -954,8 +991,8 @@ struct TimerDesc {
 }
 
 /// Description of all timer instances.
-const TIMERS: LazyLock<HashMap<String, TimerDesc>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
+const TIMERS: LazyLock<BTreeMap<String, TimerDesc>> = LazyLock::new(|| {
+    let mut map = BTreeMap::new();
     map.insert(
         "TIMB0".into(),
         TimerDesc {

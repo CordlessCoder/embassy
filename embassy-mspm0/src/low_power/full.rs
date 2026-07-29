@@ -25,7 +25,7 @@ pub enum SleepMode {
     Stop2,
     /// low-speed peripherals retained.
     Standby0,
-    /// only TIMG0/TIMG1 remain clocked. Lowest wake-capable current.
+    /// only a few timers, named per chip, remain clocked. Lowest wake-capable current.
     Standby1,
 }
 

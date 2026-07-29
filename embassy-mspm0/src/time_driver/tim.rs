@@ -17,18 +17,6 @@ use crate::{peripherals, tim};
 #[cfg(any(time_driver_timg12, time_driver_timg13))]
 compile_error!("TIMG12 and TIMG13 are not supported by the time driver yet");
 
-// Only TIMG0 and TIMG1 remain clocked in STANDBY, so they are the only timers that can wake the
-// core from deep sleep via the time driver. Reject a `low-power` build on any other timer.
-// TODO: Or maybe allow using them, but disable STANDBY? STOP0 will still work.
-// Another option is to leak a wake guard when one of those timers is used.
-
-#[cfg(all(feature = "low-power", not(any(time_driver_timg0, time_driver_timg1))))]
-compile_error!(
-    "the `low-power` feature requires the time driver to run on TIMG0 or TIMG1, as they are the \
-     only timers clocked in STANDBY. Enable `time-driver-timg0`, `time-driver-timg1`, or \
-     `time-driver-any` (which selects TIMG0 when available)."
-);
-
 // Currently TIMG12 and TIMG13 are excluded because those are 32-bit timers.
 #[cfg(time_driver_timg0)]
 type T = peripherals::TIMG0;
@@ -61,14 +49,18 @@ type T = peripherals::TIMA0;
 #[cfg(time_driver_tima1)]
 type T = peripherals::TIMA1;
 
-// The timer must also be in PD0 to survive deep sleep. Checked against the chip metadata rather than
-// trusted from the name above, since the same timer name is PD0 on some chips and PD1 on others.
+// STANDBY1 unclocks all of PD0 except a handful of timers named per chip, so only those can wake the
+// core from the deepest sleep. Which ones they are does not follow from the name — TIMG1 is clocked on
+// some chips and not on others — so this is checked against the chip metadata. `build.rs` picks a
+// STANDBY1 timer for `time-driver-any` and rejects a bad explicit choice with a better message; this
+// catches a mistake in that logic. Being clocked in STANDBY1 implies PD0, so it subsumes a domain check.
 #[cfg(feature = "low-power")]
 const _: () = core::assert!(
-    <T as crate::sysctl::LowPowerInstance>::SLEEP
-        .power_domain
-        .is_powered_in_deep_sleep(),
-    "the time driver's timer is in PD1, which deep sleep powers down"
+    matches!(
+        <T as crate::sysctl::LowPowerInstance>::SLEEP.clocked_in_standby1,
+        Some(true)
+    ),
+    "the time driver's timer is not clocked in STANDBY1, so it cannot wake the core from deep sleep"
 );
 
 fn regs() -> Tim {

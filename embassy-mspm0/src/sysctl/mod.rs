@@ -142,7 +142,8 @@ impl PowerDomain {
     /// bus-clocked peripherals, or the LFCLK/MFCLK source rate for those clocked directly. It is
     /// ignored for the domains deep sleep does not clock down.
     /// The per-mode ceiling is the same across every MSPM0 family: STOP0/STOP1 cap at 4 MHz, STOP2
-    /// and STANDBY0 at 32 kHz (LFCLK), and only STANDBY1 unclocks PD0 (there just TIMG0/1 stay clocked).
+    /// and STANDBY0 at 32 kHz (LFCLK), and only STANDBY1 unclocks PD0 (there just a few timers, named
+    /// per chip, stay clocked).
     ///
     /// Answers only for peripherals that must run *continuously*. Work merely triggered while asleep
     /// is a different question: a DMA transfer or an ADC conversion raises an asynchronous request
