@@ -14,7 +14,7 @@ use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Blocking, Mode};
 use crate::pac::uart::{Uart as Regs, vals};
-use crate::sysctl::PowerDomain;
+use crate::sysctl::SleepInfo;
 
 /// The clock source for the UART.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -593,7 +593,7 @@ pub trait RtsPin<T: Instance>: crate::gpio::Pin {
 pub(crate) struct Info {
     pub(crate) regs: Regs,
     pub(crate) interrupt: Interrupt,
-    pub(crate) power_domain: PowerDomain,
+    pub(crate) sleep: SleepInfo,
 }
 
 pub(crate) struct State {
@@ -771,7 +771,7 @@ fn configure(
         return Err(ConfigError::RxOrTxNotEnabled);
     }
 
-    if config.low_power_rx_wake && !info.power_domain.is_powered_in_deep_sleep() {
+    if config.low_power_rx_wake && !info.sleep.power_domain.is_powered_in_deep_sleep() {
         return Err(ConfigError::NoDeepSleepWake);
     }
 
@@ -1108,7 +1108,7 @@ pub(crate) trait SealedInstance {
 }
 
 macro_rules! impl_uart_instance {
-    ($instance: ident, $power_domain: ident) => {
+    ($instance: ident) => {
         impl crate::uart::SealedInstance for crate::peripherals::$instance {
             fn info() -> &'static crate::uart::Info {
                 use crate::interrupt::typelevel::Interrupt;
@@ -1117,7 +1117,7 @@ macro_rules! impl_uart_instance {
                 const INFO: Info = Info {
                     regs: crate::pac::$instance,
                     interrupt: crate::interrupt::typelevel::$instance::IRQ,
-                    power_domain: crate::sysctl::PowerDomain::$power_domain,
+                    sleep: <crate::peripherals::$instance as crate::sysctl::LowPowerInstance>::SLEEP,
                 };
                 &INFO
             }

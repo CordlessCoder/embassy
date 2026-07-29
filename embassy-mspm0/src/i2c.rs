@@ -17,7 +17,7 @@ use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::i2c::{I2c as Regs, vals};
 use crate::pac::{self};
-use crate::sysctl::{PowerDomain, SleepLevel, WakeGuard};
+use crate::sysctl::{PowerDomain, SleepInfo, SleepLevel, WakeGuard};
 
 /// The clock source for the I2C.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -435,7 +435,7 @@ impl<'d, M: Mode> I2c<'d, M> {
             .clock
             .store(config.calculate_clock_source(), Ordering::Relaxed);
 
-        self.wake_floor = config.wake_floor(self.info.power_domain);
+        self.wake_floor = config.wake_floor(self.info.sleep.power_domain);
 
         self.info
             .regs
@@ -1051,7 +1051,7 @@ pub(crate) struct Info {
     pub(crate) regs: Regs,
     pub(crate) interrupt: Interrupt,
     pub fifo_size: usize,
-    pub(crate) power_domain: PowerDomain,
+    pub(crate) sleep: SleepInfo,
 }
 
 pub(crate) struct State {
@@ -1120,7 +1120,7 @@ pub(crate) trait SealedInstance {
 }
 
 macro_rules! impl_i2c_instance {
-    ($instance: ident, $fifo_size: expr, $power_domain: ident) => {
+    ($instance: ident, $fifo_size: expr) => {
         impl crate::i2c::SealedInstance for crate::peripherals::$instance {
             fn info() -> &'static crate::i2c::Info {
                 use crate::i2c::Info;
@@ -1130,7 +1130,7 @@ macro_rules! impl_i2c_instance {
                     regs: crate::pac::$instance,
                     interrupt: crate::interrupt::typelevel::$instance::IRQ,
                     fifo_size: $fifo_size,
-                    power_domain: crate::sysctl::PowerDomain::$power_domain,
+                    sleep: <crate::peripherals::$instance as crate::sysctl::LowPowerInstance>::SLEEP,
                 };
                 &INFO
             }

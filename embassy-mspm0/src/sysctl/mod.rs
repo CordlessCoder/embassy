@@ -49,11 +49,67 @@ impl SleepLevel {
     ];
 }
 
+/// An operating mode, ordered from shallowest to deepest.
+///
+/// Coarser than [`SleepLevel`]: this is the granularity the datasheets describe peripherals at, so
+/// `Stop` covers STOP0/1/2 and `Standby` covers both STANDBY0 and STANDBY1.
+///
+/// The ordering is what makes the [`SleepInfo`] fields comparable — something retained through
+/// [`PowerMode::Standby`] is retained in every shallower mode too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum PowerMode {
+    Run,
+    Sleep,
+    Stop,
+    Standby,
+
+    /// Nothing but the `SHUTDNSTORE` bytes in SYSCTL survives this.
+    Shutdown,
+}
+
+/// What deep sleep does to one peripheral instance, from the chip metadata.
+///
+/// Every field is a property of the instance on this particular chip rather than of the peripheral
+/// kind. See [`LowPowerInstance`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SleepInfo {
+    /// The domain this instance is in.
+    pub power_domain: PowerDomain,
+
+    /// Deepest mode through which the instance keeps its configuration registers.
+    ///
+    /// Only `Sleep` and `Standby` occur, and only for [`PowerDomain::Pd1`] instances — `None`
+    /// elsewhere, where the question does not arise because nothing disables them.
+    ///
+    /// `Standby` does **not** mean there is nothing to do on wake: SYSCTL forces *every* PD1
+    /// peripheral to a disabled state on deep-sleep entry, so one still has to be re-enabled. The
+    /// difference is whether the rest of the configuration has to be rewritten as well.
+    pub retained_through: Option<PowerMode>,
+
+    /// Deepest mode the datasheet says the instance may be *used* in.
+    ///
+    /// `None` where the datasheet table cannot answer, which is not the same as unusable.
+    pub usable_through: Option<PowerMode>,
+
+    /// Whether the instance has its own `CLKCFG.BLOCKASYNC` bit.
+    ///
+    /// `false` does not mean it cannot raise an asynchronous fast clock request — GPIO, the
+    /// general-purpose timers and the ADC all can, they just have no per-instance mask and are gated
+    /// only by `SYSOSCCFG.BLOCKASYNCALL`. `None` where no SVD is published for the family yet.
+    pub block_async: Option<bool>,
+
+    /// Whether this timer keeps being clocked in STANDBY1, making it able to wake the core from the
+    /// deepest sleep. `None` for anything that is not a timer.
+    pub clocked_in_standby1: Option<bool>,
+}
+
 /// The power domain a peripheral instance belongs to.
 ///
 /// Which domain an instance is in is a property of the chip, not of the peripheral kind: the same IP
 /// appears in both domains on one die, and the same instance name differs between chips.
-/// See [`PowerDomainInstance`].
+/// See [`LowPowerInstance`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PowerDomain {
@@ -148,19 +204,22 @@ const _: () = {
     core::assert!(Backup.is_powered_in_deep_sleep());
 };
 
-/// The [`PowerDomain`] a peripheral instance is in.
+/// What deep sleep does to a peripheral instance.
 ///
 /// Implemented for every peripheral singleton from the chip metadata. GPIO pins are excluded: the
 /// GPIO logic is in PD0 on every chip, and its PD1 register interface is only ever reachable in RUN.
-pub trait PowerDomainInstance: PeripheralType {
-    /// The domain this instance is in.
-    const POWER_DOMAIN: PowerDomain;
+///
+/// Type-erased drivers cannot name their instance, so they carry a copy of [`SleepInfo`] in their
+/// `Info` instead.
+pub trait LowPowerInstance: PeripheralType {
+    /// How this instance behaves across deep sleep.
+    const SLEEP: SleepInfo;
 }
 
-macro_rules! impl_power_domain {
-    ($instance:ident, $domain:ident) => {
-        impl crate::sysctl::PowerDomainInstance for crate::peripherals::$instance {
-            const POWER_DOMAIN: crate::sysctl::PowerDomain = crate::sysctl::PowerDomain::$domain;
+macro_rules! impl_low_power {
+    ($instance:ident, $sleep:expr) => {
+        impl crate::sysctl::LowPowerInstance for crate::peripherals::$instance {
+            const SLEEP: crate::sysctl::SleepInfo = $sleep;
         }
     };
 }

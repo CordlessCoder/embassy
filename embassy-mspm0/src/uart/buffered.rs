@@ -235,6 +235,7 @@ impl<'d> BufferedUartRx<'d> {
             Some(WakeGuard::new(SleepLevel::Standby1))
         } else {
             self.info
+                .sleep
                 .power_domain
                 .floor_to_keep_running(self.state.state.clock.load(Ordering::Relaxed))
                 .map(WakeGuard::new)
@@ -906,6 +907,7 @@ impl<'d> BufferedUartTx<'d> {
     async fn flush_inner(&self) -> Result<(), Error> {
         let _guard = self
             .info
+            .sleep
             .power_domain
             .floor_to_keep_running(self.state.state.clock.load(Ordering::Relaxed))
             .map(WakeGuard::new);

@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use std::{env, fs};
 
 use common::CfgSet;
-use mspm0_metapac::metadata::{ALL_CHIPS, METADATA, PowerDomain};
+use mspm0_metapac::metadata::{ALL_CHIPS, METADATA, Peripheral, PowerDomain, PowerMode};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 
@@ -19,6 +19,7 @@ fn main() {
     let mut cfgs = common::CfgSet::new();
     common::set_target_cfgs(&mut cfgs);
 
+    check_nvic_priority_bits();
     generate_code(&mut cfgs);
     select_gpio_features(&mut cfgs);
     interrupt_group_linker_magic();
@@ -67,11 +68,12 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_timers());
     g.extend(generate_interrupts());
     g.extend(generate_peripheral_instances());
-    g.extend(generate_power_domains(&singletons));
+    g.extend(generate_low_power(&singletons));
     g.extend(generate_pin_trait_impls());
     g.extend(generate_groups());
     g.extend(generate_dma_channel_count());
     g.extend(generate_adc_constants(cfgs));
+    g.extend(generate_clock_ceilings());
 
     let out_dir = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let out_file = out_dir.join("_generated.rs").to_string_lossy().to_string();
@@ -253,6 +255,39 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
         pub const ADC_VRSEL: u8 = #vrsel;
         pub const ADC_MEMCTL: u8 = #memctl;
     }
+}
+
+/// Emit the RUN/SLEEP clock ceilings.
+///
+/// These are ceilings, not the rate the chip boots at: G-series starts on a 32 MHz SYSOSC but can
+/// reach 80 MHz through the PLL. They bound what a clock configuration may ask for, and give PD0
+/// peripherals their real rate, which is lower than MCLK on G-series.
+fn generate_clock_ceilings() -> TokenStream {
+    let max_mclk = METADATA.max_mclk_hz;
+    let max_ulpclk = METADATA.max_ulpclk_hz;
+
+    quote! {
+        pub const MAX_MCLK_HZ: u32 = #max_mclk;
+        pub const MAX_ULPCLK_HZ: u32 = #max_ulpclk;
+    }
+}
+
+/// Check the NVIC priority width the HAL was compiled for against the chip.
+///
+/// The width is a Cargo feature (`embassy-hal-internal/prio-bits-2`), so it cannot be selected from
+/// metadata. Every MSPM0 has two bits, and this fails the build rather than silently mis-encoding
+/// priorities if a part ever turns up that does not. Note the SVDs claim three and are wrong; the
+/// metadata takes the CMSIS header's value.
+fn check_nvic_priority_bits() {
+    const HAL_PRIO_BITS: u8 = 2;
+
+    let bits = METADATA.nvic_priority_bits;
+    assert_eq!(
+        bits, HAL_PRIO_BITS,
+        "{} has {bits} NVIC priority bits, but embassy-mspm0 depends on \
+         embassy-hal-internal/prio-bits-{HAL_PRIO_BITS}",
+        METADATA.name,
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -684,11 +719,39 @@ fn power_domain_ident(domain: &PowerDomain) -> Ident {
     )
 }
 
-/// Implement `PowerDomainInstance` for every peripheral singleton.
+fn power_mode_tokens(mode: Option<PowerMode>) -> TokenStream {
+    // Written out rather than interpolating the `Option`: `quote` emits nothing at all for `None`,
+    // which would silently produce a struct literal with a missing field value.
+    match mode {
+        None => quote! { None },
+        Some(mode) => {
+            let variant = format_ident!(
+                "{}",
+                match mode {
+                    PowerMode::Run => "Run",
+                    PowerMode::Sleep => "Sleep",
+                    PowerMode::Stop => "Stop",
+                    PowerMode::Standby => "Standby",
+                    PowerMode::Shutdown => "Shutdown",
+                }
+            );
+            quote! { Some(crate::sysctl::PowerMode::#variant) }
+        }
+    }
+}
+
+fn optional_bool_tokens(value: Option<bool>) -> TokenStream {
+    match value {
+        None => quote! { None },
+        Some(value) => quote! { Some(#value) },
+    }
+}
+
+/// Implement `LowPowerInstance` for every peripheral singleton.
 ///
 /// Driven off the singleton list rather than the metadata so it cannot emit an impl for a type
 /// `get_singletons` decided not to create.
-fn generate_power_domains(singletons: &[Singleton]) -> TokenStream {
+fn generate_low_power(singletons: &[Singleton]) -> TokenStream {
     let impls = singletons.iter().filter_map(|singleton| {
         let name = singleton.name.as_str();
 
@@ -704,20 +767,38 @@ fn generate_power_domains(singletons: &[Singleton]) -> TokenStream {
             _ => name,
         };
 
-        let domain = METADATA
+        let peripheral = METADATA
             .peripherals
             .iter()
             .find(|peripheral| peripheral.name == owner)
-            .map(|peripheral| power_domain_ident(&peripheral.power_domain))
-            .unwrap_or_else(|| panic!("no power domain for singleton {name} (looked for peripheral {owner})"));
+            .unwrap_or_else(|| panic!("no metadata for singleton {name} (looked for peripheral {owner})"));
 
         let peri = format_ident!("{}", name);
+        let sleep = sleep_info_tokens(peripheral);
 
-        Some(quote! { impl_power_domain!(#peri, #domain); })
+        Some(quote! { impl_low_power!(#peri, #sleep); })
     });
 
     quote! {
         #(#impls)*
+    }
+}
+
+fn sleep_info_tokens(peripheral: &Peripheral) -> TokenStream {
+    let domain = power_domain_ident(&peripheral.power_domain);
+    let retained_through = power_mode_tokens(peripheral.retained_through);
+    let usable_through = power_mode_tokens(peripheral.usable_through);
+    let block_async = optional_bool_tokens(peripheral.block_async);
+    let clocked_in_standby1 = optional_bool_tokens(peripheral.clocked_in_standby1);
+
+    quote! {
+        crate::sysctl::SleepInfo {
+            power_domain: crate::sysctl::PowerDomain::#domain,
+            retained_through: #retained_through,
+            usable_through: #usable_through,
+            block_async: #block_async,
+            clocked_in_standby1: #clocked_in_standby1,
+        }
     }
 }
 
@@ -727,11 +808,10 @@ fn generate_peripheral_instances() -> TokenStream {
     for peripheral in METADATA.peripherals {
         let peri = format_ident!("{}", peripheral.name);
         let fifo_size = peripheral.sys_fentries;
-        let power_domain = power_domain_ident(&peripheral.power_domain);
 
         let tokens = match peripheral.kind {
-            "uart" => Some(quote! { impl_uart_instance!(#peri, #power_domain); }),
-            "i2c" => Some(quote! { impl_i2c_instance!(#peri, #fifo_size, #power_domain); }),
+            "uart" => Some(quote! { impl_uart_instance!(#peri); }),
+            "i2c" => Some(quote! { impl_i2c_instance!(#peri, #fifo_size); }),
             "wwdt" => Some(quote! { impl_wwdt_instance!(#peri); }),
             "adc" => Some(quote! { impl_adc_instance!(#peri); }),
             "mathacl" => Some(quote! { impl_mathacl_instance!(#peri); }),
