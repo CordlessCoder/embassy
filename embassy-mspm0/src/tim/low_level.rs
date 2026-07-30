@@ -4,7 +4,7 @@ use crate::Peri;
 use crate::pac::tim::vals::{Cm, Cvae, CxC, PwrenKey, Repeat, ResetKey};
 use crate::pac::tim::{Tim, regs};
 use crate::sysctl::{SleepLevel, WakeGuard};
-use crate::tim::{Channel, ClockSel, CountingMode, Instance, Word};
+use crate::tim::{Channel, ClockSel, CountingDirection, CountingMode, Instance, Word};
 
 /// What the counter does when it is enabled.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -370,6 +370,14 @@ pub(crate) fn is_pending(regs: Tim, event: Event) -> bool {
 
 pub(crate) fn clear_pending(regs: Tim, event: Event) {
     regs.cpu_int(0).iclr().write_value(event.mask());
+}
+
+/// Which way the counter is running, for the channel handles that have no instance to ask.
+pub(crate) fn counting_direction(regs: Tim) -> CountingDirection {
+    match regs.counterregs(0).ctrctl().read().cm() {
+        Cm::Down => CountingDirection::Down,
+        _ => CountingDirection::Up,
+    }
 }
 
 /// Ticks in one counting period.

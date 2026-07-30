@@ -3,6 +3,7 @@
 #![macro_use]
 
 pub mod low_level;
+pub mod simple_pwm;
 
 use embassy_hal_internal::PeripheralType;
 use mspm0_metapac::tim::Tim;
