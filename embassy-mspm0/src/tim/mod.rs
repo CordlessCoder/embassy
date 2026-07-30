@@ -2,6 +2,7 @@
 
 #![macro_use]
 
+pub mod compare;
 pub mod input_capture;
 pub mod low_level;
 pub mod simple_pwm;

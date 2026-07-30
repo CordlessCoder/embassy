@@ -363,6 +363,12 @@ pub(crate) const CC_UP_BITS: u32 = Event::CaptureOrCompareUp(Channel::Ch0).mask(
     | Event::CaptureOrCompareUp(Channel::Ch2).mask().0
     | Event::CaptureOrCompareUp(Channel::Ch3).mask().0;
 
+/// Every channel's down-direction capture/compare flag.
+pub(crate) const CC_DOWN_BITS: u32 = Event::CaptureOrCompareDown(Channel::Ch0).mask().0
+    | Event::CaptureOrCompareDown(Channel::Ch1).mask().0
+    | Event::CaptureOrCompareDown(Channel::Ch2).mask().0
+    | Event::CaptureOrCompareDown(Channel::Ch3).mask().0;
+
 // The channel handles have the instance erased, so they reach these with a bare register block.
 
 pub(crate) fn enable_interrupt(regs: Tim, event: Event, enable: bool) {
