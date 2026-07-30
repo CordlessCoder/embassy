@@ -11,13 +11,9 @@ use mspm0_metapac::tim::Tim;
 
 use crate::interrupt::typelevel::Interrupt;
 use crate::tim::low_level::{self, CounterOnEnable};
-use crate::tim::{ClockSel, CountingMode, General2ChannelInstance, SealedInstance};
+use crate::tim::{Channel, ClockSel, CountingMode, General2ChannelInstance, SealedInstance, Word};
 use crate::{peripherals, tim};
 
-#[cfg(any(time_driver_timg12, time_driver_timg13))]
-compile_error!("TIMG12 and TIMG13 are not supported by the time driver yet");
-
-// Currently TIMG12 and TIMG13 are excluded because those are 32-bit timers.
 #[cfg(time_driver_timg0)]
 type T = peripherals::TIMG0;
 #[cfg(time_driver_timg1)]
@@ -42,12 +38,27 @@ type T = peripherals::TIMG9;
 type T = peripherals::TIMG10;
 #[cfg(time_driver_timg11)]
 type T = peripherals::TIMG11;
+#[cfg(time_driver_timg12)]
+type T = peripherals::TIMG12;
+#[cfg(time_driver_timg13)]
+type T = peripherals::TIMG13;
 #[cfg(time_driver_timg14)]
 type T = peripherals::TIMG14;
 #[cfg(time_driver_tima0)]
 type T = peripherals::TIMA0;
 #[cfg(time_driver_tima1)]
 type T = peripherals::TIMA1;
+
+/// Counter value type of the selected timer: `u16`, or `u32` on TIMG12/TIMG13.
+type W = <T as tim::Instance>::Word;
+
+/// Ticks one `period` increment covers, as a shift.
+const HALF_BITS: u32 = W::BITS - 1;
+
+/// How far ahead an alarm has to be before arming is deferred to [`TimxDriver::next_period`].
+///
+/// One and a half `period`s, so the compare value is never ambiguous.
+const ARM_AHEAD: u64 = 3 << (W::BITS - 2);
 
 // The scheme needs two capture/compare channels: one for the half-period tick, one for the alarm.
 const _: fn() = || {
@@ -59,27 +70,59 @@ fn regs() -> Tim {
     T::info().regs
 }
 
-// Clock timekeeping works with something we call "periods", which are time intervals
-// of 2^15 ticks. The Clock counter value is 16 bits, so one "overflow cycle" is 2 periods.
+// Clock timekeeping works with something we call "periods", which are time intervals of half the
+// counter's range — 2^15 ticks on a 16-bit timer, 2^31 on a 32-bit one. One "overflow cycle" is
+// 2 periods.
 //
 // A `period` count is maintained in parallel to the Timer hardware `counter`, like this:
 // - `period` and `counter` start at 0
 // - `period` is incremented on overflow (at counter value 0)
-// - `period` is incremented "midway" between overflows (at counter value 0x8000)
+// - `period` is incremented "midway" between overflows (at half the counter's range)
 //
-// When `period` is even, counter is in 0..0x7FFF. When odd, counter is in 0x8000..0xFFFF
-// This allows for now() to return the correct value even if it races an overflow.
+// When `period` is even the counter is in the lower half of its range, when odd the upper half. This
+// allows for now() to return the correct value even if it races an overflow, which is why both events
+// are load-bearing for `now()` and neither may be masked.
 //
-// `period` is a 32bit integer, so It overflows on 2^32 * 2^15 / 32768 seconds of uptime, which is 136 years.
-fn calc_now(period: u32, counter: u16) -> u64 {
-    ((period as u64) << 15) + ((counter as u32 ^ ((period & 1) << 15)) as u64)
+// `period` is a 32-bit integer, so it overflows after 2^32 half-periods: 136 years at 2^15 ticks, and
+// far beyond any plausible uptime at 2^31.
+//
+// Generic over the counter type rather than a bit count, so the width cannot be given a value the
+// hardware does not have. `Word::BITS` is an associated const, not a method, so this stays a `const fn`
+// and the assertions below run at compile time.
+const fn calc_now<C: Word>(period: u32, counter: u32) -> u64 {
+    let half_bits = C::BITS - 1;
+
+    ((period as u64) << half_bits) + ((counter ^ ((period & 1) << half_bits)) as u64)
 }
+
+// `calc_now` is the one piece of arithmetic here that has to be exactly right, and it is pure, so pin it
+// down at compile time. It cannot be a unit test: `cortex-m` does not build for the host, so this crate
+// has no host target to run tests on.
+const _: () = {
+    // 16-bit, half-period 0x8000. The sequence below must be strictly increasing across two parity
+    // flips, which is the property `now()` depends on.
+    core::assert!(calc_now::<u16>(0, 0x0000) == 0x0_0000);
+    core::assert!(calc_now::<u16>(0, 0x7FFF) == 0x0_7FFF);
+    core::assert!(calc_now::<u16>(1, 0x8000) == 0x0_8000);
+    core::assert!(calc_now::<u16>(1, 0xFFFF) == 0x0_FFFF);
+    core::assert!(calc_now::<u16>(2, 0x0000) == 0x1_0000);
+
+    // 32-bit, half-period 0x8000_0000.
+    core::assert!(calc_now::<u32>(0, 0x0000_0000) == 0x0_0000_0000);
+    core::assert!(calc_now::<u32>(0, 0x7FFF_FFFF) == 0x0_7FFF_FFFF);
+    core::assert!(calc_now::<u32>(1, 0x8000_0000) == 0x0_8000_0000);
+    core::assert!(calc_now::<u32>(1, 0xFFFF_FFFF) == 0x0_FFFF_FFFF);
+    core::assert!(calc_now::<u32>(2, 0x0000_0000) == 0x1_0000_0000);
+
+    // The arming threshold is one and a half periods, whatever the width.
+    core::assert!(3u64 << (16 - 2) == 0xC000);
+    core::assert!(3u64 << (32 - 2) == 0xC000_0000);
+};
 
 /// TODO: Configurable tick rate
 /// TODO: Compensate for per part variance. This can supposedly be done with the FCC system.
-/// TODO: Allow using 32-bit timers (TIMG12 and TIMG13).
 struct TimxDriver {
-    /// Number of 2^15 periods elapsed since boot.
+    /// Number of half-counter-range periods elapsed since boot.
     period: AtomicU32,
     /// Timestamp at which to fire alarm. u64::MAX if no alarm is scheduled.
     alarm: Mutex<Cell<u64>>,
@@ -123,8 +166,9 @@ impl TimxDriver {
 
         let regs = regs();
 
-        // Middle
-        regs.counterregs(0).cc(0).write_value(0x8000 as u32);
+        // Half of the counter's range, the other point where `period` increments.
+        regs.counterregs(0).cc(Channel::Ch0.index()).write_value(1 << HALF_BITS);
+
         // Start with the counter at 1 to avoid immediately incrementing period.
         regs.counterregs(0).ctr().write_value(1);
 
@@ -148,13 +192,13 @@ impl TimxDriver {
         // We only modify the period from the timer interrupt, so we know this can't race.
         let period = self.period.load(Ordering::Relaxed) + 1;
         self.period.store(period, Ordering::Relaxed);
-        let t = (period as u64) << 15;
+        let t = (period as u64) << HALF_BITS;
 
         r.cpu_int(0).imask().modify(move |w| {
             let alarm = self.alarm.borrow(cs);
             let at = alarm.get();
 
-            if at < t + 0xC000 {
+            if at < t + ARM_AHEAD {
                 // just enable it. `set_alarm` has already set the correct CC1 val.
                 w.set_ccu1(true);
             }
@@ -216,12 +260,14 @@ impl TimxDriver {
         // Write the CC1 value regardless of whether we're going to enable it now or not.
         // This way, when we enable it later, the right value is already set.
         //
-        // Cast to u16 and then u32 to clamp to 16-bit timer limits.
-        r.counterregs(0).cc(1).write_value(timestamp as u16 as u32);
+        // Narrowed to the counter's width, so the compare is a value the counter actually reaches.
+        r.counterregs(0)
+            .cc(Channel::Ch1.index())
+            .write_value(W::from_reg(timestamp as u32).into());
 
         // Enable it if it'll happen soon. Otherwise, `next_period` will enable it.
         let diff = timestamp - t;
-        r.cpu_int(0).imask().modify(|w| w.set_ccu1(diff < 0xC000));
+        r.cpu_int(0).imask().modify(|w| w.set_ccu1(diff < ARM_AHEAD));
 
         // Reevaluate if the alarm timestamp is still in the future
         let t = self.now();
@@ -253,7 +299,7 @@ impl Driver for TimxDriver {
             // Ensure the compiler does not read the counter before the period.
             compiler_fence(Ordering::Acquire);
 
-            let counter = regs.counterregs(0).ctr().read() as u16;
+            let counter = W::from_reg(regs.counterregs(0).ctr().read()).into();
 
             // Ensure the compiler does not read the period again before the counter.
             compiler_fence(Ordering::Acquire);
@@ -263,7 +309,7 @@ impl Driver for TimxDriver {
                 continue;
             }
 
-            return calc_now(period, counter);
+            return calc_now::<W>(period, counter);
         }
     }
 
@@ -364,7 +410,17 @@ fn TIMG11() {
     DRIVER.on_interrupt();
 }
 
-// TODO: TIMG12 and TIMG13
+#[cfg(time_driver_timg12)]
+#[interrupt]
+fn TIMG12() {
+    DRIVER.on_interrupt();
+}
+
+#[cfg(time_driver_timg13)]
+#[interrupt]
+fn TIMG13() {
+    DRIVER.on_interrupt();
+}
 
 #[cfg(time_driver_timg14)]
 #[interrupt]

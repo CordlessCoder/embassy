@@ -525,6 +525,10 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
         Some("timg9") => "TIMG9",
         Some("timg10") => "TIMG10",
         Some("timg11") => "TIMG11",
+        // The 32-bit timers. Selectable by name only: they are scarce — often the only 32-bit timer on
+        // the part — so `any` leaves them for capture and compare.
+        Some("timg12") => "TIMG12",
+        Some("timg13") => "TIMG13",
         Some("timg14") => "TIMG14",
         Some("tima0") => "TIMA0",
         Some("tima1") => "TIMA1",
@@ -537,7 +541,9 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
             // 5. 16-bit with QEI
             // 6. Advanced timers
             //
-            // TODO: 32-bit timers are not considered yet
+            // 32-bit timers are deliberately absent: TIMG12/TIMG13 are usually the only 32-bit timers on
+            // a part, and taking one here removes it from `Peripherals` entirely. Select by name to trade
+            // the 32-bit counter's much longer period for losing it as a capture or compare timer.
             const CANDIDATES: &[&str] = &[
                 // basic timers. No PWM pins
                 // "TIMB0", // 16-bit, 2 channel
