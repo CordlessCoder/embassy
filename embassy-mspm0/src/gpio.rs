@@ -1028,11 +1028,12 @@ const GPIO_PF: u8 = 1;
 /// use, works on any GPIO pin but only down to STANDBY. SHUTDOWN powers the GPIO logic off entirely,
 /// and only these pins keep a path to the wake controller. See [`ShutdownWake`].
 ///
-/// Which pins qualify comes from the chip metadata. For the few families whose vendor data does not
-/// carry the information at all, every pin is accepted rather than none — no MSPM0 actually lacks
-/// wake-capable IO, so refusing all of them would be the wrong reading of missing data.
+/// Which pins qualify comes from the chip metadata, and `mspm0c110x` has none at all. Where the vendor
+/// data omits the information entirely, every pin is accepted rather than none.
 pub trait WakeCapablePin: Pin {}
 
+// mspm0c110x has no wake-capable pin.
+#[allow(unused_macros)]
 macro_rules! impl_wake_capable_pin {
     ($name: ident) => {
         impl crate::gpio::WakeCapablePin for crate::peripherals::$name {}

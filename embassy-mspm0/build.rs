@@ -65,7 +65,7 @@ fn generate_code(cfgs: &mut CfgSet) {
 
     g.extend(generate_singletons(&singletons));
     g.extend(generate_pincm_mapping());
-    g.extend(generate_pin(cfgs));
+    g.extend(generate_pin());
     g.extend(generate_timers());
     g.extend(generate_interrupts());
     g.extend(generate_peripheral_instances());
@@ -447,15 +447,7 @@ fn generate_pincm_mapping() -> TokenStream {
     }
 }
 
-fn generate_pin(cfgs: &mut CfgSet) -> TokenStream {
-    // `Pin::wakeup` is a plain bool, so a family whose vendor data has no `io_wakeup` key at all is
-    // indistinguishable from one where no pin can wake the device. The second is true of no MSPM0, so
-    // read "not one wake-capable pin" as missing data and let every pin be armed, rather than making
-    // the API unusable on `mspm0h321x`, `mspm0l122x`, `mspm0l134x`, `mspm0l222x` and `msps003fx`.
-    // `mspm0l134x` is the proof it is a data gap: its sibling `mspm0l130x` reports four.
-    let known = METADATA.pins.iter().any(|pin| pin.wakeup);
-    cfgs.set("io_wakeup_unknown", !known);
-
+fn generate_pin() -> TokenStream {
     let pin_impls = METADATA.pins.iter().map(|pin| {
         let name = Ident::new(&pin.pin, Span::call_site());
         let port_letter = pin.pin.strip_prefix("P").unwrap();
@@ -466,7 +458,9 @@ fn generate_pin(cfgs: &mut CfgSet) -> TokenStream {
 
         // TODO: Feature gate pins that can be used as NRST
 
-        let wake_capable = (pin.wakeup || !known).then(|| {
+        // `None` is a gap in the vendor data, not a pin that cannot wake; arm it rather than making the
+        // SHUTDOWN-wake API uncompilable on the families whose sysconfig omits `io_wakeup`.
+        let wake_capable = pin.wakeup.unwrap_or(true).then(|| {
             quote! { impl_wake_capable_pin!(#name); }
         });
 
