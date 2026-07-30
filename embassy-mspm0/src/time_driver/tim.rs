@@ -8,10 +8,10 @@ use embassy_time_driver::Driver;
 use embassy_time_queue_utils::Queue;
 use mspm0_metapac::interrupt;
 use mspm0_metapac::tim::Tim;
-use mspm0_metapac::tim::vals::{Cm, Cvae, CxC, EvtCfg, PwrenKey, Repeat, ResetKey};
 
 use crate::interrupt::typelevel::Interrupt;
-use crate::tim::SealedInstance;
+use crate::tim::low_level::{self, CounterOnEnable};
+use crate::tim::{ClockSel, CountingMode, General2ChannelInstance, SealedInstance};
 use crate::{peripherals, tim};
 
 #[cfg(any(time_driver_timg12, time_driver_timg13))]
@@ -49,19 +49,11 @@ type T = peripherals::TIMA0;
 #[cfg(time_driver_tima1)]
 type T = peripherals::TIMA1;
 
-// STANDBY1 unclocks all of PD0 except a handful of timers named per chip, so only those can wake the
-// core from the deepest sleep. Which ones they are does not follow from the name — TIMG1 is clocked on
-// some chips and not on others — so this is checked against the chip metadata. `build.rs` picks a
-// STANDBY1 timer for `time-driver-any` and rejects a bad explicit choice with a better message; this
-// catches a mistake in that logic. Being clocked in STANDBY1 implies PD0, so it subsumes a domain check.
-#[cfg(feature = "low-power")]
-const _: () = core::assert!(
-    matches!(
-        <T as crate::sysctl::LowPowerInstance>::SLEEP.clocked_in_standby1,
-        Some(true)
-    ),
-    "the time driver's timer is not clocked in STANDBY1, so it cannot wake the core from deep sleep"
-);
+// The scheme needs two capture/compare channels: one for the half-period tick, one for the alarm.
+const _: fn() = || {
+    fn has_two_channels<C: General2ChannelInstance>() {}
+    has_two_channels::<T>();
+};
 
 fn regs() -> Tim {
     T::info().regs
@@ -97,78 +89,44 @@ struct TimxDriver {
 impl TimxDriver {
     fn init(&'static self, _cs: CriticalSection) {
         // TODO: Configurable tick rate
+        //
+        // Shared with the user-facing timer drivers, so the power/reset/clock sequence and the CZC/CAC/CLC
+        // reserved-reset-value trap live in one place. `LOAD` comes out of this as the counter's full
+        // range, which is what the period scheme wants.
+        low_level::configure::<T>(&low_level::Config {
+            // LFCLK at 32.768 kHz, the only source available all the way down to STANDBY, and no
+            // division needed to reach the tick rate.
+            clock: ClockSel::LfClk,
+            divider: 1,
+            prescaler: 1,
+            counting_mode: CountingMode::EdgeAlignedUp,
+            // The counter is preloaded below; enabling must not reset it.
+            counter_on_enable: CounterOnEnable::Preserve,
+            free_run_in_debug: true,
+        });
+
+        // STANDBY1 unclocks all of PD0 apart from a handful of timers named per chip, and PD1 goes down in
+        // every deep-sleep mode. A timer that stops in a mode cannot keep time through it, so forbid that
+        // mode instead of stopping the clock: the guard is deliberately never dropped, because the time
+        // driver never goes away.
+        //
+        // The cost is not uniform, which is why this is a silent trade rather than an error. A PD0 timer on
+        // LFCLK that merely is not in the STANDBY1 list loses only that one mode and keeps STANDBY0. A PD1
+        // timer blocks all deep sleep, which is self-defeating in a low-power build — `build.rs` warns
+        // about that case at compile time, and `time-driver-any` avoids it where it can.
+        //
+        // `None` here means the timer survives everything and nothing is blocked, which is the case
+        // `time-driver-any` selects for.
+        if let Some(guard) = low_level::wake_guard::<T>(ClockSel::LfClk) {
+            core::mem::forget(guard);
+        }
+
         let regs = regs();
-
-        // Reset timer
-        regs.gprcm(0).rstctl().write(|w| {
-            w.set_resetassert(true);
-            w.set_key(ResetKey::Key);
-            w.set_resetstkyclr(true);
-        });
-
-        // Power up timer
-        regs.gprcm(0).pwren().write(|w| {
-            w.set_enable(true);
-            w.set_key(PwrenKey::Key);
-        });
-
-        // Following the instructions according to SLAU847D 23.2.1: TIMCLK Configuration
-
-        // 1. Select TIMCLK source
-        regs.clksel().modify(|w| {
-            // Use LFCLK at 32.768 kHz, as it's available all the way down to STANDBY
-            w.set_lfclk_sel(true);
-        });
-
-        // 2. Divide by TIMCLK
-        regs.clkdiv().modify(|w| {
-            // 32.768 kHz on the LFCLK requires no division.
-            w.set_ratio(0); // + 1
-        });
-
-        // Not every timer supports the prescaler so we should zero it.
-        regs.commonregs(0).cps().modify(|w| {
-            w.set_pcnt(0);
-        });
-
-        regs.pdbgctl().modify(|w| {
-            w.set_free(true);
-        });
-
-        // 4. Enable the TIMCLK.
-        regs.commonregs(0).cclkctl().modify(|w| {
-            w.set_clken(true);
-        });
-
-        regs.counterregs(0).ctrctl().modify(|w| {
-            w.set_repeat(Repeat::Repeat1);
-            w.set_cvae(Cvae::Nochange);
-            w.set_cm(Cm::Up);
-
-            // Must explicitly set CZC, CAC and CLC to 0 in order for all the timers to count.
-            //
-            // The reset value of these registers is 0x07, which is a reserved value.
-            //
-            // Looking at a bit representation of the reset value, this appears to be an AND
-            // of 2-input QEI mode and CCCTL_3 ACOND. Given that TIMG14 and TIMA0 have no QEI
-            // and 4 capture and compare channels, this works by accident for those timer units.
-            w.set_czc(CxC::Cctl0);
-            w.set_cac(CxC::Cctl0);
-            w.set_clc(CxC::Cctl0);
-        });
 
         // Middle
         regs.counterregs(0).cc(0).write_value(0x8000 as u32);
-        regs.counterregs(0).load().write_value(u16::MAX as u32);
         // Start with the counter at 1 to avoid immediately incrementing period.
         regs.counterregs(0).ctr().write_value(1);
-
-        // Enable the period interrupts
-        //
-        // This does not appear to ever be set for CPU_INT in the TI SDK and is not technically needed.
-        regs.evt_mode().modify(|w| {
-            w.set_evt_cfg(0, EvtCfg::Software);
-        });
 
         regs.cpu_int(0).imask().modify(|w| {
             w.set_z(true);

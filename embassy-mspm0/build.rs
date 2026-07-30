@@ -563,7 +563,13 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
         _ => panic!("unknown time_driver {:?}", time_driver),
     };
 
-    if low_power && !selected_timer.is_empty() && !clocked_in_standby1(selected_timer) {
+    // A timer that stops in a deep-sleep mode can still back the time driver: it holds a `WakeGuard` for
+    // the life of the program, forbidding the modes it would not survive. That is a real trade rather than
+    // an error, so warn instead of failing — but do warn, because losing deep sleep entirely is easy to do
+    // by accident and hard to notice. `allow-time-driver-sleep-floor` is the opt-out for having read this.
+    let allow_sleep_floor = env::var_os("CARGO_FEATURE_ALLOW_TIME_DRIVER_SLEEP_FLOOR").is_some();
+
+    if low_power && !allow_sleep_floor && !selected_timer.is_empty() && !clocked_in_standby1(selected_timer) {
         let usable = TIMERS
             .keys()
             .filter(|tim| clocked_in_standby1(tim) && singletons.iter().any(|s| &s.name == *tim))
@@ -571,10 +577,11 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
             .collect::<Vec<_>>()
             .join(", ");
 
-        panic!(
-            "the `low-power` feature needs a time driver that is still clocked in STANDBY1, and \
-             {selected_timer} on {chip} is not. Enable one of: {usable} (or `time-driver-any`, which \
-             now picks one).",
+        println!(
+            "cargo:warning={selected_timer} on {chip} is not clocked in STANDBY1, so the time driver will \
+             hold a sleep guard forever and the deepest modes it cannot survive become unreachable. For \
+             full sleep depth use one of: {usable} (or `time-driver-any`, which prefers one). To keep this \
+             timer and silence this warning, enable the `allow-time-driver-sleep-floor` feature.",
             chip = METADATA.name,
         );
     }
