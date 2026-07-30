@@ -354,6 +354,15 @@ pub(crate) fn wake_guard<T: Instance>(clock: ClockSel) -> Option<WakeGuard> {
     sleep_floor::<T>(clock).map(WakeGuard::new)
 }
 
+/// Every channel's up-direction capture/compare flag.
+///
+/// The only bits the capture and compare handlers acknowledge, so an event the caller enabled through
+/// [`Timer`] is left alone.
+pub(crate) const CC_UP_BITS: u32 = Event::CaptureOrCompareUp(Channel::Ch0).mask().0
+    | Event::CaptureOrCompareUp(Channel::Ch1).mask().0
+    | Event::CaptureOrCompareUp(Channel::Ch2).mask().0
+    | Event::CaptureOrCompareUp(Channel::Ch3).mask().0;
+
 // The channel handles have the instance erased, so they reach these with a bare register block.
 
 pub(crate) fn enable_interrupt(regs: Tim, event: Event, enable: bool) {
