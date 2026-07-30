@@ -600,7 +600,9 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
             let feature = format!("time-driver-{}", name.to_lowercase());
 
             if singleton.name.contains(selected_timer) {
-                singleton.cfg = Some(quote! { #[cfg(not(all(feature = "time-driver-any", feature = #feature)))] });
+                // Either way of selecting this timer takes it: `all` here left the auto-selected timer
+                // in `Peripherals`, so a driver could be built on it and silently reset the time driver.
+                singleton.cfg = Some(quote! { #[cfg(not(any(feature = "time-driver-any", feature = #feature)))] });
             } else {
                 singleton.cfg = Some(quote! { #[cfg(not(feature = #feature))] });
             }
