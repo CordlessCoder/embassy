@@ -687,11 +687,10 @@ fn generate_timers() -> TokenStream {
             let timers = &*TIMERS;
 
             let timer = timers.get(peripheral.name).expect("Timer does not exist");
-            assert!(timer.bits == 16 || timer.bits == 32);
-            let bits = if timer.bits == 16 {
-                quote! { Bits16 }
-            } else {
-                quote! { Bits32 }
+            let word = match timer.bits {
+                16 => quote! { u16 },
+                32 => quote! { u32 },
+                bits => panic!("{} has a {bits}-bit counter, which has no `tim::Word`", peripheral.name),
             };
 
             let mut impls = Vec::new();
@@ -702,7 +701,7 @@ fn generate_timers() -> TokenStream {
                 impl_tim_instance!(
                     #name,
                     prescaler: #prescaler,
-                    width: #bits,
+                    word: #word,
                     channels: #channels
                 );
             });

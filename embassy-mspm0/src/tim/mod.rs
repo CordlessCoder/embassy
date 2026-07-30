@@ -2,20 +2,23 @@
 
 #![macro_use]
 
+pub mod low_level;
+
 use embassy_hal_internal::PeripheralType;
 use mspm0_metapac::tim::Tim;
 
 use crate::gpio::Pin;
 use crate::interrupt;
+use crate::sysctl::{LowPowerInstance, PowerDomain};
 
+/// A timer instance.
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + PeripheralType {
+pub trait Instance: SealedInstance + PeripheralType + LowPowerInstance {
+    /// Interrupt this instance raises.
     type Interrupt: interrupt::typelevel::Interrupt;
 
-    #[inline]
-    fn width() -> CounterWidth {
-        Self::info().width
-    }
+    /// Counter value type: `u16` on a 16-bit timer, `u32` on a 32-bit one.
+    type Word: Word;
 }
 
 /// A timer instance with 2 compare and capture channels.
@@ -30,30 +33,39 @@ pub trait General32BitInstance: Instance {}
 /// An advanced timer instance with complementary channel outputs and fault detection.
 pub trait AdvancedInstance: Instance {}
 
-/// Marker trait describing the type used for counting.
+/// Counter value type of a timer instance.
+///
+/// The registers are 32 bits wide whatever the counter, so this is what stops an out-of-range compare
+/// being written and then never matching.
 #[allow(private_bounds)]
-pub trait TimerBits: SealedTimerBits {}
-impl TimerBits for u16 {}
-impl TimerBits for u32 {}
+pub trait Word: SealedWord + Copy + Ord + Into<u32> + 'static {
+    /// Counter width in bits.
+    const BITS: u32;
 
-/// Width of counter in a timer instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum CounterWidth {
-    /// 16-bit counter width.
-    Bits16,
+    /// Largest value the counter reaches.
+    const MAX: Self;
 
-    /// 32-bit counter width.
-    Bits32,
+    /// Narrow a counter register read to the counter width.
+    fn from_reg(reg: u32) -> Self;
 }
 
-impl CounterWidth {
-    /// Counter width in bits.
-    pub const fn bits(&self) -> u8 {
-        match self {
-            CounterWidth::Bits16 => 16,
-            CounterWidth::Bits32 => 32,
-        }
+impl Word for u16 {
+    const BITS: u32 = 16;
+    const MAX: Self = u16::MAX;
+
+    #[inline]
+    fn from_reg(reg: u32) -> Self {
+        reg as u16
+    }
+}
+
+impl Word for u32 {
+    const BITS: u32 = 32;
+    const MAX: Self = u32::MAX;
+
+    #[inline]
+    fn from_reg(reg: u32) -> Self {
+        reg
     }
 }
 
@@ -64,57 +76,119 @@ pub trait TimerPin<T: Instance, Channel: TimerChannel>: Pin + PeripheralType {
     fn pf_num(&self) -> u8;
 }
 
+/// Capture/compare channel of a timer.
+///
+/// Only the four that reach a pin; advanced instances have two more, via [`low_level::Timer::regs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Channel {
+    /// Channel 0.
+    Ch0,
+
+    /// Channel 1.
+    Ch1,
+
+    /// Channel 2.
+    Ch2,
+
+    /// Channel 3.
+    Ch3,
+}
+
+impl Channel {
+    /// Every channel, in index order.
+    pub const ALL: [Channel; 4] = [Channel::Ch0, Channel::Ch1, Channel::Ch2, Channel::Ch3];
+
+    /// Index of this channel in the per-channel register arrays.
+    pub const fn index(self) -> usize {
+        match self {
+            Channel::Ch0 => 0,
+            Channel::Ch1 => 1,
+            Channel::Ch2 => 2,
+            Channel::Ch3 => 3,
+        }
+    }
+}
+
 /// A timer channel
 #[allow(private_bounds)]
-pub trait TimerChannel: SealedChannel {}
+pub trait TimerChannel: SealedChannel {
+    /// Channel this marker selects; complementary markers share their channel's.
+    const CHANNEL: Channel;
+}
 
 /// Marker type for channel 0.
 pub enum Ch0 {}
-impl TimerChannel for Ch0 {}
+impl TimerChannel for Ch0 {
+    const CHANNEL: Channel = Channel::Ch0;
+}
 
 /// Marker type for channel 1.
 pub enum Ch1 {}
-impl TimerChannel for Ch1 {}
+impl TimerChannel for Ch1 {
+    const CHANNEL: Channel = Channel::Ch1;
+}
 
 /// Marker type for channel 2.
 pub enum Ch2 {}
-impl TimerChannel for Ch2 {}
+impl TimerChannel for Ch2 {
+    const CHANNEL: Channel = Channel::Ch2;
+}
 
 /// Marker type for channel 3.
 pub enum Ch3 {}
-impl TimerChannel for Ch3 {}
+impl TimerChannel for Ch3 {
+    const CHANNEL: Channel = Channel::Ch3;
+}
 
 /// Marker type for channel 0 complementary output.
 pub enum CompCh0 {}
-impl TimerChannel for CompCh0 {}
+impl TimerChannel for CompCh0 {
+    const CHANNEL: Channel = Channel::Ch0;
+}
 
 /// Marker type for channel 1 complementary output.
 pub enum CompCh1 {}
-impl TimerChannel for CompCh1 {}
+impl TimerChannel for CompCh1 {
+    const CHANNEL: Channel = Channel::Ch1;
+}
 
 /// Marker type for channel 2 complementary output.
 pub enum CompCh2 {}
-impl TimerChannel for CompCh2 {}
+impl TimerChannel for CompCh2 {
+    const CHANNEL: Channel = Channel::Ch2;
+}
 
 /// Marker type for channel 3 complementary output.
 pub enum CompCh3 {}
-impl TimerChannel for CompCh3 {}
+impl TimerChannel for CompCh3 {
+    const CHANNEL: Channel = Channel::Ch3;
+}
 
 /// Clock source for the timer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ClockSel {
-    /// Use the low frequency clock.
-    ///
-    /// The LFCLK runs at 32.768 kHz.
+    /// 32.768 kHz, the only source that keeps counting in STANDBY.
     LfClk,
 
-    /// Use the middle frequency clock.
-    ///
-    /// The MFCLK runs at 4 MHz.
+    /// 4 MHz, stops below STOP1.
     MfClk,
-    // TODO: BusClk
-    // The actual clock speed used depends on power domain and system clock config.
+
+    /// The power domain's bus clock: MCLK in PD1, ULPCLK in PD0. Stops in any deep-sleep mode.
+    #[default]
+    BusClk,
+}
+
+impl ClockSel {
+    /// Frequency of this source, in Hz, for a timer in `domain`.
+    pub const fn frequency(self, domain: PowerDomain) -> u32 {
+        match self {
+            ClockSel::LfClk => crate::sysctl::LFCLK_HZ,
+            ClockSel::MfClk => crate::sysctl::MFCLK_HZ,
+            ClockSel::BusClk => crate::sysctl::bus_clock_hz(domain),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -131,13 +205,38 @@ pub enum CountingMode {
     CenterAligned,
 }
 
+/// Which way an edge-aligned counter runs.
+///
+/// The drivers that cannot express [`CountingMode::CenterAligned`] take this instead, so the mode they
+/// reject is not representable.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CountingDirection {
+    /// Count up from zero.
+    #[default]
+    Up,
+
+    /// Count down from the load value.
+    Down,
+}
+
+impl CountingDirection {
+    /// The counting mode this direction selects.
+    pub const fn counting_mode(self) -> CountingMode {
+        match self {
+            CountingDirection::Up => CountingMode::EdgeAlignedUp,
+            CountingDirection::Down => CountingMode::EdgeAlignedDown,
+        }
+    }
+}
+
 pub(crate) trait SealedInstance {
     fn info() -> &'static Info;
 }
 
-trait SealedTimerBits: Into<u32> {}
-impl SealedTimerBits for u16 {}
-impl SealedTimerBits for u32 {}
+trait SealedWord {}
+impl SealedWord for u16 {}
+impl SealedWord for u32 {}
 
 trait SealedChannel {}
 impl SealedChannel for Ch0 {}
@@ -151,10 +250,9 @@ impl SealedChannel for CompCh3 {}
 
 pub(crate) struct Info {
     pub(crate) regs: Tim,
-    #[allow(unused)]
+    /// Whether this instance has the 8-bit prescaler in `CPS`.
     pub(crate) prescaler: bool,
-    pub(crate) width: CounterWidth,
-    #[allow(unused)]
+    /// Capture/compare channels brought out to pins.
     pub(crate) channels: u8,
 }
 
@@ -162,7 +260,7 @@ macro_rules! impl_tim_instance {
     (
         $instance: ident,
         prescaler: $prescaler: expr,
-        width: $width: ident,
+        word: $word: ty,
         channels: $channels: expr
     ) => {
         impl crate::tim::SealedInstance for crate::peripherals::$instance {
@@ -171,7 +269,6 @@ macro_rules! impl_tim_instance {
                 const INFO: crate::tim::Info = crate::tim::Info {
                     regs: crate::pac::$instance,
                     prescaler: $prescaler,
-                    width: crate::tim::CounterWidth::$width,
                     channels: $channels,
                 };
 
@@ -181,6 +278,7 @@ macro_rules! impl_tim_instance {
 
         impl crate::tim::Instance for crate::peripherals::$instance {
             type Interrupt = crate::interrupt::typelevel::$instance;
+            type Word = $word;
         }
     };
 }
