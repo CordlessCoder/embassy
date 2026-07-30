@@ -225,7 +225,6 @@ impl PowerDomain {
         // Modes" sections.
         // STANDBY0 clocks all PD0 peripherals from LFCLK; STANDBY1 does not.
         const STOP_HZ: u32 = 4_000_000;
-        const LFCLK_HZ: u32 = 32_768;
 
         match self {
             // Disabled by SYSCTL on entry to any deep-sleep mode, whatever it is clocked at.
@@ -415,6 +414,12 @@ pub const ULPCLK_HZ: u32 = if MCLK_HZ < MAX_ULPCLK_HZ {
 } else {
     MAX_ULPCLK_HZ
 };
+
+/// Frequency of LFCLK, the only clock that survives STANDBY.
+pub const LFCLK_HZ: u32 = 32_768;
+
+/// Frequency of MFCLK, the middle-frequency clock available down to STOP1.
+pub const MFCLK_HZ: u32 = 4_000_000;
 
 /// Rate an instance sees when it selects the bus clock, which depends on the domain it is in.
 ///
