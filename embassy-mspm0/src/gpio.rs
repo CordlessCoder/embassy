@@ -317,9 +317,6 @@ impl<'d> Flex<'d> {
     /// Wait for the pin to undergo a transition from low to high.
     #[inline]
     pub fn wait_for_rising_edge(&mut self) -> impl Future<Output = ()> {
-        // Per https://tweedegolf.nl/en/blog/235/debloat-your-async-rust
-        //
-        // We match the async pass-through suggestion to reduce async bloat.
         self.wait_inner(Polarity::Rise)
     }
 

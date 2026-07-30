@@ -273,12 +273,6 @@ fn generate_clock_ceilings() -> TokenStream {
     }
 }
 
-/// Check the NVIC priority width the HAL was compiled for against the chip.
-///
-/// The width is a Cargo feature (`embassy-hal-internal/prio-bits-2`), so it cannot be selected from
-/// metadata. Every MSPM0 has two bits, and this fails the build rather than silently mis-encoding
-/// priorities if a part ever turns up that does not. Note the SVDs claim three and are wrong; the
-/// metadata takes the CMSIS header's value.
 /// Check that the RAM the linker places `.data`/`.bss` in survives deep sleep.
 ///
 /// `sleep()` says nothing about memory because there is nothing to say: SRAM comes back intact from
@@ -302,6 +296,10 @@ fn check_sram_retention() {
     );
 }
 
+/// Check the NVIC priority width the HAL was compiled for against the chip.
+///
+/// The width is a Cargo feature (`embassy-hal-internal/prio-bits-2`), so it cannot be selected from
+/// metadata.
 fn check_nvic_priority_bits() {
     const HAL_PRIO_BITS: u8 = 2;
 
@@ -569,10 +567,8 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
         _ => panic!("unknown time_driver {:?}", time_driver),
     };
 
-    // A timer that stops in a deep-sleep mode can still back the time driver: it holds a `WakeGuard` for
-    // the life of the program, forbidding the modes it would not survive. That is a real trade rather than
-    // an error, so warn instead of failing — but do warn, because losing deep sleep entirely is easy to do
-    // by accident and hard to notice. `allow-time-driver-sleep-floor` is the opt-out for having read this.
+    // Using a timer that doens't work in STANDBY locks the application out of deep-sleep the timer
+    // won't survive. The power consumption increase is easy to miss, so warn about it.
     let allow_sleep_floor = env::var_os("CARGO_FEATURE_ALLOW_TIME_DRIVER_SLEEP_FLOOR").is_some();
 
     if low_power && !allow_sleep_floor && !selected_timer.is_empty() && !clocked_in_standby1(selected_timer) {
@@ -584,9 +580,9 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
             .join(", ");
 
         println!(
-            "cargo:warning={selected_timer} on {chip} is not clocked in STANDBY1, so the time driver will \
-             hold a sleep guard forever and the deepest modes it cannot survive become unreachable. For \
-             full sleep depth use one of: {usable} (or `time-driver-any`, which prefers one). To keep this \
+            "cargo:warning={selected_timer} on {chip} is not active in STANDBY1, so the time driver will \
+             prevent deep-sleep that would lose the timer. For full sleep depth use one of: {usable} \
+             (or `time-driver-any`, which selects a one available in STANDBY1). To keep this \
              timer and silence this warning, enable the `allow-time-driver-sleep-floor` feature.",
             chip = METADATA.name,
         );
@@ -596,25 +592,21 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
         cfgs.enable(format!("time_driver_{}", selected_timer.to_lowercase()));
     }
 
+    let pin_suffixes = ["_CCP", "_FAULT", "_IDX"];
+
     // Apply cfgs to each timer and it's pins
     for singleton in singletons.iter_mut() {
         if singleton.name.starts_with("TIM") {
             // Remove suffixes for pin singletons.
-            let name = if singleton.name.contains("_CCP") {
-                singleton.name.split_once("_CCP").unwrap().0
-            } else if singleton.name.contains("_FAULT") {
-                singleton.name.split_once("_FAULT").unwrap().0
-            } else if singleton.name.contains("_IDX") {
-                singleton.name.split_once("_IDX").unwrap().0
-            } else {
-                &singleton.name
-            };
+            let name = pin_suffixes
+                .into_iter()
+                .filter_map(|suffix| singleton.name.strip_suffix(suffix))
+                .next()
+                .unwrap_or(&singleton.name);
 
             let feature = format!("time-driver-{}", name.to_lowercase());
 
             if singleton.name.contains(selected_timer) {
-                // Either way of selecting this timer takes it: `all` here left the auto-selected timer
-                // in `Peripherals`, so a driver could be built on it and silently reset the time driver.
                 singleton.cfg = Some(quote! { #[cfg(not(any(feature = "time-driver-any", feature = #feature)))] });
             } else {
                 singleton.cfg = Some(quote! { #[cfg(not(feature = #feature))] });
@@ -802,8 +794,6 @@ fn power_domain_ident(domain: &PowerDomain) -> Ident {
 }
 
 fn power_mode_tokens(mode: Option<PowerMode>) -> TokenStream {
-    // Written out rather than interpolating the `Option`: `quote` emits nothing at all for `None`,
-    // which would silently produce a struct literal with a missing field value.
     match mode {
         None => quote! { None },
         Some(mode) => {
@@ -830,9 +820,6 @@ fn optional_bool_tokens(value: Option<bool>) -> TokenStream {
 }
 
 /// Implement `LowPowerInstance` for every peripheral singleton.
-///
-/// Driven off the singleton list rather than the metadata so it cannot emit an impl for a type
-/// `get_singletons` decided not to create.
 fn generate_low_power(singletons: &[Singleton]) -> TokenStream {
     let impls = singletons.iter().filter_map(|singleton| {
         let name = singleton.name.as_str();
@@ -978,8 +965,7 @@ fn select_gpio_features(cfgs: &mut CfgSet) {
     ]);
 
     // A GPIO port either owns an NVIC line or shares an interrupt group, and `gpio.rs` needs a
-    // different handler for each. Ask the port which interrupt is its own instead of matching port
-    // names against the flat interrupt and group lists.
+    // different handler for each.
     for peripheral in METADATA.peripherals.iter().filter(|p| p.kind == "gpio") {
         let Some(interrupt) = peripheral.interrupt else {
             continue;

@@ -64,9 +64,6 @@ impl SleepLevel {
 ///
 /// Coarser than [`SleepLevel`]: this is the granularity the datasheets describe peripherals at, so
 /// `Stop` covers STOP0/1/2 and `Standby` covers both STANDBY0 and STANDBY1.
-///
-/// The ordering is what makes the [`SleepInfo`] fields comparable — something retained through
-/// [`PowerMode::Standby`] is retained in every shallower mode too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PowerMode {
@@ -381,14 +378,9 @@ impl Drop for WakeGuard {
 }
 
 /// Highest frequency MCLK may run at on this chip.
-///
-/// A ceiling, not the rate the chip runs at: G-series reaches it only through the PLL. See [`MCLK_HZ`].
 pub const MAX_MCLK_HZ: u32 = crate::_generated::MAX_MCLK_HZ;
 
 /// Highest frequency ULPCLK may run at on this chip, in RUN and SLEEP.
-///
-/// Lower than [`MAX_MCLK_HZ`] on G-series. Deep sleep throttles ULPCLK far below this — 4 MHz in STOP
-/// and 32 kHz in STANDBY, on every family — which is what [`PowerDomain::floor_to_keep_running`] uses.
 pub const MAX_ULPCLK_HZ: u32 = crate::_generated::MAX_ULPCLK_HZ;
 
 /// Rate SYSOSC comes up at, where the chip's ceiling does not cap it lower.
@@ -409,6 +401,7 @@ pub const MCLK_HZ: u32 = if MAX_MCLK_HZ < SYSOSC_BOOT_HZ {
 ///
 /// ULPCLK follows MCLK, capped at its own lower ceiling. Equal to [`MCLK_HZ`] on every family today,
 /// and lower as soon as G-series MCLK can be raised past 40 MHz.
+// TODO: Compute this once the MCLK rate can be adjusted.
 pub const ULPCLK_HZ: u32 = if MCLK_HZ < MAX_ULPCLK_HZ {
     MCLK_HZ
 } else {

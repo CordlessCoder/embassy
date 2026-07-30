@@ -1111,7 +1111,7 @@ pub(crate) trait SealedInstance {
 
 macro_rules! impl_i2c_instance {
     ($instance: ident, $fifo_size: expr) => {
-        // `Config::source_hz` reads `BusClk` as ULPCLK on the strength of this.
+        // `Config::source_hz` can assume `BusClk` is ULPCLK because of this
         const _: () = core::assert!(
             matches!(
                 <crate::peripherals::$instance as crate::sysctl::LowPowerInstance>::SLEEP.power_domain,

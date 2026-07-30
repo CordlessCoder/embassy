@@ -278,12 +278,8 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
     }
 
     /// Shallowest sleep level to block while a conversion is in flight.
-    ///
-    /// The datasheets mark the ADC usable only down to SLEEP, and idling into a deep sleep partway
-    /// through a conversion also leaves the following wake unreliable. Only the `async` reads need
-    /// this; the blocking ones busy-poll, so the executor never idles.
     fn conversion_guard() -> Option<WakeGuard> {
-        // The sample clock is SYSOSC, which is what MCLK runs from until the clock tree is configurable.
+        // TODO: The sample clock is SYSOSC, which is what MCLK runs from until the clock tree is configurable.
         <T as crate::sysctl::LowPowerInstance>::SLEEP
             .floor_for_operation(crate::sysctl::MCLK_HZ)
             .map(WakeGuard::new)
@@ -295,9 +291,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         let r = T::info().regs;
         let channel = channel.reborrow_adc();
 
-        // Wait until ADC is not converting to start.
-        //
-        // This is needed a future which started sampling could have been dropped half way through.
+        // Wait until ADC is not converting to start - an active conversion might've been cancelled.
         Self::wait_for_conversion().await;
         Self::setup_sequence([(channel.get_hw_channel(), conversion)].into_iter());
 
@@ -342,8 +336,6 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         let r = T::info().regs;
 
         // Wait until ADC is not converting to start.
-        //
-        // This is needed a future which started sampling could have been dropped half way through.
         Self::wait_for_conversion().await;
         Self::setup_sequence(sequence.map(|(ch, conv)| (ch.get_hw_channel(), conv)));
 
