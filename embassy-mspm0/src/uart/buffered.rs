@@ -235,6 +235,14 @@ impl<'d> BufferedUartRx<'d> {
         super::set_baudrate(&self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
     }
 
+    /// Floor to hold while armed for receive-wake, or the plain operating floor otherwise.
+    ///
+    /// Capping at STANDBY0 is required, not a tuning choice. `UART_ERR_01` (every family this driver
+    /// builds for) loses a frame that starts while the device is on its way back down to STANDBY1 after
+    /// servicing an earlier one, and TI's workaround is "use STANDBY0 mode or higher low power mode when
+    /// expecting repeated UART start conditions" — which is exactly this case. STANDBY0 is also the only
+    /// depth fast enough to catch the first bits, since the fast clock request needs 241 us typical from
+    /// STANDBY1.
     fn rx_wake_guard(&self, low_power_rx_wake: bool) -> Option<WakeGuard> {
         if low_power_rx_wake {
             Some(WakeGuard::new(SleepLevel::Standby1))
@@ -358,11 +366,12 @@ impl<'d> BufferedUartTx<'d> {
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
         let state = self.state;
 
-        loop {
-            if state.tx_buf.is_empty() {
-                return Ok(());
-            }
-        }
+        // An empty ring only means the interrupt handed everything to the hardware. The FIFO and shift
+        // register still have to drain, and deep sleep entered before they do cuts the frame mid-byte.
+        while !state.tx_buf.is_empty() {}
+        while super::busy(self.info.regs) {}
+
+        Ok(())
     }
 
     /// Check if UART is busy.
@@ -925,7 +934,10 @@ impl<'d> BufferedUartTx<'d> {
         poll_fn(move |cx| {
             let state = self.state;
 
-            if !state.tx_buf.is_empty() {
+            // The ring empties as soon as the interrupt moves the last byte into the hardware FIFO, so
+            // the hardware has to be checked too. The end-of-transmission interrupt re-polls this once
+            // it drains, which is why waiting here does not need to spin.
+            if !state.tx_buf.is_empty() || super::busy(self.info.regs) {
                 state.tx_waker.register(cx.waker());
                 return Poll::Pending;
             }

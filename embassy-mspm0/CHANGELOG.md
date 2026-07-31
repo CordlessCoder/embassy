@@ -28,3 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: Flush the I2C controller FIFOs on the NACK/error paths, to prevent stale data
 - fix: Only block deep sleep for PD1 drivers that actually lose their configuration, not for all of them
 - fix: Hold a sleep guard across a software-triggered DMA transfer, which deep sleep would otherwise cut
+- fix: mspm0/sysctl: only block deep sleep for PD1 drivers that actually lose their configuration, not for all of them
+- fix: mspm0/dma: hold a sleep guard across a software-triggered transfer, which deep sleep would otherwise cut
+- fix: mspm0/uart: `UartTx::blocking_flush` waited on an inverted condition and returned while the transmitter was still busy
+- fix: mspm0/uart: `BufferedUartTx`'s blocking and async flush returned once the software buffer drained, before the hardware had sent it
+- fix: mspm0/uart: apply the `UART_ERR_08` workaround on every affected family, not just three of the seven
+- fix: mspm0/uart: avoid 3x oversampling on BUSCLK/MFCLK for L122x/L222x, per `UART_ERR_03`

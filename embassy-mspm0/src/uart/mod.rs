@@ -426,12 +426,13 @@ impl<'d, M: Mode> UartTx<'d, M> {
         Ok(())
     }
 
-    /// Block until transmission complete
+    /// Block until transmission completes.
+    ///
+    /// [`Self::blocking_write`] returns as soon as the last byte is queued, so deep sleep entered before
+    /// this returns cuts the transmission mid-byte. On the families affected by `UART_ERR_08` this can
+    /// only wait for the FIFO to drain, leaving the byte in the shift register still going.
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
-        let r = self.info.regs;
-
-        // Wait until TX fifo/buffer is empty
-        while r.stat().read().txfe() {}
+        while busy(self.info.regs) {}
         Ok(())
     }
 
@@ -598,7 +599,9 @@ pub trait RtsPin<T: Instance>: crate::gpio::Pin {
 /// Let this instance raise an asynchronous fast clock request.
 ///
 /// Two masks can suppress it: the instance's own `CLKCFG.BLOCKASYNC`, and `SYSOSCCFG.BLOCKASYNCALL`
-/// for every peripheral at once.
+/// for every peripheral at once. Both reset to "not blocked" and nothing here ever sets them, which is
+/// what keeps `UART_ERR_04` — a bit misread when ULPCLK drops from SYSOSC to LFOSC mid-receive with the
+/// request disabled — out of reach. Anything gaining the ability to block them has to account for it.
 fn arm_async_clock_request(info: &Info) {
     // `Some(false)` means the instance has no mask of its own and is gated only by `BLOCKASYNCALL`.
     // `None` means no SVD is published for the family, so leave the register alone rather than guess
@@ -861,6 +864,11 @@ fn configure(
         // TODO: Need power domain info for other options.
         w.set_txiflsel(vals::Iflssel::AtLeastOne);
         w.set_rxiflsel(vals::Iflssel::AtLeastOne);
+        // `RXTOSEL` is left at its reset value of 0, which disables the receive timeout entirely, so the
+        // `RTOUT` interrupt the buffered driver unmasks can never fire.
+        //
+        // TODO: Implement a blocking receive timeout, which is what `RXTOSEL` and `RTOUT` are for. The
+        // value has to be above 1: `UART_ERR_11` starts the counter mid-STOP-bit, so 1 fires early.
     });
 
     info.regs.lcrh().modify(|w| {
@@ -980,7 +988,17 @@ fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), Confi
         let ctl0 = regs.ctl0().read();
         let irctl = regs.irctl().read();
 
-        ctl0.menc() || matches!(ctl0.mode(), vals::Mode::Dali) || irctl.iren()
+        // `UART_ERR_03` (L122x/L222x) — 3x oversampling sourced from BUSCLK or MFCLK sets RXINT
+        // erroneously and can corrupt transmitted data. TI's workaround is to oversample higher, or to
+        // use LFCLK where 3x is required, so drop 3x and let the search fall back.
+        let errata_x3 = if cfg!(any(mspm0l122x, mspm0l222x)) {
+            let clksel = regs.clksel().read();
+            clksel.busclk_sel() || clksel.mfclk_sel()
+        } else {
+            false
+        };
+
+        ctl0.menc() || matches!(ctl0.mode(), vals::Mode::Dali) || irctl.iren() || errata_x3
     };
     let mut found = None;
 
@@ -1122,9 +1140,25 @@ fn read_with_error(r: Regs) -> Result<u8, Error> {
 
 /// This function assumes CTL0.ENABLE is set (for errata cases).
 fn busy(r: Regs) -> bool {
-    // Errata UART_ERR_08
+    // `UART_ERR_08` — `STAT.BUSY` stays high even with the module disabled and data in the TX FIFO, so
+    // polling it never finishes. Affects L110x/L13xx, L122x/L222x, G1x0x/G3x0x, G151x/G351x,
+    // H3215/H3216, C1103/C1104 and C1105/C1106 — every family this crate builds for except G511x/G5187,
+    // whose UNICOMM UART is a different module.
     if cfg!(any(
-        mspm0g151x, mspm0g351x, mspm0l110x, mspm0l130x, mspm0l134x, mspm0c110x,
+        mspm0g110x,
+        mspm0g150x,
+        mspm0g310x,
+        mspm0g350x,
+        mspm0g151x,
+        mspm0g351x,
+        mspm0h321x,
+        mspm0l110x,
+        mspm0l130x,
+        mspm0l134x,
+        mspm0l122x,
+        mspm0l222x,
+        mspm0c110x,
+        mspm0c1105_c1106,
     )) {
         let stat = r.stat().read();
         // "Poll TXFIFO status and the CTL0.ENABLE register bit to identify BUSY status."
