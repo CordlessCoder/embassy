@@ -26,3 +26,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: feature guard pins used for NRST and SWD (#5257)
 - feat: Move from GPIO waker arrays to maitake-sync wait map
 - fix: Flush the I2C controller FIFOs on the NACK/error paths, to prevent stale data
+- fix: Only block deep sleep for PD1 drivers that actually lose their configuration, not for all of them

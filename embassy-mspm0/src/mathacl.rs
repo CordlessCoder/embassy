@@ -38,7 +38,7 @@ pub struct Mathacl<'d> {
     /// Held for as long as the driver exists; see
     /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
     ///
-    /// MATHACL is in PD1, so deep sleep powers it down and it comes back needing to be enabled again.
+    /// MATHACL keeps its configuration no deeper than SLEEP, so deep sleep would discard it.
     _retention_guard: Option<WakeGuard>,
     _phantom: PhantomData<&'d mut ()>,
 }

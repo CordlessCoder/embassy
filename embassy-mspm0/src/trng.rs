@@ -287,9 +287,9 @@ struct TrngInner<'d> {
     /// Held for as long as the driver exists; see
     /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
     ///
-    /// The TRNG is in PD1, so deep sleep disables it and — per the L-series TRM 13.2.3 — discards its
-    /// configuration entirely. Dropping this in exchange for re-running `init()` on wake is the
-    /// follow-up that would let a program with a TRNG still reach STANDBY.
+    /// Deep sleep discards the TRNG's configuration entirely (L-series TRM 13.2.3). Dropping this in
+    /// exchange for re-running `init()` on wake is the follow-up that would let a program with a TRNG
+    /// still reach STANDBY.
     _retention_guard: Option<WakeGuard>,
     _phantom: PhantomData<&'d ()>,
 }

@@ -613,7 +613,7 @@ fn arm_async_clock_request(info: &Info) {
     crate::pac::SYSCTL.sysosccfg().modify(|w| w.set_blockasyncall(false));
 }
 
-/// Guard keeping a PD1 instance set up, held for the driver's lifetime.
+/// Guard keeping the instance's configuration intact, held for the driver's lifetime.
 pub(crate) fn retention_guard(info: &'static Info) -> Option<WakeGuard> {
     info.sleep.floor_to_keep_configured().map(WakeGuard::new)
 }

@@ -87,9 +87,6 @@ pub struct SleepInfo {
 
     /// Deepest mode through which the instance keeps its configuration registers, or `None` outside
     /// [`PowerDomain::Pd1`], where nothing disables it.
-    ///
-    /// Even `Standby` leaves the instance disabled on wake; this says only how much of the rest of the
-    /// configuration survived with it.
     pub retained_through: Option<PowerMode>,
 
     /// Deepest mode the datasheet says the instance may be *used* in.
@@ -137,15 +134,19 @@ impl SleepInfo {
         )
     }
 
-    /// Shallowest level to block so the instance is still set up and enabled on the other side, or
-    /// `None` if deep sleep leaves it alone.
+    /// Shallowest level to block so the instance is still set up on the other side, or `None` if deep
+    /// sleep leaves its configuration intact.
     ///
-    /// Keyed on the power domain, not [`Self::retained_through`]: SYSCTL disables every PD1 peripheral
-    /// on deep-sleep entry whether its configuration survived or not.
+    /// Being in PD1 is not on its own a reason to block: SYSCTL disables those peripherals on entry but
+    /// re-enables them on exit, so only losing the configuration registers needs anything done about it.
     pub const fn floor_to_keep_configured(&self) -> Option<SleepLevel> {
-        match self.power_domain {
-            PowerDomain::Pd1 => Some(SleepLevel::Stop0),
-            PowerDomain::Pd0 | PowerDomain::Backup => None,
+        match self.retained_through {
+            // Retained through STANDBY, or in a domain where nothing disables it.
+            Some(PowerMode::Standby | PowerMode::Shutdown) | None => None,
+            // Retained through STOP but not STANDBY.
+            Some(PowerMode::Stop) => Some(SleepLevel::Standby0),
+            // Not retained by any deep-sleep mode.
+            Some(PowerMode::Run | PowerMode::Sleep) => Some(SleepLevel::Stop0),
         }
     }
 }
@@ -275,6 +276,34 @@ const _: () = {
     core::assert!(matches!(
         usable(Some(PowerMode::Standby)).floor_for_operation(32_000_000),
         Some(Stop0)
+    ));
+
+    const fn retained(domain: PowerDomain, mode: Option<PowerMode>) -> SleepInfo {
+        SleepInfo {
+            power_domain: domain,
+            retained_through: mode,
+            usable_through: None,
+            block_async: None,
+            clocked_in_standby1: None,
+        }
+    }
+
+    // Being in PD1 costs nothing by itself, only losing the configuration does.
+    core::assert!(matches!(
+        retained(PowerDomain::Pd1, Some(PowerMode::Standby)).floor_to_keep_configured(),
+        None
+    ));
+    core::assert!(matches!(
+        retained(PowerDomain::Pd1, Some(PowerMode::Stop)).floor_to_keep_configured(),
+        Some(Standby0)
+    ));
+    core::assert!(matches!(
+        retained(PowerDomain::Pd1, Some(PowerMode::Sleep)).floor_to_keep_configured(),
+        Some(Stop0)
+    ));
+    core::assert!(matches!(
+        retained(PowerDomain::Pd0, None).floor_to_keep_configured(),
+        None
     ));
 };
 
