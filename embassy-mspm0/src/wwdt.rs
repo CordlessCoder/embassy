@@ -24,7 +24,6 @@ pub enum Timeout {
     USec15630,
     USec23440,
     USec31250,
-    USec32250,
     USec39060,
     USec46880,
     USec54690,
@@ -74,7 +73,29 @@ pub enum Timeout {
 }
 
 impl Timeout {
-    fn get_period(self) -> vals::Per {
+    /// How long the watchdog runs before it expires.
+    pub const fn period_micros(self) -> u64 {
+        // The counter is clocked from LFCLK, divided by `clkdiv + 1`, and expires after 2^exp ticks.
+        let exp = self.get_period_exponent() as u64;
+        let divider = self.get_clkdiv() as u64 + 1;
+
+        (1 << exp) * divider * 1_000_000 / crate::sysctl::LFCLK_HZ as u64
+    }
+
+    const fn get_period_exponent(self) -> u8 {
+        match self.get_period() {
+            vals::Per::En6 => 6,
+            vals::Per::En8 => 8,
+            vals::Per::En10 => 10,
+            vals::Per::En12 => 12,
+            vals::Per::En15 => 15,
+            vals::Per::En18 => 18,
+            vals::Per::En21 => 21,
+            vals::Per::En25 => 25,
+        }
+    }
+
+    const fn get_period(self) -> vals::Per {
         match self {
             //  period count is 2**25
             Self::Sec1024
@@ -120,7 +141,6 @@ impl Timeout {
             Self::USec7810
             | Self::USec15630
             | Self::USec23440
-            | Self::USec32250
             | Self::USec39060
             | Self::USec46880
             | Self::USec54690 => vals::Per::En8,
@@ -131,7 +151,7 @@ impl Timeout {
         }
     }
 
-    fn get_clkdiv(self) -> u8 {
+    const fn get_clkdiv(self) -> u8 {
         match self {
             //  divide by 1
             Self::USec1950
@@ -161,13 +181,7 @@ impl Timeout {
             | Self::Sec192
             | Self::Sec3072 => 2u8,
             //  divide by 4
-            Self::USec32250
-            | Self::USec125000
-            | Self::MSec500
-            | Self::Sec4
-            | Self::Sec32
-            | Self::Sec256
-            | Self::Sec4096 => 3u8,
+            Self::USec125000 | Self::MSec500 | Self::Sec4 | Self::Sec32 | Self::Sec256 | Self::Sec4096 => 3u8,
             //  divide by 5
             Self::USec9770
             | Self::USec39060
@@ -224,7 +238,21 @@ pub enum ClosedWindowPercentage {
 }
 
 impl ClosedWindowPercentage {
-    fn get_native_size(self) -> vals::Window {
+    /// The closed part of the period, in sixteenths. Every percentage the hardware offers is one.
+    const fn sixteenths(self) -> u64 {
+        match self {
+            Self::Zero => 0,
+            Self::Twelve => 2,
+            Self::Eighteen => 3,
+            Self::TwentyFive => 4,
+            Self::Fifty => 8,
+            Self::SeventyFive => 12,
+            Self::EightyOne => 13,
+            Self::EightySeven => 14,
+        }
+    }
+
+    const fn get_native_size(self) -> vals::Window {
         match self {
             Self::Zero => vals::Window::Size0,
             Self::Twelve => vals::Window::Size12,
@@ -238,6 +266,28 @@ impl ClosedWindowPercentage {
     }
 }
 
+// Boundary checks for `period_micros` and `pet_interval_micros`. `crate::fmt` cannot be used in const.
+const _: () = {
+    // Shortest and longest the hardware offers, either end of the divider and period ranges.
+    core::assert!(Timeout::USec1950.period_micros() == 1_953);
+    core::assert!(Timeout::Sec8192.period_micros() == 8_192_000_000);
+    core::assert!(Timeout::Sec1.period_micros() == 1_000_000);
+
+    const fn interval(closed: ClosedWindowPercentage) -> u64 {
+        Config {
+            timeout: Timeout::Sec1,
+            closed_window: closed,
+            stop_in_sleep: false,
+        }
+        .pet_interval_micros()
+    }
+
+    // With no closed window, pet halfway; otherwise halfway between the window and the timeout.
+    core::assert!(interval(ClosedWindowPercentage::Zero) == 500_000);
+    core::assert!(interval(ClosedWindowPercentage::TwentyFive) == 625_000);
+    core::assert!(interval(ClosedWindowPercentage::EightySeven) == 937_500);
+};
+
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Watchdog Config
@@ -247,6 +297,21 @@ pub struct Config {
 
     /// closed window percentage
     pub closed_window: ClosedWindowPercentage,
+
+    /// Stop counting while the CPU is asleep, resuming from the same count on wake.
+    ///
+    /// Left counting, the watchdog resets a device that sleeps past [`Self::timeout`], which is
+    /// usually desirable
+    pub stop_in_sleep: bool,
+}
+
+impl Config {
+    /// How long to wait after a pet before petting again, the middle of the open window.
+    pub const fn pet_interval_micros(&self) -> u64 {
+        let closed = self.closed_window.sixteenths();
+
+        self.timeout.period_micros() * (16 + closed) / 32
+    }
 }
 
 impl Default for Config {
@@ -254,12 +319,15 @@ impl Default for Config {
         Self {
             timeout: Timeout::Sec1,
             closed_window: ClosedWindowPercentage::Zero,
+            // The hardware default, and the only one that still guards a sleeping device.
+            stop_in_sleep: false,
         }
     }
 }
 
 pub struct Watchdog {
     regs: &'static Regs,
+    config: Config,
 }
 
 impl Watchdog {
@@ -302,6 +370,11 @@ impl Watchdog {
             w.set_mode(vals::Mode::Window);
             w.set_window0(config.closed_window.get_native_size());
             w.set_window1(vals::Window::Size0);
+            w.set_stism(if config.stop_in_sleep {
+                vals::Stism::Stop
+            } else {
+                vals::Stism::Cont
+            });
             w.set_key(vals::Wwdtctl0Key::Key);
         });
 
@@ -311,7 +384,15 @@ impl Watchdog {
             w.set_key(vals::Wwdtctl1Key::Key);
         });
 
-        Self { regs: T::regs() }
+        Self {
+            regs: T::regs(),
+            config,
+        }
+    }
+
+    /// The configuration this watchdog was started with.
+    pub fn config(&self) -> Config {
+        self.config
     }
 
     /// Pet (reload, refresh) the watchdog.
@@ -319,6 +400,26 @@ impl Watchdog {
         self.regs.wwdtcntrst().write(|w| {
             w.set_restart(vals::WwdtcntrstRestart::Restart);
         });
+    }
+
+    /// How long [`Self::run`] waits between pets, the middle of the open window.
+    #[cfg(feature = "time")]
+    pub fn pet_interval(&self) -> embassy_time::Duration {
+        embassy_time::Duration::from_micros(self.config.pet_interval_micros())
+    }
+
+    /// Pet the watchdog forever, at [`Self::pet_interval`].
+    ///
+    /// Meant to be spawned as its own task. Nothing else may pet the watchdog while this runs, since
+    /// petting during the closed window is itself a fault.
+    #[cfg(feature = "time")]
+    pub async fn run(mut self) -> ! {
+        let interval = self.pet_interval();
+
+        loop {
+            embassy_time::Timer::after(interval).await;
+            self.pet();
+        }
     }
 }
 
