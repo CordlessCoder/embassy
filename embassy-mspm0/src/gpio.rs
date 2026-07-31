@@ -360,15 +360,31 @@ impl<'d> Flex<'d> {
     }
 }
 
-/// Which edge a task is waiting for.
+/// Whether `GPIO_ERR_01` applies, which forces both directions to be detected.
 ///
-/// Never reaches `POLARITY`, which is always [`Polarity::RiseFall`]: a pin has one status bit and it
-/// does not record direction, so [`irq_handler`] classifies each edge against [`EdgeRequest`] instead.
+/// Its case 2 loses every STANDBY1 wake after the first unless the pin detects both edges, so where it
+/// applies the direction is filtered in software instead. Only L110x/L13xx and G1x0x/G3x0x are
+/// affected.
+const DETECT_BOTH_EDGES: bool = cfg!(any(
+    mspm0l110x, mspm0l130x, mspm0l134x, mspm0g110x, mspm0g150x, mspm0g310x, mspm0g350x,
+));
+
+/// Which edge a task is waiting for.
 #[derive(Clone, Copy)]
 enum Edge {
     Rising,
     Falling,
     Any,
+}
+
+impl Edge {
+    fn polarity(self) -> Polarity {
+        match self {
+            Edge::Rising => Polarity::Rise,
+            Edge::Falling => Polarity::Fall,
+            Edge::Any => Polarity::RiseFall,
+        }
+    }
 }
 
 /// Holds a pin's edge detection armed for one wait, and disarms it however the wait ends.
@@ -382,16 +398,21 @@ impl EdgeArm {
     fn new(block: gpio::Gpio, pin_port: u8, edge: Edge) -> Self {
         let bit = usize::from(pin_port % 32);
 
-        // Both directions whatever the caller asked for, which is `GPIO_ERR_01` case 2's workaround.
+        let polarity = if DETECT_BOTH_EDGES {
+            Polarity::RiseFall
+        } else {
+            edge.polarity()
+        };
+
         // A RMW operation, hence the critical section.
         critical_section::with(|_cs| {
             if bit >= 16 {
                 block.polarity31_16().modify(|w| {
-                    w.set_dio(bit - 16, Polarity::RiseFall);
+                    w.set_dio(bit - 16, polarity);
                 });
             } else {
                 block.polarity15_0().modify(|w| {
-                    w.set_dio(bit, Polarity::RiseFall);
+                    w.set_dio(bit, polarity);
                 });
             };
         });
@@ -441,8 +462,8 @@ impl Drop for EdgeArm {
 
 /// One pin's standing request for an edge, which [`irq_handler`] answers by withdrawing it.
 ///
-/// Withdrawal is deliberately the completion signal rather than the status bit: the status bit says
-/// nothing about direction, and is set by edges the waiting task did not ask for.
+/// Withdrawal is deliberately the completion signal rather than the status bit, which says nothing
+/// about direction and, under [`DETECT_BOTH_EDGES`], is set by edges the task did not ask for.
 struct EdgeRequest {
     rise: &'static AtomicU32,
     fall: &'static AtomicU32,
@@ -1250,8 +1271,9 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
         });
 
         // An edge the other way leaves the request standing, so the wait continues without the task
-        // ever being woken.
-        if !request.accepts(level.dio(bit)) {
+        // ever being woken. Skipped where `POLARITY` did the filtering, since the level can have moved
+        // on since the edge and would only be a chance to classify it wrongly.
+        if DETECT_BOTH_EDGES && !request.accepts(level.dio(bit)) {
             continue;
         }
 
