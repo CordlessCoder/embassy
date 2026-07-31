@@ -18,6 +18,7 @@ use mspm0_metapac::dma::regs;
 use mspm0_metapac::dma::vals::{self, Autoen, Em, Incr, Preirq, Wdth};
 
 use crate::interrupt::typelevel::{Handler, Interrupt};
+use crate::sysctl::{SleepLevel, WakeGuard};
 use crate::{Peri, interrupt, pac};
 
 /// DMA interrupt handler.
@@ -53,6 +54,7 @@ pub enum BurstSize {
 /// Basic DMA channel driver.
 pub struct Channel<'d> {
     id: u8,
+    sw_wake_floor: Option<SleepLevel>,
     _marker: PhantomData<&'d ()>,
 }
 
@@ -64,6 +66,7 @@ impl<'d> Channel<'d> {
     ) -> Self {
         Self {
             id: T::ID,
+            sw_wake_floor: <T as crate::sysctl::LowPowerInstance>::SLEEP.floor_for_operation(crate::sysctl::MCLK_HZ),
             _marker: PhantomData,
         }
     }
@@ -72,8 +75,22 @@ impl<'d> Channel<'d> {
     pub fn reborrow(&mut self) -> Channel<'_> {
         Channel {
             id: self.id,
+            sw_wake_floor: self.sw_wake_floor,
             _marker: PhantomData,
         }
+    }
+
+    /// Floor to hold for a transfer that nothing else keeps the DMA clocked through.
+    ///
+    /// A hardware trigger reaches the event manager, which suspends STOP or STANDBY for as long as the
+    /// transfer needs (TRM, "Suspended Low-Power Mode Operation"). A software request never reaches it,
+    /// so deep sleep would cut the transfer until something unrelated woke the device.
+    fn transfer_guard(&self, trigger_source: u8) -> Option<WakeGuard> {
+        if trigger_source != Transfer::SOFTWARE_TRIGGER {
+            return None;
+        }
+
+        self.sw_wake_floor.map(WakeGuard::new)
     }
 
     /// Create a new read DMA transfer.
@@ -97,8 +114,10 @@ impl<'d> Channel<'d> {
     ) -> Result<Transfer<'a>, Error> {
         verify_transfer::<DW>(dst)?;
 
+        let wake_guard = self.transfer_guard(trigger_source);
         let transfer = Transfer {
             channel: self.reborrow(),
+            wake_guard,
         };
         transfer.channel.configure(
             trigger_source,
@@ -137,8 +156,10 @@ impl<'d> Channel<'d> {
     ) -> Result<Transfer<'a>, Error> {
         verify_transfer::<SW>(src)?;
 
+        let wake_guard = self.transfer_guard(trigger_source);
         let transfer = Transfer {
             channel: self.reborrow(),
+            wake_guard,
         };
         transfer.channel.configure(
             trigger_source,
@@ -185,7 +206,7 @@ impl<'d> FullChannel<'d> {
 
 /// DMA channel instance.
 #[allow(private_bounds)]
-pub trait ChannelInstance: SealedChannel + PeripheralType {
+pub trait ChannelInstance: SealedChannel + PeripheralType + crate::sysctl::LowPowerInstance {
     /// Interrupt type for this DMA channel.
     type Interrupt: Interrupt;
 }
@@ -310,6 +331,7 @@ impl Default for TransferOptions {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Transfer<'a> {
     channel: Channel<'a>,
+    wake_guard: Option<WakeGuard>,
 }
 
 impl<'a> Transfer<'a> {
@@ -350,7 +372,9 @@ impl<'a> Transfer<'a> {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
 
-        // Prevent drop from being called since we ran to completion (drop will try to pause).
+        // Prevent drop from being called since we ran to completion (drop will try to pause). The wake
+        // guard still has to be released, or it would block deep sleep for the rest of the program.
+        drop(self.wake_guard.take());
         mem::forget(self);
     }
 }

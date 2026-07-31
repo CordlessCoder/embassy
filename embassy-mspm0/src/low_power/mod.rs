@@ -116,9 +116,10 @@ fn deepest_allowed() -> Option<SleepLevel> {
 /// # Safety
 /// Must be called from thread mode. `WFI` in a handler is only woken by an interrupt of *higher*
 /// priority than the one running, so sleeping inside the lowest-priority handler never returns.
-/// Deep sleep powers down PD1 (and, in STANDBY, most of PD0). Any peripheral transaction that must
-/// survive has to be protected by a [`WakeGuard`](crate::sysctl::WakeGuard) shallow enough to keep it
-/// clocked. Until the drivers hold their own guards, the caller is responsible for this.
+///
+/// Deep sleep powers down PD1 (and, in STANDBY, most of PD0). The drivers hold their own
+/// [`WakeGuard`](crate::sysctl::WakeGuard)s for work that has to survive it; anything driving a
+/// peripheral through the raw `pac` is responsible for its own.
 pub unsafe fn sleep(cs: CriticalSection) {
     trace!("Attempting to enter low-power sleep");
 
