@@ -317,60 +317,35 @@ impl<'d> Flex<'d> {
     /// Wait for the pin to undergo a transition from low to high.
     #[inline]
     pub fn wait_for_rising_edge(&mut self) -> impl Future<Output = ()> {
-        self.wait_inner(Polarity::Rise)
+        self.wait_inner(Edge::Rising)
     }
 
     /// Wait for the pin to undergo a transition from high to low.
     #[inline]
     pub fn wait_for_falling_edge(&mut self) -> impl Future<Output = ()> {
-        self.wait_inner(Polarity::Fall)
+        self.wait_inner(Edge::Falling)
     }
 
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
     #[inline]
     pub fn wait_for_any_edge(&mut self) -> impl Future<Output = ()> {
-        self.wait_inner(Polarity::RiseFall)
+        self.wait_inner(Edge::Any)
     }
 
-    async fn wait_inner(&mut self, polarity: Polarity) {
-        let pin = &self.pin;
-        let block = pin.block();
-        let bit = pin.bit_index();
-        let key = pin.pin_port();
+    async fn wait_inner(&mut self, edge: Edge) {
+        let key = self.pin.pin_port();
+        let arm = EdgeArm::new(self.pin.block(), key, edge);
 
-        // Selecting the event to trigger. A RMW operation.
-        critical_section::with(|_cs| {
-            if bit >= 16 {
-                block.polarity31_16().modify(|w| {
-                    w.set_dio(bit - 16, Polarity::RiseFall);
-                });
-            } else {
-                block.polarity15_0().modify(|w| {
-                    w.set_dio(bit, Polarity::RiseFall);
-                });
-            };
-        });
-
-        let _arm = EdgeArm::new(block, key, polarity);
-
-        // Clear previous edge events. This is done after setting the event to listen for to avoid a redundant write.
-        block.cpu_int().iclr().write(|w| {
-            w.set_dio(bit, true);
-        });
-
-        let (rise, fall, mask) = want_masks(key);
         let result = GPIO_WAIT_MAP
             .wait_for(key, || {
-                if (rise.load(Ordering::Relaxed) | fall.load(Ordering::Relaxed)) & mask == 0 {
+                // A withdrawn request is the interrupt reporting the edge, so this is both the
+                // completion check and, on the first poll, what arms the interrupt. Arming from in
+                // here is what keeps it after the waker is registered.
+                if !arm.request.is_outstanding() {
                     return true;
                 }
 
-                // Because pin singletons are Send, unmasking interrupts must be guarded by critical section.
-                critical_section::with(|_cs| {
-                    block.cpu_int().imask().modify(|w| {
-                        w.set_dio(bit, true);
-                    });
-                });
+                arm.unmask();
 
                 false
             })
@@ -385,45 +360,150 @@ impl<'d> Flex<'d> {
     }
 }
 
+/// Which edge a task is waiting for.
+///
+/// Never reaches `POLARITY`, which is always [`Polarity::RiseFall`]: a pin has one status bit and it
+/// does not record direction, so [`irq_handler`] classifies each edge against [`EdgeRequest`] instead.
+#[derive(Clone, Copy)]
+enum Edge {
+    Rising,
+    Falling,
+    Any,
+}
+
+/// Holds a pin's edge detection armed for one wait, and disarms it however the wait ends.
 struct EdgeArm {
     block: gpio::Gpio,
-    pin_port: u8,
+    bit: usize,
+    request: EdgeRequest,
 }
 
 impl EdgeArm {
-    fn new(block: gpio::Gpio, pin_port: u8, polarity: Polarity) -> Self {
-        let (rise, fall, mask) = want_masks(pin_port);
+    fn new(block: gpio::Gpio, pin_port: u8, edge: Edge) -> Self {
+        let bit = usize::from(pin_port % 32);
 
-        if matches!(polarity, Polarity::Rise | Polarity::RiseFall) {
-            rise.fetch_or(mask, Ordering::Relaxed);
-        }
-        if matches!(polarity, Polarity::Fall | Polarity::RiseFall) {
-            fall.fetch_or(mask, Ordering::Relaxed);
-        }
-
+        // Both directions whatever the caller asked for, which is `GPIO_ERR_01` case 2's workaround.
+        // A RMW operation, hence the critical section.
         critical_section::with(|_cs| {
-            block.fastwake().modify(|w| w.set_din(usize::from(pin_port % 32), true));
+            if bit >= 16 {
+                block.polarity31_16().modify(|w| {
+                    w.set_dio(bit - 16, Polarity::RiseFall);
+                });
+            } else {
+                block.polarity15_0().modify(|w| {
+                    w.set_dio(bit, Polarity::RiseFall);
+                });
+            };
         });
 
-        Self { block, pin_port }
+        // Drop edges from before the wait: after the polarity write, so selecting the event cannot
+        // leave a status bit behind, and before the request, so every later edge is reported.
+        block.cpu_int().iclr().write(|w| {
+            w.set_dio(bit, true);
+        });
+
+        let request = EdgeRequest::new(pin_port);
+        request.publish(edge);
+
+        // Without fast wake the input synchronizer is unclocked in STOP and STANDBY, which loses the
+        // edge rather than delaying it.
+        critical_section::with(|_cs| {
+            block.fastwake().modify(|w| w.set_din(bit, true));
+        });
+
+        Self { block, bit, request }
+    }
+
+    /// Let this pin's interrupt through.
+    fn unmask(&self) {
+        // Because pin singletons are Send, unmasking interrupts must be guarded by critical section.
+        critical_section::with(|_cs| {
+            self.block.cpu_int().imask().modify(|w| {
+                w.set_dio(self.bit, true);
+            });
+        });
     }
 }
 
 impl Drop for EdgeArm {
     fn drop(&mut self) {
-        let (rise, fall, mask) = want_masks(self.pin_port);
-        let bit = usize::from(self.pin_port % 32);
-
         critical_section::with(|_cs| {
-            self.block.fastwake().modify(|w| w.set_din(bit, false));
-            self.block.cpu_int().imask().modify(|w| w.set_dio(bit, false));
+            self.block.fastwake().modify(|w| w.set_din(self.bit, false));
+            self.block.cpu_int().imask().modify(|w| w.set_dio(self.bit, false));
         });
-        self.block.cpu_int().iclr().write(|w| w.set_dio(bit, true));
 
-        rise.fetch_and(!mask, Ordering::Relaxed);
-        fall.fetch_and(!mask, Ordering::Relaxed);
+        // An edge that arrived while masked left this set with nobody to consume it.
+        self.block.cpu_int().iclr().write(|w| w.set_dio(self.bit, true));
+
+        self.request.withdraw();
     }
 }
+
+/// One pin's standing request for an edge, which [`irq_handler`] answers by withdrawing it.
+///
+/// Withdrawal is deliberately the completion signal rather than the status bit: the status bit says
+/// nothing about direction, and is set by edges the waiting task did not ask for.
+struct EdgeRequest {
+    rise: &'static AtomicU32,
+    fall: &'static AtomicU32,
+    mask: u32,
+}
+
+impl EdgeRequest {
+    fn new(pin_port: u8) -> Self {
+        let port = usize::from(pin_port / 32);
+
+        Self {
+            rise: &WANT_RISE[port],
+            fall: &WANT_FALL[port],
+            mask: 1 << (pin_port % 32),
+        }
+    }
+
+    fn publish(&self, edge: Edge) {
+        if matches!(edge, Edge::Rising | Edge::Any) {
+            self.rise.fetch_or(self.mask, Ordering::Relaxed);
+        }
+
+        if matches!(edge, Edge::Falling | Edge::Any) {
+            self.fall.fetch_or(self.mask, Ordering::Relaxed);
+        }
+    }
+
+    fn withdraw(&self) {
+        self.rise.fetch_and(!self.mask, Ordering::Relaxed);
+        self.fall.fetch_and(!self.mask, Ordering::Relaxed);
+    }
+
+    fn is_outstanding(&self) -> bool {
+        (self.rise.load(Ordering::Relaxed) | self.fall.load(Ordering::Relaxed)) & self.mask != 0
+    }
+
+    /// Whether an edge that left the pin reading `level` is one this request asked for.
+    #[cfg(feature = "rt")]
+    fn accepts(&self, level: bool) -> bool {
+        let wanted = if level { self.rise } else { self.fall };
+
+        wanted.load(Ordering::Relaxed) & self.mask != 0
+    }
+}
+
+const PORT_COUNT: usize = if cfg!(gpio_pc) {
+    3
+} else if cfg!(gpio_pb) {
+    2
+} else {
+    1
+};
+
+static WANT_RISE: [AtomicU32; PORT_COUNT] = [const { AtomicU32::new(0) }; PORT_COUNT];
+
+static WANT_FALL: [AtomicU32; PORT_COUNT] = [const { AtomicU32::new(0) }; PORT_COUNT];
+
+/// Wait map for GPIO wakers
+///
+/// This map must **never** be closed because gpio wakers may be used forever.
+static GPIO_WAIT_MAP: WaitMap<u8, ()> = WaitMap::new();
 
 impl<'d> Drop for Flex<'d> {
     #[inline]
@@ -1057,29 +1137,6 @@ macro_rules! impl_pin {
     };
 }
 
-/// Wait map for GPIO wakers
-///
-/// This map must **never** be closed because gpio wakers may be used forever.
-static GPIO_WAIT_MAP: WaitMap<u8, ()> = WaitMap::new();
-
-const PORT_COUNT: usize = if cfg!(gpio_pc) {
-    3
-} else if cfg!(gpio_pb) {
-    2
-} else {
-    1
-};
-
-static WANT_RISE: [AtomicU32; PORT_COUNT] = [const { AtomicU32::new(0) }; PORT_COUNT];
-
-static WANT_FALL: [AtomicU32; PORT_COUNT] = [const { AtomicU32::new(0) }; PORT_COUNT];
-
-fn want_masks(pin_port: u8) -> (&'static AtomicU32, &'static AtomicU32, u32) {
-    let port = usize::from(pin_port / 32);
-
-    (&WANT_RISE[port], &WANT_FALL[port], 1 << (pin_port % 32))
-}
-
 pub(crate) trait SealedPin {
     fn pin_port(&self) -> u8;
 
@@ -1172,36 +1229,40 @@ pub(crate) fn init(gpio: gpio::Gpio) {
     });
 }
 
+/// Classify the edges that have arrived and answer the requests they satisfy.
 #[cfg(feature = "rt")]
 fn irq_handler(gpio: gpio::Gpio, port: Port) {
     use crate::BitIter;
-    // Only consider pins which have interrupts unmasked.
 
-    let bits = gpio.cpu_int().mis().read().0;
+    // Only pins with the interrupt unmasked, which is only pins with a wait armed.
+    let pending = gpio.cpu_int().mis().read().0;
 
+    // One snapshot for all of them: the status bit carries no direction, so the level a pin settled
+    // at is the only thing an edge can be classified by.
     let level = gpio.din31_0().read();
 
-    for i in BitIter(bits) {
-        let id = ((port as u8) * 32) + i as u8;
-        let (rise, fall, mask) = want_masks(id);
+    for bit in BitIter(pending).map(|bit| bit as usize) {
+        let key = (port as u8) * 32 + bit as u8;
+        let request = EdgeRequest::new(key);
 
-        let fired = if level.dio(i as usize) { rise } else { fall };
+        gpio.cpu_int().iclr().write(|w| {
+            w.set_dio(bit, true);
+        });
 
-        if fired.load(Ordering::Relaxed) & mask != 0 {
-            rise.fetch_and(!mask, Ordering::Relaxed);
-            fall.fetch_and(!mask, Ordering::Relaxed);
-
-            let _ = GPIO_WAIT_MAP.wake(&id, ());
-
-            // Notify the future that an edge event has occurred by masking the interrupt for this pin.
-            gpio.cpu_int().imask().modify(|w| {
-                w.set_dio(i as usize, false);
-            });
-        } else {
-            gpio.cpu_int().iclr().write(|w| {
-                w.set_dio(i as usize, true);
-            });
+        // An edge the other way leaves the request standing, so the wait continues without the task
+        // ever being woken.
+        if !request.accepts(level.dio(bit)) {
+            continue;
         }
+
+        request.withdraw();
+        let _ = GPIO_WAIT_MAP.wake(&key, ());
+
+        // Nothing left to report until the task arms the next wait, so keep this pin out of here —
+        // and out of the wake path, in case the device sleeps first.
+        gpio.cpu_int().imask().modify(|w| {
+            w.set_dio(bit, false);
+        });
     }
 }
 
