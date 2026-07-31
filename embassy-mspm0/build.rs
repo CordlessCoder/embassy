@@ -274,11 +274,6 @@ fn generate_clock_ceilings() -> TokenStream {
 }
 
 /// Check that the RAM the linker places `.data`/`.bss` in survives deep sleep.
-///
-/// `sleep()` says nothing about memory because there is nothing to say: SRAM comes back intact from
-/// STOP and STANDBY. That holds for the `RAM` region on every part today. The four G-series parts with
-/// a second bank whose contents are lost past SLEEP keep it out of the default region — `RAM_BANK` is
-/// opt-in in the metapac's own `memory.x` — so this only has to hold for `RAM`.
 fn check_sram_retention() {
     let Some(ram) = METADATA
         .memory

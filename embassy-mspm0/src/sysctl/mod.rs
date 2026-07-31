@@ -62,8 +62,8 @@ impl SleepLevel {
 
 /// An operating mode, ordered from shallowest to deepest.
 ///
-/// Coarser than [`SleepLevel`]: this is the granularity the datasheets describe peripherals at, so
-/// `Stop` covers STOP0/1/2 and `Standby` covers both STANDBY0 and STANDBY1.
+/// Coarser than [`SleepLevel`], being the granularity the datasheets use: `Stop` covers STOP0/1/2 and
+/// `Standby` both STANDBY modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PowerMode {
@@ -78,22 +78,18 @@ pub enum PowerMode {
 
 /// What deep sleep does to one peripheral instance, from the chip metadata.
 ///
-/// Every field is a property of the instance on this particular chip rather than of the peripheral
-/// kind. See [`LowPowerInstance`].
+/// Every field is a property of the instance on this chip, not of the peripheral kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SleepInfo {
     /// The domain this instance is in.
     pub power_domain: PowerDomain,
 
-    /// Deepest mode through which the instance keeps its configuration registers.
+    /// Deepest mode through which the instance keeps its configuration registers, or `None` outside
+    /// [`PowerDomain::Pd1`], where nothing disables it.
     ///
-    /// Only `Sleep` and `Standby` occur, and only for [`PowerDomain::Pd1`] instances — `None`
-    /// elsewhere, where the question does not arise because nothing disables them.
-    ///
-    /// `Standby` does **not** mean there is nothing to do on wake: SYSCTL forces *every* PD1
-    /// peripheral to a disabled state on deep-sleep entry, so one still has to be re-enabled. The
-    /// difference is whether the rest of the configuration has to be rewritten as well.
+    /// Even `Standby` leaves the instance disabled on wake; this says only how much of the rest of the
+    /// configuration survived with it.
     pub retained_through: Option<PowerMode>,
 
     /// Deepest mode the datasheet says the instance may be *used* in.
@@ -101,11 +97,11 @@ pub struct SleepInfo {
     /// `None` where the datasheet table cannot answer, which is not the same as unusable.
     pub usable_through: Option<PowerMode>,
 
-    /// Whether the instance has its own `CLKCFG.BLOCKASYNC` bit.
+    /// Whether the instance has its own `CLKCFG.BLOCKASYNC` bit, or `None` where the family has no
+    /// published SVD yet.
     ///
-    /// `false` does not mean it cannot raise an asynchronous fast clock request — GPIO, the
-    /// general-purpose timers and the ADC all can, they just have no per-instance mask and are gated
-    /// only by `SYSOSCCFG.BLOCKASYNCALL`. `None` where no SVD is published for the family yet.
+    /// `false` does not mean it cannot raise an asynchronous clock request, only that nothing but
+    /// `SYSOSCCFG.BLOCKASYNCALL` masks it.
     pub block_async: Option<bool>,
 
     /// Whether this timer keeps being clocked in STANDBY1, making it able to wake the core from the
@@ -117,17 +113,8 @@ impl SleepInfo {
     /// Shallowest level to block so the datasheet still supports operating this instance, or `None` to
     /// block nothing.
     ///
-    /// Distinct from [`PowerDomain::floor_to_keep_running`], which asks whether the clock survives.
-    /// This is the datasheet's answer for the peripheral as a whole, and it catches the case a clock
-    /// rate cannot: `NS`, "not automatically disabled, but use in this mode is unsupported".
-    ///
-    /// Concerns an *operation in flight*, not mere configuration — an ADC may sit configured through a
-    /// STOP as long as no conversion spans it.
-    ///
-    /// `usable_through: None` yields `None` here. That reads the datasheet's silence as permission,
-    /// deliberately: the table cannot resolve a large minority of instances, and blocking deep sleep
-    /// for all of them would cost far more than the gap it closes. Where the question is specifically
-    /// whether a timer can wake the core, [`Self::clocked_in_standby1`] answers it and this does not.
+    /// An unknown [`Self::usable_through`] reads as no constraint, the datasheet tables being unable to
+    /// resolve some instances.
     pub const fn floor_to_stay_usable(&self) -> Option<SleepLevel> {
         match self.usable_through {
             // Usable in STANDBY, or the datasheet does not say. Nothing to add.
@@ -153,16 +140,8 @@ impl SleepInfo {
     /// Shallowest level to block so the instance is still set up and enabled on the other side, or
     /// `None` if deep sleep leaves it alone.
     ///
-    /// Keyed on the power domain rather than on [`Self::retained_through`], because SYSCTL forces
-    /// *every* PD1 peripheral to a disabled state on deep-sleep entry: whether the configuration
-    /// registers survived does not change that something has to be done on wake, only how much.
-    ///
-    /// Unlike [`Self::floor_for_operation`] this is a property of the instance being set up at all, so
-    /// a driver holds it for its whole lifetime.
-    ///
-    /// Blocking is the conservative answer, not the only possible one. A driver that can re-apply its
-    /// configuration after wake may drop this and do that instead, which is what
-    /// [`Self::retained_through`] is there to inform.
+    /// Keyed on the power domain, not [`Self::retained_through`]: SYSCTL disables every PD1 peripheral
+    /// on deep-sleep entry whether its configuration survived or not.
     pub const fn floor_to_keep_configured(&self) -> Option<SleepLevel> {
         match self.power_domain {
             PowerDomain::Pd1 => Some(SleepLevel::Stop0),
@@ -173,9 +152,7 @@ impl SleepInfo {
 
 /// The power domain a peripheral instance belongs to.
 ///
-/// Which domain an instance is in is a property of the chip, not of the peripheral kind: the same IP
-/// appears in both domains on one die, and the same instance name differs between chips.
-/// See [`LowPowerInstance`].
+/// Differs between chips of the same family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PowerDomain {
@@ -194,33 +171,20 @@ pub enum PowerDomain {
 
 impl PowerDomain {
     /// Whether the domain stays powered through deep sleep.
-    ///
-    /// Takes no [`SleepLevel`]: every level is a STOP or STANDBY mode, and PD1 is disabled in all of
-    /// them. Being powered is not the same as being clocked — see [`Self::floor_to_keep_running`].
     pub const fn is_powered_in_deep_sleep(self) -> bool {
         !matches!(self, Self::Pd1)
     }
 
-    /// Shallowest level to block so an instance in this domain, clocked at `clock_hz`, keeps
-    /// running, or `None` to block nothing (any sleep depth is fine).
+    /// Shallowest level to block so an instance in this domain, clocked at `clock_hz`, keeps running,
+    /// or `None` to block nothing.
     ///
-    /// `clock_hz` is the frequency of the clock that the peripheral depends on: ULPCLK for
-    /// bus-clocked peripherals, or the LFCLK/MFCLK source rate for those clocked directly. It is
-    /// ignored for the domains deep sleep does not clock down.
-    /// The per-mode ceiling is the same across every MSPM0 family: STOP0/STOP1 cap at 4 MHz, STOP2
-    /// and STANDBY0 at 32 kHz (LFCLK), and only STANDBY1 unclocks PD0 (there just a few timers, named
-    /// per chip, stay clocked).
-    ///
-    /// Answers only for peripherals that must run *continuously*. Work merely triggered while asleep
-    /// is a different question: a DMA transfer or an ADC conversion raises an asynchronous request
-    /// that powers PD1 back up on demand, so those must not block sleep on this.
-    ///
-    /// NOTE: Assumes the RUN0 run mode, the only one the HAL configures today
-    /// (STOP0 reaches 4 MHz only when entered from RUN0).
+    /// `clock_hz` is the undivided rate of the clock the peripheral depends on. Answers only for
+    /// peripherals that must run *continuously* — work that is only started while asleep raises an
+    /// asynchronous clock request instead, and must not block sleep on this.
     pub const fn floor_to_keep_running(self, clock_hz: u32) -> Option<SleepLevel> {
         // Per-mode clock ceilings, from the family TRMs' "DMA Operating Mode Support" and "Operating
-        // Modes" sections.
-        // STANDBY0 clocks all PD0 peripherals from LFCLK; STANDBY1 does not.
+        // Modes" sections. STANDBY0 clocks all PD0 peripherals from LFCLK; STANDBY1 does not.
+        // Assumes RUN0, the only run mode the HAL configures: STOP0 reaches 4 MHz only from there.
         const STOP_HZ: u32 = 4_000_000;
 
         match self {
@@ -316,11 +280,8 @@ const _: () = {
 
 /// What deep sleep does to a peripheral instance.
 ///
-/// Implemented for every peripheral singleton from the chip metadata. GPIO pins are excluded: the
-/// GPIO logic is in PD0 on every chip, and its PD1 register interface is only ever reachable in RUN.
-///
-/// Type-erased drivers cannot name their instance, so they carry a copy of [`SleepInfo`] in their
-/// `Info` instead.
+/// Implemented for every peripheral singleton but GPIO pins, whose logic is in PD0 on every chip.
+/// Type-erased drivers cannot name their instance and carry a [`SleepInfo`] in their `Info` instead.
 pub trait LowPowerInstance: PeripheralType {
     /// How this instance behaves across deep sleep.
     const SLEEP: SleepInfo;
@@ -334,14 +295,10 @@ macro_rules! impl_low_power {
     };
 }
 
-/// A token forbidding a deep-sleep mode (and anything deeper) while held.
+/// A token forbidding a deep-sleep mode, and anything deeper, while held.
 ///
-/// A guard at `level` blocks that [`SleepLevel`] and every deeper mode; the low-power executor then
-/// idles into the deepest mode still permitted, or a plain `WFI` if even [`SleepLevel::Stop0`] is
-/// blocked. Guards are refcounted per level.
-///
-/// Always available so drivers can hold one unconditionally.
-/// Without the `low-power` feature it is a no-op.
+/// Refcounted per level, and a no-op without the `low-power` feature, so drivers can hold one
+/// unconditionally.
 #[must_use]
 pub struct WakeGuard {
     #[cfg(feature = "low-power")]
@@ -352,8 +309,7 @@ pub struct WakeGuard {
 impl WakeGuard {
     /// Forbid entering `level` or any deeper mode until dropped.
     ///
-    /// [`SleepLevel::Stop0`] blocks all deep sleep, leaving only `WFI`. Without the `low-power`
-    /// feature `level` is ignored and this does nothing.
+    /// [`SleepLevel::Stop0`] blocks all deep sleep, leaving only `WFI`.
     #[inline]
     pub fn new(level: SleepLevel) -> Self {
         #[cfg(not(feature = "low-power"))]
@@ -388,8 +344,8 @@ const SYSOSC_BOOT_HZ: u32 = 32_000_000;
 
 /// Frequency MCLK runs at after [`crate::init`].
 ///
-/// The clock tree is not configurable yet, so this is the reset SYSOSC rate: 32 MHz, or the chip's
-/// ceiling where that is lower, as on the 24 MHz C-series parts.
+/// The clock tree is not configurable yet, so this is the reset SYSOSC rate, capped at
+/// [`MAX_MCLK_HZ`].
 // TODO: Compute this once the MCLK rate can be adjusted.
 pub const MCLK_HZ: u32 = if MAX_MCLK_HZ < SYSOSC_BOOT_HZ {
     MAX_MCLK_HZ
@@ -399,8 +355,7 @@ pub const MCLK_HZ: u32 = if MAX_MCLK_HZ < SYSOSC_BOOT_HZ {
 
 /// Frequency ULPCLK runs at, the "bus clock" driving PD0 peripherals.
 ///
-/// ULPCLK follows MCLK, capped at its own lower ceiling. Equal to [`MCLK_HZ`] on every family today,
-/// and lower as soon as G-series MCLK can be raised past 40 MHz.
+/// ULPCLK follows MCLK, capped at [`MAX_ULPCLK_HZ`], so it equals [`MCLK_HZ`] on every family today.
 // TODO: Compute this once the MCLK rate can be adjusted.
 pub const ULPCLK_HZ: u32 = if MCLK_HZ < MAX_ULPCLK_HZ {
     MCLK_HZ
@@ -416,8 +371,8 @@ pub const MFCLK_HZ: u32 = 4_000_000;
 
 /// Rate an instance sees when it selects the bus clock, which depends on the domain it is in.
 ///
-/// PD1 is clocked from MCLK and PD0 from ULPCLK. Backup-domain logic runs from LFCLK, but its
-/// registers are reached over the PD0 bus, so it answers with ULPCLK too.
+/// [`PowerDomain::Backup`] answers ULPCLK: its logic runs from LFCLK, but its registers are reached
+/// over the PD0 bus.
 pub const fn bus_clock_hz(domain: PowerDomain) -> u32 {
     match domain {
         PowerDomain::Pd1 => MCLK_HZ,
@@ -460,7 +415,7 @@ pub struct ClkOut<'d> {
 }
 
 impl<'d> ClkOut<'d> {
-    /// Create a bew CLK_OUT instance.
+    /// Create a new CLK_OUT instance.
     pub fn new(_peri: Peri<'d, CLK_OUT>, pin: Peri<'d, impl ClkOutPin>, source: ClkOutSource) -> Self {
         // FIXME: Config (pull, invert, etc?)
         let pf = PfType::output(Pull::None, false);

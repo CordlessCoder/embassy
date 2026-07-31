@@ -154,9 +154,9 @@ impl TimxDriver {
         // driver never goes away.
         //
         // The cost is not uniform, which is why this is a silent trade rather than an error. A PD0 timer on
-        // LFCLK that merely is not in the STANDBY1 list loses only that one mode and keeps STANDBY0. A PD1
-        // timer blocks all deep sleep, which is self-defeating in a low-power build — `build.rs` warns
-        // about that case at compile time, and `time-driver-any` avoids it where it can.
+        // LFCLK that is not in the STANDBY1 list loses only that one mode and keeps STANDBY0. A PD1 timer
+        // blocks all deep sleep, which defeats the point of a low-power build — `build.rs` warns about that
+        // case at compile time, and `time-driver-any` avoids it where it can.
         //
         // `None` here means the timer survives everything and nothing is blocked, which is the case
         // `time-driver-any` selects for.
