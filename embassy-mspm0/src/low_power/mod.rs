@@ -5,12 +5,16 @@
 //! mode no guard blocks.
 //!
 //! # Wake source caveats
-//! - `GPIO_ERR_01` (L, G) — a wake edge can be missed. Only the STANDBY1 half is handled: if the pin
-//!   is still asserted when the chip goes back to sleep no further edge is detected
-//! - `GPIO_ERR_08` (H) — in low-power mode a GPIO can trigger a fast wake regardless of the `FASTWAKE`
-//!   register and the pin configuration.
-//! - `UART_ERR_01` (L, G, H) — a start bit arriving while the chip is on its way back into STANDBY1
-//!   is not received.
+//! - `GPIO_ERR_01` (L110x/L13xx, G1x0x/G3x0x) — a wake edge can be missed. Only the STANDBY1 half is
+//!   handled: if the pin is still asserted when the chip goes back to sleep no further edge is detected
+//! - `GPIO_ERR_08` (G151x/G351x, H) — in low-power mode a GPIO can trigger a fast wake regardless of
+//!   the `FASTWAKE` register and the pin configuration.
+//! - `UART_ERR_01` (every family but G511x/G5187) — a start bit arriving while the chip is on its way
+//!   back into STANDBY1 is not received.
+//! - `PMCU_ERR_08` (L122x/L222x, G1x0x/G3x0x) — a wake arriving while the chip is still on its way
+//!   into the mode adds ~3 µs of wake latency. Timing only, and there is no workaround.
+//! - `RTC_ERR_01` (G1x0x/G3x0x, G151x/G351x, C1105/C1106) — `RTCRDY` and `RTC_PRESCALER1` do not wake
+//!   from STANDBY1. Wake on `RTC_ALARM` or `RTC_PRESCALER0` instead.
 use core::sync::atomic::Ordering;
 
 use critical_section::CriticalSection;
@@ -147,6 +151,13 @@ pub unsafe fn sleep(cs: CriticalSection) {
 /// have wakeup logic. The `FASTWAKE` path the edge-wait methods on
 /// [`Flex`](crate::gpio::Flex) use does not reach this far — it stops at STANDBY — so a pin armed only
 /// that way will not bring the device back.
+///
+/// # Errata
+/// - `SYSCTL_ERR_05` (L110x/L13xx, G1x0x/G3x0x, G151x/G351x, C1103/C1104) — LFCLK is stuck after the
+///   wake if `LFCLK_IN` is configured as an input or with a pull-up. Give that pin a pull-down, or
+///   another function, before entering.
+/// - `PMCU_ERR_11` (G151x/G351x) — waking with an NRST pulse shorter than 1 s reports the wrong reset
+///   cause, so the `ResetCause` check above does not identify the wake. No workaround.
 //
 // From the TRM: SYSCTL "Operating Modes": set `PMODECFG.DSLEEP = SHUTDOWN`, arm `SLEEPDEEP`,
 // then `WFI`. This is identical across every MSPM0 family.
