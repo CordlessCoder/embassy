@@ -84,15 +84,55 @@ impl<'d, T: Instance, C: TimerChannel> PwmPin<'d, T, C> {
     pub fn new(pin: Peri<'d, impl TimerPin<T, C>>, pull: Pull) -> Self {
         pin.set_as_pf(pin.pf_num(), PfType::output(pull, false));
 
+        Self::from_erased(pin.into())
+    }
+
+    /// Disconnect the pin and give it back, for use as a GPIO or by another peripheral.
+    pub fn release(self) -> Peri<'d, AnyPin> {
+        let pin = self.erase();
+        pin.set_as_disconnected();
+
+        pin
+    }
+
+    /// Wrap a pin already claimed as channel `C`'s output.
+    ///
+    /// Private because the channel is only a type parameter here: the caller is what makes it true.
+    fn from_erased(pin: Peri<'d, AnyPin>) -> Self {
         Self {
-            pin: pin.into(),
+            pin,
             _phantom: PhantomData,
         }
     }
 
+    /// Take the pin out, leaving it configured.
     fn erase(self) -> Peri<'d, AnyPin> {
-        self.pin
+        let this = core::mem::ManuallyDrop::new(self);
+
+        // SAFETY: `this` is never dropped and the pin is not touched again, so it is moved out once.
+        unsafe { core::ptr::read(&this.pin) }
     }
+}
+
+impl<T: Instance, C: TimerChannel> Drop for PwmPin<'_, T, C> {
+    fn drop(&mut self) {
+        self.pin.set_as_disconnected();
+    }
+}
+
+/// The pins of a [`SimplePwm`], as [`SimplePwm::release`] gives them back.
+pub struct PwmPins<'d, T: Instance> {
+    /// Channel 0's pin.
+    pub ch0: Option<PwmPin<'d, T, Ch0>>,
+
+    /// Channel 1's pin.
+    pub ch1: Option<PwmPin<'d, T, Ch1>>,
+
+    /// Channel 2's pin.
+    pub ch2: Option<PwmPin<'d, T, Ch2>>,
+
+    /// Channel 3's pin.
+    pub ch3: Option<PwmPin<'d, T, Ch3>>,
 }
 
 /// PWM driver.
@@ -251,6 +291,25 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
     /// The underlying counter.
     pub fn timer(&self) -> &Timer<'d, T> {
         &self.timer
+    }
+
+    /// Stop the outputs and give the timer and pins back, ready to build another driver as they are.
+    pub fn release(self) -> (Peri<'d, T>, PwmPins<'d, T>) {
+        let mut this = core::mem::ManuallyDrop::new(self);
+
+        let [ch0, ch1, ch2, ch3] = core::mem::replace(&mut this.pins, [const { None }; 4]);
+
+        // SAFETY: `this` is never dropped and the timer is not touched again, so it is moved out once.
+        let timer = unsafe { core::ptr::read(&this.timer) };
+
+        let pins = PwmPins {
+            ch0: ch0.map(PwmPin::from_erased),
+            ch1: ch1.map(PwmPin::from_erased),
+            ch2: ch2.map(PwmPin::from_erased),
+            ch3: ch3.map(PwmPin::from_erased),
+        };
+
+        (timer.release(), pins)
     }
 }
 

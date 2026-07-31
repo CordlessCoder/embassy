@@ -1,5 +1,7 @@
 //! Low-level timer access.
 
+use core::mem::ManuallyDrop;
+
 use crate::Peri;
 use crate::pac::tim::vals::{Cm, Cvae, CxC, PwrenKey, Repeat, ResetKey};
 use crate::pac::tim::{Tim, regs};
@@ -147,6 +149,20 @@ impl<'d, T: Instance> Timer<'d, T> {
     #[inline]
     pub fn regs(&self) -> Tim {
         T::info().regs
+    }
+
+    /// Power the instance down and give the peripheral back, so another driver can claim it.
+    pub fn release(self) -> Peri<'d, T> {
+        let mut this = ManuallyDrop::new(self);
+
+        teardown::<T>();
+
+        // SAFETY: `this` is never dropped and neither field is touched again, so each is moved out
+        // exactly once.
+        unsafe {
+            core::ptr::drop_in_place(&mut this._wake_guard);
+            core::ptr::read(&this._timer)
+        }
     }
 
     /// Let the counter advance.
@@ -444,16 +460,21 @@ fn load_for_frequency(tick_hz: u32, mode: CountingMode, hz: u32) -> Result<u32, 
     Ok(load)
 }
 
+/// Stop the counter, mask its interrupts and power the instance down.
+fn teardown<T: Instance>() {
+    let r = T::info().regs;
+
+    r.counterregs(0).ctrctl().modify(|w| w.set_en(false));
+    r.cpu_int(0).imask().write_value(regs::CpuInt(0));
+
+    r.gprcm(0).pwren().write(|w| {
+        w.set_enable(false);
+        w.set_key(PwrenKey::Key);
+    });
+}
+
 impl<T: Instance> Drop for Timer<'_, T> {
     fn drop(&mut self) {
-        let r = T::info().regs;
-
-        r.counterregs(0).ctrctl().modify(|w| w.set_en(false));
-        r.cpu_int(0).imask().write_value(regs::CpuInt(0));
-
-        r.gprcm(0).pwren().write(|w| {
-            w.set_enable(false);
-            w.set_key(PwrenKey::Key);
-        });
+        teardown::<T>();
     }
 }

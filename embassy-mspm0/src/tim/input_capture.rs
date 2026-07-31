@@ -117,17 +117,91 @@ impl<'d, T: Instance, C: TimerChannel> CapturePin<'d, T, C> {
     pub fn new(pin: Peri<'d, impl TimerPin<T, C>>, pull: Pull, edge: CaptureEdge, filter: Filter) -> Self {
         pin.set_as_pf(pin.pf_num(), PfType::input(pull, false));
 
+        Self::from_erased(pin.into(), edge, filter)
+    }
+
+    /// Edge this pin captures on.
+    pub fn edge(&self) -> CaptureEdge {
+        self.edge
+    }
+
+    /// Glitch filter applied to this pin.
+    pub fn filter(&self) -> Filter {
+        self.filter
+    }
+
+    /// Disconnect the pin and give it back, for use as a GPIO or by another peripheral.
+    pub fn release(self) -> Peri<'d, AnyPin> {
+        let (pin, _, _) = self.erase();
+        pin.set_as_disconnected();
+
+        pin
+    }
+
+    /// Wrap a pin already claimed as channel `C`'s capture input.
+    ///
+    /// Private because the channel is only a type parameter here: the caller is what makes it true.
+    fn from_erased(pin: Peri<'d, AnyPin>, edge: CaptureEdge, filter: Filter) -> Self {
         Self {
-            pin: pin.into(),
+            pin,
             edge,
             filter,
             _phantom: PhantomData,
         }
     }
 
+    /// Take the pin and its settings out, leaving the pin configured.
     fn erase(self) -> (Peri<'d, AnyPin>, CaptureEdge, Filter) {
-        (self.pin, self.edge, self.filter)
+        let this = core::mem::ManuallyDrop::new(self);
+
+        // SAFETY: `this` is never dropped and the pin is not touched again, so it is moved out once.
+        (unsafe { core::ptr::read(&this.pin) }, this.edge, this.filter)
     }
+}
+
+impl<T: Instance, C: TimerChannel> Drop for CapturePin<'_, T, C> {
+    fn drop(&mut self) {
+        self.pin.set_as_disconnected();
+    }
+}
+
+/// The edge and filter a channel is capturing on, read back from what `setup_channel` wrote.
+///
+/// `FP` is left at 3 when filtering is off, so `FE` is what tells `None` and `Ticks3` apart.
+fn channel_settings(regs: Tim, channel: Channel) -> (CaptureEdge, Filter) {
+    let n = channel.index();
+
+    let edge = match regs.counterregs(0).ccctl(n).read().ccond() {
+        Ccond::CcTrigFall => CaptureEdge::Falling,
+        Ccond::CcTrigEdge => CaptureEdge::Both,
+        _ => CaptureEdge::Rising,
+    };
+
+    let ifctl = regs.counterregs(0).ifctl(n).read();
+
+    let filter = match (ifctl.fe(), ifctl.fp()) {
+        (false, _) => Filter::None,
+        (true, Fp::_5) => Filter::Ticks5,
+        (true, Fp::_8) => Filter::Ticks8,
+        (true, _) => Filter::Ticks3,
+    };
+
+    (edge, filter)
+}
+
+/// The pins of an [`InputCapture`], as [`InputCapture::release`] gives them back.
+pub struct CapturePins<'d, T: Instance> {
+    /// Channel 0's pin.
+    pub ch0: Option<CapturePin<'d, T, Ch0>>,
+
+    /// Channel 1's pin.
+    pub ch1: Option<CapturePin<'d, T, Ch1>>,
+
+    /// Channel 2's pin.
+    pub ch2: Option<CapturePin<'d, T, Ch2>>,
+
+    /// Channel 3's pin.
+    pub ch3: Option<CapturePin<'d, T, Ch3>>,
 }
 
 /// Input capture driver.
@@ -262,6 +336,30 @@ impl<'d, T: Instance> InputCapture<'d, T> {
     /// The underlying counter.
     pub fn timer(&self) -> &Timer<'d, T> {
         &self.timer
+    }
+
+    /// Stop capturing and give the timer and pins back, ready to build another driver as they are.
+    pub fn release(self) -> (Peri<'d, T>, CapturePins<'d, T>) {
+        let mut this = core::mem::ManuallyDrop::new(self);
+
+        // Read while the instance is still powered, and before the pins are moved out.
+        let regs = this.timer.regs();
+        let settings = Channel::ALL.map(|channel| channel_settings(regs, channel));
+
+        let [ch0, ch1, ch2, ch3] = core::mem::replace(&mut this.pins, [const { None }; 4]);
+
+        // SAFETY: `this` is never dropped and the timer is not touched again, so it is moved out once.
+        let timer = unsafe { core::ptr::read(&this.timer) };
+
+        // Spelled out rather than mapped through a closure: each channel is its own type.
+        let pins = CapturePins {
+            ch0: ch0.map(|pin| CapturePin::from_erased(pin, settings[0].0, settings[0].1)),
+            ch1: ch1.map(|pin| CapturePin::from_erased(pin, settings[1].0, settings[1].1)),
+            ch2: ch2.map(|pin| CapturePin::from_erased(pin, settings[2].0, settings[2].1)),
+            ch3: ch3.map(|pin| CapturePin::from_erased(pin, settings[3].0, settings[3].1)),
+        };
+
+        (timer.release(), pins)
     }
 }
 
