@@ -1,0 +1,29 @@
+[package]
+edition = "2024"
+name = "embassy-mspm0-g3507-lowpower-examples"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+# `executor-thread` here brings in `low-power` and provides the executor that deep-sleeps on idle, so
+# `embassy-executor` must not also select a platform of its own.
+embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", features = ["mspm0g3507pm", "defmt", "rt", "time-driver-any", "time", "executor-thread", "unstable-pac"] }
+embassy-executor = { version = "0.10.0", path = "../../embassy-executor" }
+embassy-sync = { version = "0.8.0", path = "../../embassy-sync", features = ["defmt"] }
+embassy-time = { version = "0.5.1", path = "../../embassy-time", features = ["defmt"] }
+panic-halt = "1.0.0"
+cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = { version = "0.7.0"}
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+
+embedded-io-async = { version = "0.7.0" }
+
+[profile.release]
+debug = 2
+
+[package.metadata.embassy]
+build = [
+  { target = "thumbv6m-none-eabi", artifact-dir = "out/examples/mspm0g3507-lowpower" }
+]
