@@ -303,7 +303,7 @@ const fn event(channel: Channel, direction: CountingDirection) -> Event {
 impl<W: Word> CompareChannel<'_, W> {
     /// Event a match on this channel raises.
     fn event(&self) -> Event {
-        event(self.channel, low_level::counting_direction(self.regs))
+        event(self.channel, low_level::counting_mode(self.regs).direction())
     }
 
     /// Counter value this channel matches on.
@@ -363,7 +363,7 @@ impl<W: Word> CompareChannel<'_, W> {
 
     /// Set what the pin does on a match, for a channel that was given one.
     pub fn set_action(&mut self, action: CompareAction) {
-        let direction = low_level::counting_direction(self.regs);
+        let direction = low_level::counting_mode(self.regs).direction();
 
         self.regs
             .counterregs(0)

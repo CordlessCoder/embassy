@@ -30,7 +30,7 @@ bind_interrupts!(struct Irqs {
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
-    let mut pwm = SimplePwm::new_2ch(
+    let mut pwm = unwrap!(SimplePwm::new_2ch(
         p.TIMG1,
         Some(PwmPin::new(p.PA26, Pull::None)),
         None,
@@ -38,7 +38,7 @@ async fn main(_spawner: Spawner) -> ! {
             frequency: FREQUENCY,
             ..Default::default()
         },
-    );
+    ));
 
     pwm.channel(Channel::Ch0).set_duty_percent(50);
     pwm.start();

@@ -29,7 +29,7 @@ async fn main(_spawner: Spawner) -> ! {
         ..Default::default()
     };
 
-    let mut pwm = SimplePwm::new_2ch(p.TIMG6, Some(red), Some(green), config);
+    let mut pwm = unwrap!(SimplePwm::new_2ch(p.TIMG6, Some(red), Some(green), config));
 
     let max = pwm.max_duty();
     info!(

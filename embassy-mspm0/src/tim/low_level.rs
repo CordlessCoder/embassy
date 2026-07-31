@@ -4,7 +4,21 @@ use crate::Peri;
 use crate::pac::tim::vals::{Cm, Cvae, CxC, PwrenKey, Repeat, ResetKey};
 use crate::pac::tim::{Tim, regs};
 use crate::sysctl::{SleepLevel, WakeGuard};
-use crate::tim::{Channel, ClockSel, CountingDirection, CountingMode, Instance, Word};
+use crate::tim::{Channel, ClockSel, CountingMode, Instance, Word};
+
+/// Why a frequency cannot be programmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ConfigError {
+    /// The frequency was zero.
+    Zero,
+
+    /// One period would be shorter than a tick. Lower the divider or the prescaler.
+    TooHigh,
+
+    /// One period would need more ticks than the counter holds. Raise the divider or the prescaler.
+    TooLow,
+}
 
 /// What the counter does when it is enabled.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -228,21 +242,20 @@ impl<'d, T: Instance> Timer<'d, T> {
         period_ticks(T::info().regs)
     }
 
-    /// Set the period so the counter wraps at `hz`.
+    /// Set the period so the counter completes one period at `hz`.
     ///
-    /// Panics outside [`Timer::tick_frequency`] down to that divided by the counter's full range.
-    pub fn set_frequency(&self, hz: u32) {
-        assert!(hz > 0, "timer frequency must be non-zero");
+    /// Errors outside [`Timer::tick_frequency`] down to that divided by the counter's full range.
+    pub fn set_frequency(&self, hz: u32) -> Result<(), ConfigError> {
+        let mode = counting_mode(T::info().regs);
+        let load = load_for_frequency(self.tick_frequency(), mode, hz)?;
 
-        let ticks = self.tick_frequency() / hz;
-        let load = ticks.checked_sub(1).expect("timer frequency is above the tick rate");
-
-        assert!(
-            load <= T::Word::MAX.into(),
-            "timer frequency is below what the counter can reach"
-        );
+        if load > T::Word::MAX.into() {
+            return Err(ConfigError::TooLow);
+        }
 
         self.set_load(T::Word::from_reg(load));
+
+        Ok(())
     }
 
     /// Enable or disable the interrupt for `event`.
@@ -387,11 +400,12 @@ pub(crate) fn clear_pending(regs: Tim, event: Event) {
     regs.cpu_int(0).iclr().write_value(event.mask());
 }
 
-/// Which way the counter is running, for the channel handles that have no instance to ask.
-pub(crate) fn counting_direction(regs: Tim) -> CountingDirection {
+/// Counting direction and alignment, for the channel handles that have no instance to ask.
+pub(crate) fn counting_mode(regs: Tim) -> CountingMode {
     match regs.counterregs(0).ctrctl().read().cm() {
-        Cm::Down => CountingDirection::Down,
-        _ => CountingDirection::Up,
+        Cm::Down => CountingMode::EdgeAlignedDown,
+        Cm::UpDown => CountingMode::CenterAligned,
+        _ => CountingMode::EdgeAlignedUp,
     }
 }
 
@@ -399,7 +413,35 @@ pub(crate) fn counting_direction(regs: Tim) -> CountingDirection {
 ///
 /// Saturates: a 32-bit counter loaded to its maximum has a period of 2^32, which does not fit.
 pub(crate) fn period_ticks(regs: Tim) -> u32 {
-    regs.counterregs(0).load().read().saturating_add(1)
+    let load = regs.counterregs(0).load().read();
+
+    match counting_mode(regs) {
+        // Up then down passes every value twice except the two endpoints, which it passes once.
+        CountingMode::CenterAligned => load.saturating_mul(2),
+        _ => load.saturating_add(1),
+    }
+}
+
+/// Load value that makes a counter ticking at `tick_hz` complete one period at `hz`.
+fn load_for_frequency(tick_hz: u32, mode: CountingMode, hz: u32) -> Result<u32, ConfigError> {
+    if hz == 0 {
+        return Err(ConfigError::Zero);
+    }
+
+    let load = match mode {
+        // One center-aligned period is the range twice over, so it needs half the load an
+        // edge-aligned period does. The counter also idles a tick at each endpoint rather than
+        // wrapping, which is why this is `2 * load` and not `2 * (load + 1)`.
+        CountingMode::CenterAligned => tick_hz / hz.saturating_mul(2),
+        _ => (tick_hz / hz).checked_sub(1).ok_or(ConfigError::TooHigh)?,
+    };
+
+    // A zero load leaves no room for a duty value between the extremes.
+    if load == 0 {
+        return Err(ConfigError::TooHigh);
+    }
+
+    Ok(load)
 }
 
 impl<T: Instance> Drop for Timer<'_, T> {

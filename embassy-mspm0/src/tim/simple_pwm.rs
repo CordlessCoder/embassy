@@ -1,7 +1,7 @@
 //! Pulse-width modulation.
 //!
-//! Edge-aligned only. Center-aligned needs a different period-to-compare relationship and is not
-//! implemented; reach for [`Timer::regs`] to set it up by hand.
+//! Edge-aligned in either direction, and center-aligned. Center-aligned moves both edges to keep the
+//! pulse centred, so one period is `2 * load` ticks and the duty resolves half as finely.
 
 use core::marker::PhantomData;
 
@@ -9,9 +9,10 @@ use crate::Peri;
 use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Act, Ccpiv, Ccpo, Coc, Swfrcact};
+pub use crate::tim::low_level::ConfigError;
 use crate::tim::low_level::{self, Config as TimerConfig, Timer};
 use crate::tim::{
-    Ch0, Ch1, Ch2, Ch3, Channel, CountingDirection, General2ChannelInstance, General4ChannelInstance, Instance,
+    Ch0, Ch1, Ch2, Ch3, Channel, CountingMode, General2ChannelInstance, General4ChannelInstance, Instance,
     TimerChannel, TimerPin,
 };
 
@@ -31,11 +32,11 @@ pub enum Polarity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Config {
-    /// Counting direction, which sets where the active edge sits in the period.
+    /// Counting direction and alignment, which set where the pulse sits in the period.
     ///
-    /// [`CountingDirection::Down`] is what driverlib calls plain `DL_TIMER_PWM_MODE_EDGE_ALIGN`, so
-    /// ported C expects that one.
-    pub direction: CountingDirection,
+    /// [`CountingMode::EdgeAlignedDown`] is driverlib's plain `DL_TIMER_PWM_MODE_EDGE_ALIGN` and
+    /// [`CountingMode::CenterAligned`] its `DL_TIMER_PWM_MODE_CENTER_ALIGN`, so ported C expects those.
+    pub counting_mode: CountingMode,
 
     /// Clock source driving the counter.
     pub clock: crate::tim::ClockSel,
@@ -60,7 +61,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            direction: CountingDirection::default(),
+            counting_mode: CountingMode::default(),
             clock: crate::tim::ClockSel::default(),
             divider: 1,
             prescaler: 1,
@@ -94,7 +95,7 @@ impl<'d, T: Instance, C: TimerChannel> PwmPin<'d, T, C> {
     }
 }
 
-/// Edge-aligned PWM driver.
+/// PWM driver.
 pub struct SimplePwm<'d, T: Instance> {
     timer: Timer<'d, T>,
     pins: [Option<Peri<'d, AnyPin>>; 4],
@@ -109,7 +110,7 @@ impl<'d, T: General2ChannelInstance> SimplePwm<'d, T> {
         ch0: Option<PwmPin<'d, T, Ch0>>,
         ch1: Option<PwmPin<'d, T, Ch1>>,
         config: Config,
-    ) -> Self {
+    ) -> Result<Self, ConfigError> {
         Self::build(
             timer,
             [ch0.map(PwmPin::erase), ch1.map(PwmPin::erase), None, None],
@@ -129,7 +130,7 @@ impl<'d, T: General4ChannelInstance> SimplePwm<'d, T> {
         ch2: Option<PwmPin<'d, T, Ch2>>,
         ch3: Option<PwmPin<'d, T, Ch3>>,
         config: Config,
-    ) -> Self {
+    ) -> Result<Self, ConfigError> {
         Self::build(
             timer,
             [
@@ -144,34 +145,36 @@ impl<'d, T: General4ChannelInstance> SimplePwm<'d, T> {
 }
 
 impl<'d, T: Instance> SimplePwm<'d, T> {
-    fn build(timer: Peri<'d, T>, pins: [Option<Peri<'d, AnyPin>>; 4], config: Config) -> Self {
+    fn build(timer: Peri<'d, T>, pins: [Option<Peri<'d, AnyPin>>; 4], config: Config) -> Result<Self, ConfigError> {
         let timer = Timer::new(
             timer,
             TimerConfig {
                 clock: config.clock,
                 divider: config.divider,
                 prescaler: config.prescaler,
-                counting_mode: config.direction.counting_mode(),
+                counting_mode: config.counting_mode,
                 free_run_in_debug: config.free_run_in_debug,
                 ..Default::default()
             },
         );
 
-        timer.set_frequency(config.frequency);
-
+        // Built before the frequency is applied so a rejected one still unwinds through `Drop`,
+        // releasing the pins and powering the instance back down.
         let mut this = Self { timer, pins };
+
+        this.set_frequency(config.frequency)?;
 
         for channel in Channel::ALL {
             if this.pins[channel.index()].is_some() {
-                this.setup_channel(channel, config.direction);
+                this.setup_channel(channel, config.counting_mode);
             }
         }
 
-        this
+        Ok(this)
     }
 
-    /// Program one channel's compare block for edge-aligned output, following SLAU847F 28.2.5.2.1.
-    fn setup_channel(&mut self, channel: Channel, direction: CountingDirection) {
+    /// Program one channel's compare block for PWM output, following SLAU847F 28.2.5.2.1.
+    fn setup_channel(&mut self, channel: Channel, counting_mode: CountingMode) {
         let r = self.timer.regs();
         let n = channel.index();
 
@@ -182,13 +185,19 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         // The actions are fixed for the channel's lifetime: duty moves the compare value, and the two
         // extremes use the forced-output override. Starts at 0%.
         r.counterregs(0).ccact(n).write(|w| {
-            match direction {
-                CountingDirection::Up => {
+            match counting_mode {
+                CountingMode::EdgeAlignedUp => {
                     w.set_zact(Act::CcpHigh);
                     w.set_cuact(Act::CcpLow);
                 }
-                CountingDirection::Down => {
+                CountingMode::EdgeAlignedDown => {
                     w.set_lact(Act::CcpHigh);
+                    w.set_cdact(Act::CcpLow);
+                }
+                // Both edges come from the compare, one per direction, which is what centres the
+                // pulse on the load endpoint rather than pinning it to the start of the period.
+                CountingMode::CenterAligned => {
+                    w.set_cuact(Act::CcpHigh);
                     w.set_cdact(Act::CcpLow);
                 }
             }
@@ -216,9 +225,11 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         self.timer.stop();
     }
 
-    /// Ticks in one output period, the duty value that means 100%.
+    /// Duty value that means 100%.
+    ///
+    /// Equal to the period in ticks when edge-aligned, and half of it when center-aligned.
     pub fn max_duty(&self) -> u32 {
-        self.timer.period_ticks()
+        max_duty(self.timer.regs())
     }
 
     /// Borrow one channel to set its duty or enable its output.
@@ -233,8 +244,8 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
     /// Set the output frequency in Hz.
     ///
     /// Duties are in ticks, so they keep their tick count; reapply them to keep the same ratio.
-    pub fn set_frequency(&mut self, hz: u32) {
-        self.timer.set_frequency(hz);
+    pub fn set_frequency(&mut self, hz: u32) -> Result<(), ConfigError> {
+        self.timer.set_frequency(hz)
     }
 
     /// The underlying counter.
@@ -261,9 +272,11 @@ pub struct SimplePwmChannel<'d> {
 }
 
 impl<'d> SimplePwmChannel<'d> {
-    /// Ticks in one output period, the duty value that means 100%.
+    /// Duty value that means 100%.
+    ///
+    /// Equal to the period in ticks when edge-aligned, and half of it when center-aligned.
     pub fn max_duty(&self) -> u32 {
-        low_level::period_ticks(self.regs)
+        max_duty(self.regs)
     }
 
     /// Duty of this channel, in ticks.
@@ -273,14 +286,7 @@ impl<'d> SimplePwmChannel<'d> {
         match self.regs.counterregs(0).ccact(n).read().swfrcact() {
             Swfrcact::CcpLow => 0,
             Swfrcact::CcpHigh => self.max_duty(),
-            _ => {
-                let compare = self.regs.counterregs(0).cc(n).read();
-
-                match low_level::counting_direction(self.regs) {
-                    CountingDirection::Up => compare,
-                    CountingDirection::Down => self.max_duty() - 1 - compare,
-                }
-            }
+            _ => duty_from_compare(self.regs, self.regs.counterregs(0).cc(n).read()),
         }
     }
 
@@ -302,12 +308,7 @@ impl<'d> SimplePwmChannel<'d> {
 
         // Compare first, so the value is in place before the override is lifted.
         if ticks > 0 && ticks < period {
-            // Counting down the output is high from the load value to the compare, so the compare is
-            // the far end of the pulse rather than its length.
-            let compare = match low_level::counting_direction(self.regs) {
-                CountingDirection::Up => ticks,
-                CountingDirection::Down => period - 1 - ticks,
-            };
+            let compare = compare_for_duty(self.regs, ticks);
 
             self.regs.counterregs(0).cc(self.channel.index()).write_value(compare);
         }
@@ -377,6 +378,42 @@ impl<'d> SimplePwmChannel<'d> {
     /// Set the duty as a percentage, clamped to 100.
     pub fn set_duty_percent(&mut self, percent: u8) {
         self.set_duty_fraction(u32::from(percent), 100);
+    }
+}
+
+/// Duty value that means 100%, for the channel handles that have no instance to ask.
+fn max_duty(regs: Tim) -> u32 {
+    let load = regs.counterregs(0).load().read();
+
+    match low_level::counting_mode(regs) {
+        // One step moves both edges of a centred pulse, so the period resolves half as finely as it
+        // is long.
+        CountingMode::CenterAligned => load,
+        _ => load.saturating_add(1),
+    }
+}
+
+/// Compare value that produces a duty of `ticks`.
+fn compare_for_duty(regs: Tim, ticks: u32) -> u32 {
+    let load = regs.counterregs(0).load().read();
+
+    match low_level::counting_mode(regs) {
+        // Counting up, the zero event starts the pulse and the compare ends it, so the compare is
+        // the pulse length directly.
+        CountingMode::EdgeAlignedUp => ticks,
+        // Otherwise the pulse runs from the compare to the load endpoint — once counting down, twice
+        // when centred — so the compare is the far end of the pulse rather than its length.
+        _ => load - ticks,
+    }
+}
+
+/// Duty in ticks that `compare` produces, the inverse of [`compare_for_duty`].
+fn duty_from_compare(regs: Tim, compare: u32) -> u32 {
+    let load = regs.counterregs(0).load().read();
+
+    match low_level::counting_mode(regs) {
+        CountingMode::EdgeAlignedUp => compare,
+        _ => load.saturating_sub(compare),
     }
 }
 

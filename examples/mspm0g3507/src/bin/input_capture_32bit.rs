@@ -31,7 +31,7 @@ async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
     // TIMG7 is 16-bit, so 100 Hz needs the clock divided before the period fits its counter.
-    let mut pwm = SimplePwm::new_2ch(
+    let mut pwm = unwrap!(SimplePwm::new_2ch(
         p.TIMG7,
         None,
         Some(PwmPin::new(p.PA31, Pull::None)),
@@ -40,7 +40,7 @@ async fn main(_spawner: Spawner) -> ! {
             frequency: FREQUENCY,
             ..Default::default()
         },
-    );
+    ));
 
     let max = pwm.max_duty();
     pwm.channel(Channel::Ch1).set_duty_percent(50);

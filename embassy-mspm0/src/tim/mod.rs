@@ -234,6 +234,19 @@ impl CountingDirection {
     }
 }
 
+impl CountingMode {
+    /// Which way this mode runs the counter.
+    ///
+    /// [`Self::CenterAligned`] runs both ways and answers [`CountingDirection::Up`]; the drivers that
+    /// ask cannot select it.
+    pub const fn direction(self) -> CountingDirection {
+        match self {
+            CountingMode::EdgeAlignedDown => CountingDirection::Down,
+            _ => CountingDirection::Up,
+        }
+    }
+}
+
 pub(crate) trait SealedInstance {
     fn info() -> &'static Info;
     fn state() -> &'static State;
