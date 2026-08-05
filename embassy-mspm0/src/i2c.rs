@@ -55,21 +55,13 @@ impl ClockSel {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ClockDiv {
-    // "Do not divide clock source.
     DivBy1,
-    // "Divide clock source by 2.
     DivBy2,
-    // "Divide clock source by 3.
     DivBy3,
-    // "Divide clock source by 4.
     DivBy4,
-    // "Divide clock source by 5.
     DivBy5,
-    // "Divide clock source by 6.
     DivBy6,
-    // "Divide clock source by 7.
     DivBy7,
-    // "Divide clock source by 8.
     DivBy8,
 }
 
@@ -156,6 +148,69 @@ pub enum ConfigError {
     ///
     /// The target address is not 7-bit.
     InvalidTargetAddress,
+
+    /// [`Config::clock_low_timeout_us`] is outside what the counter can represent.
+    InvalidClockLowTimeout,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Config
+pub struct Config {
+    /// I2C clock source.
+    pub(crate) clock_source: ClockSel,
+
+    /// I2C clock divider.
+    pub clock_div: ClockDiv,
+
+    /// A timing solved ahead of time, skipping the divisions on the device.
+    ///
+    /// Build one with [`Timing::solve`] in a `const`. When set, [`Self::bus_speed`],
+    /// [`Self::clock_div`] and the clock source all come from it rather than being picked from the
+    /// bus speed.
+    pub timing: Option<Timing>,
+
+    /// If true: invert SDA pin signal values (V<sub>DD</sub> = 0/mark, Gnd = 1/idle).
+    pub invert_sda: bool,
+
+    /// If true: invert SCL pin signal values (V<sub>DD</sub> = 0/mark, Gnd = 1/idle).
+    pub invert_scl: bool,
+
+    /// Set the pull configuration for the SDA pin.
+    pub sda_pull: Pull,
+
+    /// Set the pull configuration for the SCL pin.
+    pub scl_pull: Pull,
+
+    /// Speed of the I2C bus.
+    pub bus_speed: BusSpeed,
+
+    /// Fail a transfer once SCL has been held low this many microseconds, or `None` to wait forever.
+    ///
+    /// A transfer that hits it fails with [`Error::Timeout`]. The peripheral does the counting, so it
+    /// bounds a blocking transfer too. `None` by default, because a bus whose targets legitimately
+    /// stretch for longer would start failing — pick it from the slowest target, not from the bus speed.
+    ///
+    /// Representable only in steps of `8320 / clock_hz` seconds, 2 to 255 of them: **520 µs to 66 ms
+    /// from a 32 MHz functional clock, 4.2 ms to 530 ms from MFCLK**. Outside that range is a
+    /// [`ConfigError::InvalidClockLowTimeout`]; inside it, the value rounds up.
+    pub clock_low_timeout_us: Option<u32>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            clock_source: ClockSel::MfClk,
+            clock_div: ClockDiv::DivBy1,
+            timing: None,
+            invert_sda: false,
+            invert_scl: false,
+            sda_pull: Pull::None,
+            scl_pull: Pull::None,
+            bus_speed: BusSpeed::Standard,
+            clock_low_timeout_us: None,
+        }
+    }
 }
 
 /// A solved I2C timing, so the device never has to divide.
@@ -247,54 +302,6 @@ impl Timing {
     }
 }
 
-#[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-/// Config
-pub struct Config {
-    /// I2C clock source.
-    pub(crate) clock_source: ClockSel,
-
-    /// I2C clock divider.
-    pub clock_div: ClockDiv,
-
-    /// A timing solved ahead of time, skipping the divisions on the device.
-    ///
-    /// Build one with [`Timing::solve`] in a `const`. When set, [`Self::bus_speed`],
-    /// [`Self::clock_div`] and the clock source all come from it rather than being picked from the
-    /// bus speed.
-    pub timing: Option<Timing>,
-
-    /// If true: invert SDA pin signal values (V<sub>DD</sub> = 0/mark, Gnd = 1/idle).
-    pub invert_sda: bool,
-
-    /// If true: invert SCL pin signal values (V<sub>DD</sub> = 0/mark, Gnd = 1/idle).
-    pub invert_scl: bool,
-
-    /// Set the pull configuration for the SDA pin.
-    pub sda_pull: Pull,
-
-    /// Set the pull configuration for the SCL pin.
-    pub scl_pull: Pull,
-
-    /// Set the pull configuration for the SCL pin.
-    pub bus_speed: BusSpeed,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            clock_source: ClockSel::MfClk,
-            clock_div: ClockDiv::DivBy1,
-            timing: None,
-            invert_sda: false,
-            invert_scl: false,
-            sda_pull: Pull::None,
-            scl_pull: Pull::None,
-            bus_speed: BusSpeed::Standard,
-        }
-    }
-}
-
 impl Config {
     /// Use a timing solved ahead of time, skipping the divisions on the device.
     ///
@@ -330,6 +337,7 @@ impl Config {
                 clock_hz: timing.clock_hz(),
                 source_hz: timing.clock_source().frequency(&clocks),
                 tpr: timing.tpr(),
+                clock_low_timeout: solve_clock_low_timeout(self.clock_low_timeout_us, timing.clock_hz())?,
             });
         }
 
@@ -375,6 +383,7 @@ impl Config {
             clock_hz,
             source_hz,
             tpr: (ticks - 1) as u8,
+            clock_low_timeout: solve_clock_low_timeout(self.clock_low_timeout_us, clock_hz)?,
         })
     }
 
@@ -388,6 +397,32 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Solve [`Config::clock_low_timeout_us`] into a `TIMEOUT_CTL.TCNTLA` load value.
+///
+/// One step of `TCNTLA` is 8320 functional clocks: a count is 520 clocks and `TCNTLA` holds the upper 8
+/// bits of a 12-bit counter, so each unit is 16 counts. The 520 comes from the register description, not
+/// from SLAU846's body, which gives `(1 + TPR) x 12` instead — measured on a G3507 at 4 MHz, `TCNTLA` of
+/// 2, 8 and 32 timed out after 4302, 17120 and 66497 µs, or 134 µs per count against the register's 130 and
+/// the body's 12.
+///
+/// Rounded up, so the timeout is never shorter than what was asked for.
+fn solve_clock_low_timeout(timeout_us: Option<u32>, clock_hz: u32) -> Result<Option<u8>, ConfigError> {
+    let Some(timeout_us) = timeout_us else {
+        return Ok(None);
+    };
+
+    /// Functional clocks in one step of `TCNTLA`, times the microseconds in a second.
+    const STEP_CLOCKS_PER_US: u64 = 8320 * 1_000_000;
+
+    let steps = (timeout_us as u64 * clock_hz as u64).div_ceil(STEP_CLOCKS_PER_US);
+
+    // Below 2 the counter does not run at all, which SLAU846 states outright.
+    if !(2..=255).contains(&steps) {
+        return Err(ConfigError::InvalidClockLowTimeout);
+    }
+    Ok(Some(steps as u8))
 }
 
 /// A [`Config`] with everything the driver needs derived from it.
@@ -404,6 +439,9 @@ pub(crate) struct Resolved {
 
     /// The timer period register value.
     pub tpr: u8,
+
+    /// Load value for the SCL-low timeout counter, or `None` to leave the counter off.
+    pub clock_low_timeout: Option<u8>,
 }
 
 impl Resolved {
@@ -426,7 +464,7 @@ pub enum Error {
     /// Arbitration lost
     Arbitration,
 
-    /// ACK not received (either to the address or to a data byte)
+    /// ACK not received, and the controller did not say to what
     Nack,
 
     /// Timeout
@@ -492,13 +530,11 @@ impl<'d> I2c<'d, Blocking> {
         peri: Peri<'d, T>,
         scl: Peri<'d, impl SclPin<T>>,
         sda: Peri<'d, impl SdaPin<T>>,
-        mut config: Config,
+        config: Config,
     ) -> Result<Self, ConfigError> {
-        if let Err(err) = config.check_config() {
-            return Err(err);
-        }
+        let resolved = config.resolve()?;
 
-        Self::new_inner(peri, scl, sda, config)
+        Self::new_inner(peri, scl, sda, config, resolved)
     }
 }
 
@@ -508,13 +544,11 @@ impl<'d> I2c<'d, Async> {
         scl: Peri<'d, impl SclPin<T>>,
         sda: Peri<'d, impl SdaPin<T>>,
         _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
-        mut config: Config,
+        config: Config,
     ) -> Result<Self, ConfigError> {
-        if let Err(err) = config.check_config() {
-            return Err(err);
-        }
+        let resolved = config.resolve()?;
 
-        let i2c = Self::new_inner(peri, scl, sda, config);
+        let i2c = Self::new_inner(peri, scl, sda, config, resolved);
 
         T::info().interrupt.unpend();
         unsafe { T::info().interrupt.enable() };
@@ -527,6 +561,9 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// Reconfigure the driver
     pub fn set_config(&mut self, config: Config) -> Result<(), ConfigError> {
         let resolved = config.resolve()?;
+
+        // Kept so a later [`I2c::reset_peripheral`] restores this config rather than the one the driver was
+        // built with.
         self.resolved = resolved;
 
         self.info.interrupt.disable();
@@ -591,6 +628,13 @@ impl<'d, M: Mode> I2c<'d, M> {
 
         self.info.regs.controller(0).ctpr().write(|w| w.set_tpr(resolved.tpr));
 
+        // SLAU846: the low timeout is to be configured at initialisation and not while active. Counter A
+        // is the SCL-low one; B, which watches SCL high, is left alone.
+        self.info.regs.timeout_ctl().modify(|w| {
+            w.set_tcntaen(resolved.clock_low_timeout.is_some());
+            w.set_tcntla(resolved.clock_low_timeout.unwrap_or_default());
+        });
+
         // Set Tx Fifo threshold, follow TI example
         self.info
             .regs
@@ -637,30 +681,15 @@ impl<'d, M: Mode> I2c<'d, M> {
         });
     }
 
-    /// Put the peripheral back in a state the next transfer can use, after `err` ended this one.
+    /// Reset the peripheral and put its configuration back.
     ///
-    /// A timeout is the one failure a STOP cannot clear, so it takes the reset. Anything else only needs
-    /// the bus released and the queued bytes dropped, which is what SLAU846 asks for: "if a timeout is
-    /// detected before the end of a transfer, software should flush the FIFO before initializing the next
-    /// transfer".
-    fn recover_after(&mut self, err: Error) {
-        if err == Error::Timeout {
-            self.reset_peripheral();
-        } else {
-            self.master_stop();
-            self.flush_fifos();
-        }
-    }
-
-    /// Wait out `I2C_ERR_13` before reading `CSR` after starting a transfer.
+    /// The escape hatch for a controller that cannot be talked round. It ends whatever burst was running
+    /// at once, empties the FIFOs, releases SCL and SDA, and is the only thing that clears `BUSBSY` after a
+    /// clock-low timeout — `IDLE` comes back set with `BUSBSY` still set, and SLAU846 gives the controller
+    /// reset as the other way to clear it.
     ///
-    /// Polling `BUSY` any sooner reads it before the controller has raised it, so the wait falls straight
-    /// through and the caller checks for errors against a transfer that has not happened yet. A NACK then
-    /// goes unnoticed and the transfer is reported as a success.
-    /// Reset the controller and reapply the configuration.
-    ///
-    /// The only thing that reliably ends an abandoned burst, since nothing is raised when one finishes.
-    /// Cheap: a few register writes and a 16-cycle settle.
+    /// Cheap: a few register writes and a 16-cycle settle, against the hundreds of milliseconds that
+    /// waiting on a stuck bus costs.
     fn reset_peripheral(&mut self) {
         self.info.regs.gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
@@ -679,87 +708,25 @@ impl<'d, M: Mode> I2c<'d, M> {
         let _ = self.init(&resolved);
     }
 
-    fn settle_after_start(&self) {
-        cortex_m::asm::delay(self.settle_cycles);
-    }
-
-    /// Wait for whoever holds the bus to release it.
+    /// Put the peripheral back in a state the next transfer can use, after `err` ended this one.
     ///
-    /// Waits on the STOP that ends the transfer holding it, rather than spinning on `BUSBSY`: the bus can
-    /// be held by another controller for as long as it likes, and an async caller must not block the
-    /// executor for that.
-    /// Mask this transfer's interrupts and mark the peripheral dirty.
-    ///
-    /// Deliberately does not release the bus. A STOP-only command is only legal "after previous
-    /// transaction success finished" (SLAU846 table 25-10) and a cancelled transaction has not, so one
-    /// issued here is never executed; waiting for the burst to end instead is unbounded, which a drop
-    /// handler may not do. [`I2c::recover_bus`] finishes the job at the front of the next transfer.
-    ///
-    /// [`OnDrop::defuse`] it when the transfer finished on its own.
-    fn abort_on_drop(regs: Regs, state: &'static State) -> OnDrop<impl FnOnce()> {
-        OnDrop::new(move || {
-            // Masking matters on its own: an armed interrupt with nothing left to consume it fires into a
-            // handler that only wakes, and re-enters until something masks it. The flags it latched need no
-            // clearing here, because `recover_bus` resets the peripheral before the next transfer.
-            regs.cpu_int(0).imask().write_value(i2c::regs::CpuInt::default());
-
-            state.abandoned.store(true, Ordering::Relaxed);
-        })
-    }
-
-    /// Make the peripheral fit for a new transfer after a dropped one, then wait for the bus.
-    ///
-    /// A dropped transfer leaves a burst running that nobody is servicing, and nothing short of a reset
-    /// ends it in bounded time: a STOP-only command is illegal until the transaction finishes (SLAU846
-    /// table 25-10), and no interrupt is raised when it does, so waiting for it means polling.
-
-    /// Finish the cleanup a dropped transfer could not do, before touching the bus again.
-    async fn recover_bus(&mut self) -> Result<(), Error> {
-        // Load and clear rather than swap: `thumbv6m` has no CAS, and both sides of this flag run in task
-        // context on a `&mut self`, never against an interrupt.
-        if self.state.abandoned.load(Ordering::Relaxed) {
-            self.state.abandoned.store(false, Ordering::Relaxed);
-
-            // A reset does every part of the cleanup at once and is the only thing that reliably ends the
-            // abandoned burst: nothing is raised when one finishes, so anything else means polling.
+    /// A timeout is the one failure a STOP cannot clear, so it takes the reset. Anything else only needs
+    /// the bus released and the queued bytes dropped, which is what SLAU846 asks for: "if a timeout is
+    /// detected before the end of a transfer, software should flush the FIFO before initializing the next
+    /// transfer".
+    fn recover_after(&mut self, err: Error) {
+        if err == Error::Timeout {
             self.reset_peripheral();
+        } else {
+            self.master_stop();
+            self.flush_fifos();
         }
-
-        self.wait_bus_free().await
-    }
-
-    async fn wait_bus_free(&mut self) -> Result<(), Error> {
-        if !self.info.regs.controller(0).csr().read().busbsy() {
-            return Ok(());
-        }
-
-        // Dropping this future part-way has to leave `CSTOP` masked. Left armed it fires into a handler
-        // that only wakes, with no future to consume it, and re-enters until something else masks it.
-        let regs = self.info.regs;
-        let _disarm = OnDrop::new(|| regs.cpu_int(0).imask().modify(|w| w.set_cstop(false)));
-
-        future::poll_fn(|cx| {
-            self.state.waker.register(cx.waker());
-
-            self.info.regs.cpu_int(0).iclr().write(|w| w.set_cstop(true));
-            self.info.regs.cpu_int(0).imask().modify(|w| w.set_cstop(true));
-
-            // Checked after arming, so a STOP that arrives in between is caught here rather than waited
-            // on forever.
-            if self.info.regs.controller(0).csr().read().busbsy() {
-                return Poll::Pending;
-            }
-
-            Poll::Ready(Ok(()))
-        })
-        .await
     }
 
     fn master_stop(&mut self) {
         // not the first transaction, delay 1000 cycles
         cortex_m::asm::delay(1000);
 
-        // Stop transaction
         self.info.regs.controller(0).cctr().modify(|w| {
             w.set_cblen(0);
             w.set_stop(true);
@@ -771,7 +738,6 @@ impl<'d, M: Mode> I2c<'d, M> {
         // delay between ongoing transactions, 1000 cycles
         cortex_m::asm::delay(1000);
 
-        // Update transaction to length amount of bytes
         self.info.regs.controller(0).cctr().modify(|w| {
             w.set_cblen(length as u16);
             w.set_start(false);
@@ -832,12 +798,57 @@ impl<'d, M: Mode> I2c<'d, M> {
         Ok(())
     }
 
+    /// Wait out `I2C_ERR_13` before reading `CSR` after starting a transfer.
+    ///
+    /// Polling `BUSY` any sooner reads it before the controller has raised it, so the wait falls straight
+    /// through and the caller checks for errors against a transfer that has not happened yet. A NACK then
+    /// goes unnoticed and the transfer is reported as a success.
+    fn settle_after_start(&self) {
+        cortex_m::asm::delay(self.settle_cycles);
+    }
+
+    /// Wait for whoever holds the bus to release it, giving up on the SCL-low timeout.
+    ///
+    /// Only a bus held *low* can time out, because counter A watches SCL low: a bus left marked busy with
+    /// SCL high still waits forever, which is what counter B would be for.
+    fn blocking_wait_bus_free(&mut self) -> Result<(), Error> {
+        self.clear_timeout();
+        while self.info.regs.controller(0).csr().read().busbsy() {
+            if self.timed_out() {
+                self.clear_timeout();
+                self.reset_peripheral();
+                return Err(Error::Timeout);
+            }
+        }
+        Ok(())
+    }
+
+    /// Has the SCL-low timeout fired? Always false unless [`Config::clock_low_timeout`] enabled it.
+    fn timed_out(&self) -> bool {
+        self.info.regs.cpu_int(0).ris().read().timeouta()
+    }
+
+    /// Forget any timeout left over from an earlier transfer, so it is not blamed on the next one.
+    fn clear_timeout(&self) {
+        self.info.regs.cpu_int(0).iclr().write(|w| w.set_timeouta(true));
+    }
+
+    /// Turn whatever the controller latched into an error for the caller.
+    ///
+    /// Ordered by how fundamental the failure is. A timeout means the bus never gave the transfer a
+    /// chance, so it outranks a NACK that may just be the tail of it.
     fn check_error(&self) -> Result<(), Error> {
+        if self.timed_out() {
+            self.clear_timeout();
+            return Err(Error::Timeout);
+        }
+
         let csr = self.info.regs.controller(0).csr().read();
+        if csr.arblst() {
+            return Err(Error::Arbitration);
+        }
         if csr.err() {
             return Err(Error::Nack);
-        } else if csr.arblst() {
-            return Err(Error::Arbitration);
         }
         Ok(())
     }
@@ -845,13 +856,12 @@ impl<'d, M: Mode> I2c<'d, M> {
 
 impl<'d> I2c<'d, Blocking> {
     fn master_blocking_continue(&mut self, length: usize, send_ack_nack: bool, send_stop: bool) -> Result<(), Error> {
-        // Perform transaction
         self.master_continue(length, send_ack_nack, send_stop)?;
 
         self.settle_after_start();
 
         // Poll until the Controller process all bytes or NACK
-        while self.info.regs.controller(0).csr().read().busy() {}
+        while self.info.regs.controller(0).csr().read().busy() && !self.timed_out() {}
 
         Ok(())
     }
@@ -866,7 +876,7 @@ impl<'d> I2c<'d, Blocking> {
     ) -> Result<(), Error> {
         // unless restart, Wait for the controller to be idle,
         if !restart {
-            while !self.info.regs.controller(0).csr().read().idle() {}
+            while !self.info.regs.controller(0).csr().read().idle() && !self.timed_out() {}
         }
 
         self.master_read(address, length, restart, send_ack_nack, send_stop)?;
@@ -874,22 +884,20 @@ impl<'d> I2c<'d, Blocking> {
         self.settle_after_start();
 
         // Poll until the Controller process all bytes or NACK
-        while self.info.regs.controller(0).csr().read().busy() {}
+        while self.info.regs.controller(0).csr().read().busy() && !self.timed_out() {}
 
         Ok(())
     }
 
     fn master_blocking_write(&mut self, address: u8, length: usize, send_stop: bool) -> Result<(), Error> {
-        // Wait for the controller to be idle
-        while !self.info.regs.controller(0).csr().read().idle() {}
+        while !self.info.regs.controller(0).csr().read().idle() && !self.timed_out() {}
 
-        // Perform writing
         self.master_write(address, length, send_stop)?;
 
         self.settle_after_start();
 
         // Poll until the Controller writes all bytes or NACK
-        while self.info.regs.controller(0).csr().read().busy() {}
+        while self.info.regs.controller(0).csr().read().busy() && !self.timed_out() {}
 
         Ok(())
     }
@@ -901,6 +909,7 @@ impl<'d> I2c<'d, Blocking> {
         restart: bool,
         end_w_stop: bool,
     ) -> Result<(), Error> {
+        self.clear_timeout();
         if read.is_empty() {
             return Err(Error::ZeroLengthTransfer);
         }
@@ -929,7 +938,6 @@ impl<'d> I2c<'d, Blocking> {
                 self.master_blocking_continue(chunk.len(), send_ack_nack, send_stop)?;
             }
 
-            // check errors
             if let Err(err) = self.check_error() {
                 self.recover_after(err);
                 return Err(err);
@@ -943,6 +951,7 @@ impl<'d> I2c<'d, Blocking> {
     }
 
     fn write_blocking_internal(&mut self, address: u8, write: &[u8], end_w_stop: bool) -> Result<(), Error> {
+        self.clear_timeout();
         if write.is_empty() {
             return Err(Error::ZeroLengthTransfer);
         }
@@ -967,7 +976,6 @@ impl<'d> I2c<'d, Blocking> {
                 self.master_blocking_continue(chunk.len(), false, send_stop)?;
             }
 
-            // check errors
             if let Err(err) = self.check_error() {
                 self.recover_after(err);
                 return Err(err);
@@ -981,22 +989,19 @@ impl<'d> I2c<'d, Blocking> {
 
     /// Blocking read.
     pub fn blocking_read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Error> {
-        // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.blocking_wait_bus_free()?;
         self.read_blocking_internal(address, read, false, true)
     }
 
     /// Blocking write.
     pub fn blocking_write(&mut self, address: u8, write: &[u8]) -> Result<(), Error> {
-        // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.blocking_wait_bus_free()?;
         self.write_blocking_internal(address, write, true)
     }
 
     /// Blocking write, restart, read.
     pub fn blocking_write_read(&mut self, address: u8, write: &[u8], read: &mut [u8]) -> Result<(), Error> {
-        // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.blocking_wait_bus_free()?;
         let err = self.write_blocking_internal(address, write, false);
         if err != Ok(()) {
             return err;
@@ -1007,6 +1012,7 @@ impl<'d> I2c<'d, Blocking> {
 
 impl<'d> I2c<'d, Async> {
     async fn write_async_internal(&mut self, addr: u8, write: &[u8], end_w_stop: bool) -> Result<(), Error> {
+        self.clear_timeout();
         let _guard = self.wake_floor.map(WakeGuard::new);
         let abort = Self::abort_on_drop(self.info.regs, self.state);
 
@@ -1017,6 +1023,7 @@ impl<'d> I2c<'d, Async> {
             self.info.regs.cpu_int(0).imask().modify(|w| {
                 w.set_carblost(true);
                 w.set_cnack(true);
+                w.set_timeouta(true);
                 w.set_ctxdone(true);
             });
 
@@ -1043,6 +1050,7 @@ impl<'d> I2c<'d, Async> {
                     CpuIntIidxStat::NoIntr => Poll::Pending,
                     CpuIntIidxStat::Cnackfg => Poll::Ready(Err(Error::Nack)),
                     CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
+                    CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
                     CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
                     _ => Poll::Pending,
                 };
@@ -1076,6 +1084,7 @@ impl<'d> I2c<'d, Async> {
         restart: bool,
         end_w_stop: bool,
     ) -> Result<(), Error> {
+        self.clear_timeout();
         let _guard = self.wake_floor.map(WakeGuard::new);
         let abort = Self::abort_on_drop(self.info.regs, self.state);
 
@@ -1092,6 +1101,7 @@ impl<'d> I2c<'d, Async> {
             self.info.regs.cpu_int(0).imask().modify(|w| {
                 w.set_carblost(true);
                 w.set_cnack(true);
+                w.set_timeouta(true);
                 w.set_crxdone(true);
             });
 
@@ -1110,6 +1120,7 @@ impl<'d> I2c<'d, Async> {
                     CpuIntIidxStat::NoIntr => Poll::Pending,
                     CpuIntIidxStat::Cnackfg => Poll::Ready(Err(Error::Nack)),
                     CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
+                    CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
                     CpuIntIidxStat::Crxdonefg => Poll::Ready(Ok(())),
                     _ => Poll::Pending,
                 };
@@ -1140,23 +1151,114 @@ impl<'d> I2c<'d, Async> {
         Ok(())
     }
 
+    /// Leave the peripheral safe to reuse if a transfer future is dropped part-way.
+    ///
+    /// Deliberately does not release the bus. A STOP-only command is only legal "after previous
+    /// transaction success finished" (SLAU846 table 25-10) and a cancelled transaction has not, so one
+    /// issued here is never executed; waiting for the burst to end instead is unbounded, which a drop
+    /// handler may not do. [`I2c::recover_bus`] finishes the job at the front of the next transfer.
+    ///
+    /// [`OnDrop::defuse`] it when the transfer finished on its own.
+    fn abort_on_drop(regs: Regs, state: &'static State) -> OnDrop<impl FnOnce()> {
+        OnDrop::new(move || {
+            // Masking matters on its own: an armed interrupt with nothing left to consume it fires into a
+            // handler that only wakes, and re-enters until something masks it. The flags it latched need no
+            // clearing here, because `recover_bus` resets the peripheral before the next transfer.
+            regs.cpu_int(0).imask().write_value(i2c::regs::CpuInt::default());
+
+            state.abandoned.store(true, Ordering::Relaxed);
+        })
+    }
+
+    /// Make the peripheral fit for a new transfer after a dropped one, then wait for the bus.
+    ///
+    /// A dropped transfer leaves a burst running that nobody is servicing, and nothing short of a reset
+    /// ends it in bounded time: a STOP-only command is illegal until the transaction finishes (SLAU846
+    /// table 25-10), and no interrupt is raised when it does, so waiting for it means polling.
+    async fn recover_bus(&mut self) -> Result<(), Error> {
+        // Load and clear rather than swap: `thumbv6m` has no CAS, and both sides of this flag run in task
+        // context on a `&mut self`, never against an interrupt.
+        if self.state.abandoned.load(Ordering::Relaxed) {
+            self.state.abandoned.store(false, Ordering::Relaxed);
+
+            // A reset does every part of the cleanup at once and is the only thing that reliably ends the
+            // abandoned burst: nothing is raised when one finishes, so anything else means polling.
+            self.reset_peripheral();
+        }
+
+        self.wait_bus_free().await
+    }
+
+    /// Wait for the bus to go free, without spinning on `BUSBSY`.
+    ///
+    /// A STOP is what releases the bus, so `CSTOP` is the wake-up, and the clock-low timeout is the way out
+    /// if it never comes. Nothing here is fast — a busy bus means another transfer is in flight, which is
+    /// milliseconds — so a spin would hold the executor for a very long time by its standards.
+    ///
+    /// The flag is cleared before the mask goes on: a STOP that lands between the two would otherwise sit
+    /// pending against a handler that only wakes, and re-enter forever without anyone consuming it.
+    async fn wait_bus_free(&mut self) -> Result<(), Error> {
+        if !self.info.regs.controller(0).csr().read().busbsy() {
+            return Ok(());
+        }
+        self.clear_timeout();
+
+        // Dropping this future part-way has to leave `CSTOP` masked. Left armed it fires into a handler
+        // that only wakes, with no future to consume it, and re-enters until something else masks it.
+        let regs = self.info.regs;
+        let _disarm = OnDrop::new(|| {
+            regs.cpu_int(0).imask().modify(|w| {
+                w.set_cstop(false);
+                w.set_timeouta(false);
+            })
+        });
+
+        let waited = future::poll_fn(|cx| {
+            self.state.waker.register(cx.waker());
+
+            self.info.regs.cpu_int(0).iclr().write(|w| w.set_cstop(true));
+            self.info.regs.cpu_int(0).imask().modify(|w| {
+                w.set_cstop(true);
+                w.set_timeouta(true);
+            });
+
+            if self.timed_out() {
+                self.clear_timeout();
+                return Poll::Ready(Err(Error::Timeout));
+            }
+
+            // Checked after arming, so a STOP that arrives in between is caught here rather than waited
+            // on forever.
+            if self.info.regs.controller(0).csr().read().busbsy() {
+                return Poll::Pending;
+            }
+
+            Poll::Ready(Ok(()))
+        })
+        .await;
+
+        // A timeout sticks: `BUSBSY` stays set with `IDLE` set too, so without this the next call waits on
+        // a bus that will never be reported free and cannot time out again either, SCL now being high.
+        if waited.is_err() {
+            self.reset_peripheral();
+        }
+        waited
+    }
+
     // =========================
     //  Async public API
 
     pub async fn async_write(&mut self, address: u8, write: &[u8]) -> Result<(), Error> {
-        // wait until bus is free
         self.recover_bus().await?;
         self.write_async_internal(address, write, true).await
     }
 
     pub async fn async_read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Error> {
-        // wait until bus is free
         self.recover_bus().await?;
         self.read_async_internal(address, read, false, true).await
     }
 
     pub async fn async_write_read(&mut self, address: u8, write: &[u8], read: &mut [u8]) -> Result<(), Error> {
-        // wait until bus is free
         self.recover_bus().await?;
 
         let err = self.write_async_internal(address, write, false).await;
@@ -1199,8 +1301,7 @@ impl<'d> embedded_hal_02::blocking::i2c::Transactional for I2c<'d, Blocking> {
         address: u8,
         operations: &mut [embedded_hal_02::blocking::i2c::Operation<'_>],
     ) -> Result<(), Self::Error> {
-        // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.blocking_wait_bus_free()?;
         for i in 0..operations.len() {
             match &mut operations[i] {
                 embedded_hal_02::blocking::i2c::Operation::Read(buf) => {
@@ -1253,8 +1354,7 @@ impl<'d> embedded_hal::i2c::I2c for I2c<'d, Blocking> {
         address: u8,
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> Result<(), Self::Error> {
-        // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.blocking_wait_bus_free()?;
         for i in 0..operations.len() {
             match &mut operations[i] {
                 embedded_hal::i2c::Operation::Read(buf) => self.read_blocking_internal(address, buf, false, false)?,
@@ -1284,7 +1384,6 @@ impl<'d> embedded_hal_async::i2c::I2c for I2c<'d, Async> {
         address: u8,
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> Result<(), Self::Error> {
-        // wait until bus is free
         self.recover_bus().await?;
         for i in 0..operations.len() {
             match &mut operations[i] {
@@ -1340,8 +1439,7 @@ pub(crate) struct State {
     /// The clock rate of the I2C. This might be configured.
     pub(crate) clock: AtomicU32,
     pub(crate) waker: AtomicWaker,
-
-    /// Set when an async transfer was dropped part-way, so the peripheral is left mid-burst and needs
+    /// A transfer future was dropped part-way, so the controller is still running a burst nobody is
     /// servicing. Set by [`I2c::abort_on_drop`] and cleared by [`I2c::recover_bus`].
     pub(crate) abandoned: AtomicBool,
 }
@@ -1352,6 +1450,7 @@ impl<'d, M: Mode> I2c<'d, M> {
         scl: Peri<'d, impl SclPin<T>>,
         sda: Peri<'d, impl SdaPin<T>>,
         config: Config,
+        resolved: Resolved,
     ) -> Result<Self, ConfigError> {
         // Init power for I2C
         T::info().regs.gprcm(0).rstctl().write(|w| {
@@ -1385,8 +1484,6 @@ impl<'d, M: Mode> I2c<'d, M> {
                 w.set_hiz1(true);
             });
         }
-
-        let resolved = config.resolve()?;
 
         let mut this = Self {
             info: T::info(),
