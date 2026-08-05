@@ -1,10 +1,8 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::LazyLock;
 use std::{env, fs};
 
 use common::CfgSet;
@@ -676,10 +674,10 @@ fn clocked_in_standby1(name: &str) -> bool {
 fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
     let low_power = env::var_os("CARGO_FEATURE_LOW_POWER").is_some();
 
-    // Timer features
-    for (timer, _) in TIMERS.iter() {
-        let name = timer.to_lowercase();
-        cfgs.declare(&format!("time_driver_{}", name));
+    // Every one of these is declared on every chip, not just the ones that have the timer:
+    // `time_driver/tim.rs` names all of them unconditionally, and an undeclared cfg warns.
+    for timer in TIME_DRIVER_TIMERS {
+        cfgs.declare(&format!("time_driver_{}", timer.to_lowercase()));
     }
 
     let time_driver = match env::vars()
@@ -699,27 +697,6 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
     // Verify the selected timer is available
     let selected_timer = match time_driver.as_ref().map(|x| x.as_ref()) {
         None => "",
-        // TODO: Fix TIMB0
-        // Some("timb0") => "TIMB0",
-        Some("timg0") => "TIMG0",
-        Some("timg1") => "TIMG1",
-        Some("timg2") => "TIMG2",
-        Some("timg3") => "TIMG3",
-        Some("timg4") => "TIMG4",
-        Some("timg5") => "TIMG5",
-        Some("timg6") => "TIMG6",
-        Some("timg7") => "TIMG7",
-        Some("timg8") => "TIMG8",
-        Some("timg9") => "TIMG9",
-        Some("timg10") => "TIMG10",
-        Some("timg11") => "TIMG11",
-        // The 32-bit timers. Selectable by name only: they are scarce — often the only 32-bit timer on
-        // the part — so `any` leaves them for capture and compare.
-        Some("timg12") => "TIMG12",
-        Some("timg13") => "TIMG13",
-        Some("timg14") => "TIMG14",
-        Some("tima0") => "TIMA0",
-        Some("tima1") => "TIMA1",
         Some("any") => {
             // Order of timer candidates:
             // 1. Basic timers
@@ -754,7 +731,14 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
                 .or_else(|| CANDIDATES.iter().find(available))
                 .expect("Could not find any timer")
         }
-        _ => panic!("unknown time_driver {:?}", time_driver),
+        // The 32-bit timers are reachable here but not through `any`: they are scarce — often the
+        // only 32-bit timer on the part — so `any` leaves them for capture and compare. Naming one
+        // trades that for the much longer period a 32-bit counter gives.
+        Some(name) => TIME_DRIVER_TIMERS
+            .iter()
+            .find(|timer| timer.eq_ignore_ascii_case(name))
+            .copied()
+            .unwrap_or_else(|| panic!("unknown time_driver {name:?}")),
     };
 
     // Using a timer that doens't work in STANDBY locks the application out of deep-sleep the timer
@@ -762,9 +746,9 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
     let allow_sleep_floor = env::var_os("CARGO_FEATURE_ALLOW_TIME_DRIVER_SLEEP_FLOOR").is_some();
 
     if low_power && !allow_sleep_floor && !selected_timer.is_empty() && !clocked_in_standby1(selected_timer) {
-        let usable = TIMERS
-            .keys()
-            .filter(|tim| clocked_in_standby1(tim) && singletons.iter().any(|s| &s.name == *tim))
+        let usable = TIME_DRIVER_TIMERS
+            .iter()
+            .filter(|tim| clocked_in_standby1(tim) && singletons.iter().any(|s| &s.name == **tim))
             .map(|tim| format!("time-driver-{}", tim.to_lowercase()))
             .collect::<Vec<_>>()
             .join(", ");
@@ -875,13 +859,14 @@ fn generate_timers() -> TokenStream {
     let timer_impls = METADATA
         .peripherals
         .iter()
-        .filter(|p| p.name.starts_with("TIM"))
-        .filter(|p| !p.name.starts_with("TIMB"))
-        .map(|peripheral| {
+        .filter_map(|peripheral| peripheral.timer.map(|timer| (peripheral, timer)))
+        // The basic timers are a bare counter with no capture/compare block, which is what
+        // `ccp_channels == 0` says. `tim` has no driver for one, and their registers are laid out
+        // differently from the `tim_v1` block the metapac maps them to, so they get no impls at all.
+        .filter(|(_, timer)| timer.ccp_channels > 0)
+        .flat_map(|(peripheral, timer)| {
             let name = Ident::new(&peripheral.name, Span::call_site());
-            let timers = &*TIMERS;
 
-            let timer = timers.get(peripheral.name).expect("Timer does not exist");
             let word = match timer.bits {
                 16 => quote! { u16 },
                 32 => quote! { u32 },
@@ -890,7 +875,7 @@ fn generate_timers() -> TokenStream {
 
             let mut impls = Vec::new();
             let prescaler = timer.prescaler;
-            let channels = timer.ccp_channels_external;
+            let channels = timer.ccp_channels;
 
             impls.push(quote! {
                 impl_tim_instance!(
@@ -907,27 +892,28 @@ fn generate_timers() -> TokenStream {
                 });
             }
 
-            if timer.ccp_channels_internal >= 2 {
+            if timer.ccp_channels >= 2 {
                 impls.push(quote! {
                     impl_tim_instance_general_2ch!(#name);
                 });
             }
 
-            if timer.ccp_channels_internal >= 4 {
+            if timer.ccp_channels >= 4 {
                 impls.push(quote! {
                     impl_tim_instance_general_4ch!(#name);
                 });
             }
 
-            if peripheral.name.starts_with("TIMA") {
+            // Deadband insertion and a fault handler are what the advanced-timer driver programs,
+            // and only the `TIMA` instances have them.
+            if timer.deadband && timer.fault_handler {
                 impls.push(quote! {
                     impl_tim_instance_advanced!(#name);
                 });
             }
 
             impls
-        })
-        .flatten();
+        });
 
     quote! {
         #(#timer_impls)*
@@ -1200,353 +1186,19 @@ fn rustfmt(path: impl AsRef<Path>) {
     }
 }
 
-#[allow(dead_code)]
-struct TimerDesc {
-    bits: u8,
-    /// Is there an 8-bit prescaler
-    prescaler: bool,
-    /// Is there a repeat counter
-    repeat_counter: bool,
-    ccp_channels_internal: u8,
-    ccp_channels_external: u8,
-    external_pwm_channels: u8,
-    phase_load: bool,
-    shadow_load: bool,
-    shadow_ccs: bool,
-    deadband: bool,
-    fault_handler: bool,
-    qei_hall: bool,
-}
-
-/// Description of all timer instances.
-const TIMERS: LazyLock<BTreeMap<String, TimerDesc>> = LazyLock::new(|| {
-    let mut map = BTreeMap::new();
-    map.insert(
-        "TIMB0".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 0,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG0".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG1".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG2".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG3".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG4".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: true,
-            shadow_ccs: true,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG5".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: true,
-            shadow_ccs: true,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG6".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: true,
-            shadow_ccs: true,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG7".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: true,
-            shadow_ccs: true,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG8".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: true,
-        },
-    );
-
-    map.insert(
-        "TIMG9".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: true,
-        },
-    );
-
-    map.insert(
-        "TIMG10".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: true,
-        },
-    );
-
-    map.insert(
-        "TIMG11".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: true,
-        },
-    );
-
-    map.insert(
-        "TIMG12".into(),
-        TimerDesc {
-            bits: 32,
-            prescaler: false,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: true,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG13".into(),
-        TimerDesc {
-            bits: 32,
-            prescaler: false,
-            repeat_counter: false,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 2,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: true,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMG14".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: false,
-            ccp_channels_internal: 4,
-            ccp_channels_external: 4,
-            external_pwm_channels: 4,
-            phase_load: false,
-            shadow_load: false,
-            shadow_ccs: false,
-            deadband: false,
-            fault_handler: false,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMA0".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: true,
-            ccp_channels_internal: 4,
-            ccp_channels_external: 4,
-            external_pwm_channels: 8,
-            phase_load: true,
-            shadow_load: true,
-            shadow_ccs: true,
-            deadband: true,
-            fault_handler: true,
-            qei_hall: false,
-        },
-    );
-
-    map.insert(
-        "TIMA1".into(),
-        TimerDesc {
-            bits: 16,
-            prescaler: true,
-            repeat_counter: true,
-            ccp_channels_internal: 2,
-            ccp_channels_external: 2,
-            external_pwm_channels: 4,
-            phase_load: true,
-            shadow_load: true,
-            shadow_ccs: true,
-            deadband: true,
-            fault_handler: true,
-            qei_hall: false,
-        },
-    );
-
-    map
-});
+/// Timers a `time-driver-*` Cargo feature can name.
+///
+/// This is the portfolio-wide list, not the chip's: every entry is declared as a cfg on every chip
+/// because `time_driver/tim.rs` refers to all of them, and asking for one the chip does not have is
+/// caught by the singleton lookup instead.
+///
+/// What each timer *is* comes from `Peripheral::timer`, per instance and per device. Only the set of
+/// selectable names lives here.
+// TODO: Fix TIMB0, which has no capture/compare block and so cannot drive the time driver as written.
+const TIME_DRIVER_TIMERS: &[&str] = &[
+    "TIMG0", "TIMG1", "TIMG2", "TIMG3", "TIMG4", "TIMG5", "TIMG6", "TIMG7", "TIMG8", "TIMG9", "TIMG10", "TIMG11",
+    "TIMG12", "TIMG13", "TIMG14", "TIMA0", "TIMA1",
+];
 
 enum GetOneError {
     None,
