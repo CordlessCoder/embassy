@@ -243,8 +243,13 @@ fn generate_dma_channel_count() -> TokenStream {
 }
 
 fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
-    let vrsel = METADATA.adc_vrsel;
-    let memctl = METADATA.adc_memctl;
+    let adc = METADATA
+        .peripherals
+        .iter()
+        .find_map(|peripheral| peripheral.adc)
+        .expect("chip has no ADC instance");
+    let vrsel = adc.vrsel;
+    let memctl = adc.memctl;
 
     cfgs.declare("adc_neg_vref");
     match vrsel {
@@ -961,11 +966,12 @@ fn select_gpio_features(cfgs: &mut CfgSet) {
 
     // A GPIO port either owns an NVIC line or shares an interrupt group, and `gpio.rs` needs a
     // different handler for each.
-    for peripheral in METADATA.peripherals.iter().filter(|p| p.kind == "gpio") {
-        let Some(interrupt) = peripheral.interrupt else {
-            continue;
-        };
-
+    for (peripheral, interrupt) in METADATA
+        .peripherals
+        .iter()
+        .filter(|p| p.kind == "gpio")
+        .flat_map(|p| p.interrupts.iter().map(move |interrupt| (p, interrupt)))
+    {
         let grouped = interrupt.group_iidx.is_some();
 
         match (peripheral.name, grouped) {
