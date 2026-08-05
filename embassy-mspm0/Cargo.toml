@@ -135,7 +135,12 @@ nrst-pin-as-gpio = []
 ## Allow using the SWD pins as regular GPIO pins.
 swd-pins-as-gpio = []
 
-low-power = []
+## Deep-sleep support: the [`low_power`] module, the sleep guards the drivers hold, and the executor
+## that idles into a sleep mode.
+##
+## Pulls in `embassy-time` for [`Config::min_sleep`], the deep-sleep entry threshold. The point of the
+## feature is the low-power executor, which is an `embassy-time` user already.
+low-power = ["dep:embassy-time"]
 
 executor-thread = ["_executor"]
 

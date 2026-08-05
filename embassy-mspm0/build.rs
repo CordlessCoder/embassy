@@ -1113,8 +1113,10 @@ fn optional_bool_tokens(value: Option<bool>) -> TokenStream {
     }
 }
 
-/// Implement `LowPowerInstance` for every peripheral singleton.
+/// Implement `LowPowerInstance` for every peripheral singleton, and emit the wake-up latency.
 fn generate_low_power(singletons: &[Singleton]) -> TokenStream {
+    let max_wake_ns = max_wake_ns();
+
     let impls = singletons.iter().filter_map(|singleton| {
         let name = singleton.name.as_str();
 
@@ -1144,7 +1146,24 @@ fn generate_low_power(singletons: &[Singleton]) -> TokenStream {
 
     quote! {
         #(#impls)*
+
+        pub const MAX_WAKE_NS: u32 = #max_wake_ns;
     }
+}
+
+/// Longest wake-up latency the datasheet publishes for a deep-sleep mode, in nanoseconds.
+///
+/// One number rather than the per-mode table: the spread between modes is under a tick (7.2 to 20 µs
+/// against 30.5 µs a tick), so a per-mode threshold could not tell them apart. It also covers the
+/// modes the datasheet omits a figure for, such as STOP0 on L110x/L13xx.
+fn max_wake_ns() -> u32 {
+    let wake = METADATA.wake_ns;
+
+    [wake.stop0, wake.stop1, wake.stop2, wake.standby0, wake.standby1]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or_else(|| panic!("{} publishes no deep-sleep wake-up latency", METADATA.name))
 }
 
 fn sleep_info_tokens(peripheral: &Peripheral) -> TokenStream {

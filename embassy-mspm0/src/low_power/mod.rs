@@ -4,6 +4,9 @@
 //! the chip shallower than a given [`SleepLevel`]; the low-power executor then idles into the deepest
 //! mode no guard blocks.
 //!
+//! Duration gates it too: a wake scheduled sooner than [`Config::min_sleep`](crate::Config::min_sleep)
+//! leaves the idle a plain `WFI`.
+//!
 //! # Wake source caveats
 //! - `GPIO_ERR_01` (L110x/L13xx, G1x0x/G3x0x) — a wake edge can be missed. Only the STANDBY1 half is
 //!   handled: if the pin is still asserted when the chip goes back to sleep no further edge is detected
@@ -18,9 +21,10 @@
 use core::sync::atomic::Ordering;
 
 use critical_section::CriticalSection;
+use embassy_time::{Duration, TICK_HZ};
 use pac::cpuss::vals::Prefetch;
 use pac::sysctl::vals::Dsleep;
-use portable_atomic::AtomicU8;
+use portable_atomic::{AtomicU8, AtomicU32};
 
 use crate::pac;
 
@@ -31,6 +35,60 @@ pub use inner::{SleepMode, enter_sleep};
 pub use crate::sysctl::SleepLevel;
 
 static SLEEP_BLOCKS: [AtomicU8; 5] = [const { AtomicU8::new(0) }; 5];
+
+/// Longest wake-up latency this device's datasheet publishes for a deep-sleep mode, in nanoseconds.
+///
+/// Typical rather than a ceiling: TI gives one unqualified figure per mode, in a cell spanning the
+/// MIN, TYP and MAX columns. Modes the datasheet has no figure for do not count towards it.
+pub const MAX_WAKE_NS: u32 = crate::_generated::MAX_WAKE_NS;
+
+/// Default [`Config::min_sleep`](crate::Config::min_sleep): four times [`MAX_WAKE_NS`], rounded up to
+/// a whole tick.
+///
+/// Entry costs roughly what wake does, and the published figures are typical rather than worst case,
+/// so this is about the shortest sleep that can pay for itself — two or three ticks on every MSPM0.
+pub const DEFAULT_MIN_SLEEP: Duration = Duration::from_ticks(ns_to_ticks(4 * MAX_WAKE_NS as u64));
+
+/// Ticks covering `ns`, rounded up.
+const fn ns_to_ticks(ns: u64) -> u64 {
+    (ns * TICK_HZ).div_ceil(1_000_000_000)
+}
+
+/// [`Config::min_sleep`](crate::Config::min_sleep) in ticks, saturated to what fits.
+///
+/// A `u32` reaches 36 hours at 32.768 kHz, and reading it needs no critical section on a target
+/// without 64-bit atomics.
+static MIN_SLEEP_TICKS: AtomicU32 = AtomicU32::new(DEFAULT_MIN_SLEEP.as_ticks() as u32);
+
+/// Apply [`Config::min_sleep`](crate::Config::min_sleep).
+pub(crate) fn set_min_sleep(min_sleep: Duration) {
+    MIN_SLEEP_TICKS.store(min_sleep.as_ticks().min(u32::MAX as u64) as u32, Ordering::Relaxed);
+}
+
+/// Whether the next wake is far enough out for a deep-sleep mode to be worth entering.
+fn min_sleep_met(cs: CriticalSection) -> bool {
+    let until_wake = ticks_until_wake(cs);
+    let min_sleep = MIN_SLEEP_TICKS.load(Ordering::Relaxed) as u64;
+
+    if until_wake < min_sleep {
+        trace!("Waking in {} ticks, under the {} tick minimum", until_wake, min_sleep);
+        return false;
+    }
+
+    true
+}
+
+/// Ticks until something wakes the core again.
+#[cfg(feature = "_time-driver")]
+fn ticks_until_wake(cs: CriticalSection) -> u64 {
+    crate::time_driver::ticks_until_wake(cs)
+}
+
+/// Without a time driver nothing schedules a wake, so the sleep is unbounded and always long enough.
+#[cfg(not(feature = "_time-driver"))]
+fn ticks_until_wake(_cs: CriticalSection) -> u64 {
+    u64::MAX
+}
 
 /// Block sleep at `level` and every deeper mode. Paired with [`unblock`] by
 /// [`WakeGuard`](crate::sysctl::WakeGuard).
@@ -64,6 +122,9 @@ fn deepest_allowed() -> Option<SleepLevel> {
 /// chip supports; a held guard caps the depth, and a guard on [`SleepLevel::Stop0`] keeps it a
 /// plain `WFI`.
 ///
+/// A wake scheduled sooner than [`Config::min_sleep`](crate::Config::min_sleep) also leaves it a plain
+/// `WFI`.
+///
 /// # Safety
 /// Must be called from thread mode. `WFI` in a handler is only woken by an interrupt of *higher*
 /// priority than the one running, so sleeping inside the lowest-priority handler never returns.
@@ -78,7 +139,7 @@ pub unsafe fn sleep(cs: CriticalSection) {
     // FIXME: This could be a problem for embassy-executor's default executor.
     let _prefetch = PrefetchSuspend::new();
 
-    match deepest_allowed() {
+    match deepest_allowed().filter(|_| min_sleep_met(cs)) {
         None => {
             trace!("Low-power sleep blocked");
             cortex_m::asm::dsb();
@@ -95,9 +156,8 @@ pub unsafe fn sleep(cs: CriticalSection) {
 /// Enter SHUTDOWN, the lowest-power state. Does not return.
 ///
 /// SHUTDOWN powers down VCORE: all SRAM is lost except the `SHUTDNSTORE` bytes, and the only wake
-/// sources are a wake-capable IO event, NRST, or SWD activity. Does not return as the wake results
-/// in a reset.
-/// You can respond to the reset on boot using [`ResetCause::BorWakeFromShutdown`](crate::ResetCause).
+/// sources are a wake-capable IO event, NRST, or SWD activity. The wake is a reset, which boot can
+/// identify with [`ResetCause::BorWakeFromShutdown`](crate::ResetCause).
 ///
 /// Arm an IO wake with [`ShutdownWake`](crate::gpio::ShutdownWake), which accepts only the pins that
 /// have wakeup logic. The `FASTWAKE` path the edge-wait methods on

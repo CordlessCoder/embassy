@@ -346,6 +346,25 @@ pub(crate) fn init(cs: CriticalSection) {
     DRIVER.init(cs);
 }
 
+/// Ticks until this driver next wakes the core.
+///
+/// Both the queued alarm and the `period` tick count. Nobody asks for the tick, but `now()` depends on
+/// it, so its interrupt is never masked and it cuts short any sleep entered just before one.
+///
+/// Zero if the alarm is already due, and never more than one `period` away.
+#[cfg(feature = "low-power")]
+pub(crate) fn ticks_until_wake(cs: CriticalSection) -> u64 {
+    let now = DRIVER.now();
+
+    // The low `HALF_BITS` of `now` are the position within the current period, so what is left of it
+    // is the distance to the next tick, whether that comes from the overflow or the half-range compare.
+    let period_end = (1 << HALF_BITS) - (now & ((1 << HALF_BITS) - 1));
+
+    let alarm = DRIVER.alarm.borrow(cs).get().saturating_sub(now);
+
+    alarm.min(period_end)
+}
+
 #[cfg(all(time_driver_timg0, feature = "rt"))]
 #[interrupt]
 fn TIMG0() {
