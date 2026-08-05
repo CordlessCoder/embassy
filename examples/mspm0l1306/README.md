@@ -30,6 +30,7 @@ Embassy Chat: https://matrix.to/#/#embassy-rs:matrix.org
 
 | Example | Other side |
 |---|---|
+| `wake_latency_host` | `wake_latency` on an LP-MSPM0G3507 |
 | `uart3_retention_host` | `uart3_retention` on an LP-MSPM0G3507 |
 | `i2c_target` | `i2c_controller` on a NUCLEO-U575ZI-Q, in `examples/stm32u575` |
 
