@@ -70,3 +70,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/i2c: `set_config` did not record the new configuration, so a later internal reset restored the previous one
 - fix: mspm0/i2c: flush the FIFOs after a failed transfer, so its unsent byte is not transmitted by the next one
 - feat: mspm0/i2c: add `Config::clock_low_timeout_us`, failing a transfer with `Error::Timeout` when a target holds SCL low; off by default
+- feat: mspm0/i2c: report `Error::NackAddress` and `Error::NackData` where the controller says which went unanswered, from both the blocking and the async paths

@@ -467,6 +467,12 @@ pub enum Error {
     /// ACK not received, and the controller did not say to what
     Nack,
 
+    /// The address was not acknowledged: nothing is answering on it
+    NackAddress,
+
+    /// A data byte was not acknowledged: the target is there but rejected the byte
+    NackData,
+
     /// Timeout
     Timeout,
 
@@ -487,6 +493,8 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let message = match self {
             Self::Bus => "Bus Error",
+            Self::NackAddress => "Address Not Acknowledged",
+            Self::NackData => "Data Not Acknowledged",
             Self::Arbitration => "Arbitration Lost",
             Self::Nack => "ACK Not Received",
             Self::Timeout => "Request Timed Out",
@@ -848,9 +856,24 @@ impl<'d, M: Mode> I2c<'d, M> {
             return Err(Error::Arbitration);
         }
         if csr.err() {
-            return Err(Error::Nack);
+            return Err(self.nack_kind());
         }
         Ok(())
+    }
+
+    /// Which half of the transfer went unanswered.
+    ///
+    /// `ADRACK` and `DATACK` are the difference between nothing being at that address and the target being
+    /// there but rejecting a byte. The async paths need this separately because they learn about a NACK from
+    /// the interrupt rather than from [`I2c::check_error`], and would otherwise report the same failure less
+    /// precisely than the blocking ones.
+    fn nack_kind(&self) -> Error {
+        let csr = self.info.regs.controller(0).csr().read();
+        match (csr.adrack(), csr.datack()) {
+            (true, _) => Error::NackAddress,
+            (false, true) => Error::NackData,
+            (false, false) => Error::Nack,
+        }
     }
 }
 
@@ -1048,7 +1071,7 @@ impl<'d> I2c<'d, Async> {
 
                 let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
                     CpuIntIidxStat::NoIntr => Poll::Pending,
-                    CpuIntIidxStat::Cnackfg => Poll::Ready(Err(Error::Nack)),
+                    CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
                     CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
                     CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
                     CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
@@ -1118,7 +1141,7 @@ impl<'d> I2c<'d, Async> {
 
                 let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
                     CpuIntIidxStat::NoIntr => Poll::Pending,
-                    CpuIntIidxStat::Cnackfg => Poll::Ready(Err(Error::Nack)),
+                    CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
                     CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
                     CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
                     CpuIntIidxStat::Crxdonefg => Poll::Ready(Ok(())),
@@ -1323,6 +1346,10 @@ impl embedded_hal::i2c::Error for Error {
             Self::Bus => embedded_hal::i2c::ErrorKind::Bus,
             Self::Arbitration => embedded_hal::i2c::ErrorKind::ArbitrationLoss,
             Self::Nack => embedded_hal::i2c::ErrorKind::NoAcknowledge(embedded_hal::i2c::NoAcknowledgeSource::Unknown),
+            Self::NackAddress => {
+                embedded_hal::i2c::ErrorKind::NoAcknowledge(embedded_hal::i2c::NoAcknowledgeSource::Address)
+            }
+            Self::NackData => embedded_hal::i2c::ErrorKind::NoAcknowledge(embedded_hal::i2c::NoAcknowledgeSource::Data),
             Self::Timeout => embedded_hal::i2c::ErrorKind::Other,
             Self::Crc => embedded_hal::i2c::ErrorKind::Other,
             Self::Overrun => embedded_hal::i2c::ErrorKind::Overrun,
