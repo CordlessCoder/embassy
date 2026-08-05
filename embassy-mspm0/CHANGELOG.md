@@ -65,3 +65,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0: add `unsafe-atomics-single-core`, emulating atomic read-modify-writes inline instead of through `critical-section`. Pair with `default-features = false`
 - feat: mspm0/gpio: add `gpio-embassy-tasks-only`, storing the waiting task rather than a waker. Halves the RAM per pin and requires every edge wait to be awaited from an embassy task
 - fix: mspm0/i2c: apply the `I2C_ERR_13` settling delay before polling `CSR`, without which a controller transfer was checked before it started and a NACK came back as success
+- fix: mspm0/i2c: the async entry guards wait on `CSTOP` instead of spinning on `BUSBSY`

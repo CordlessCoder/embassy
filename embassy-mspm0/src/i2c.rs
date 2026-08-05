@@ -7,6 +7,7 @@ use core::task::Poll;
 
 use embassy_embedded_hal::SetConfig;
 use embassy_hal_internal::PeripheralType;
+use embassy_hal_internal::drop::OnDrop;
 use embassy_sync::waitqueue::AtomicWaker;
 use mspm0_metapac::i2c;
 
@@ -626,6 +627,38 @@ impl<'d, M: Mode> I2c<'d, M> {
         cortex_m::asm::delay(self.settle_cycles);
     }
 
+    /// Wait for whoever holds the bus to release it.
+    ///
+    /// Waits on the STOP that ends the transfer holding it, rather than spinning on `BUSBSY`: the bus can
+    /// be held by another controller for as long as it likes, and an async caller must not block the
+    /// executor for that.
+    async fn wait_bus_free(&mut self) -> Result<(), Error> {
+        if !self.info.regs.controller(0).csr().read().busbsy() {
+            return Ok(());
+        }
+
+        // Dropping this future part-way has to leave `CSTOP` masked. Left armed it fires into a handler
+        // that only wakes, with no future to consume it, and re-enters until something else masks it.
+        let regs = self.info.regs;
+        let _disarm = OnDrop::new(|| regs.cpu_int(0).imask().modify(|w| w.set_cstop(false)));
+
+        future::poll_fn(|cx| {
+            self.state.waker.register(cx.waker());
+
+            self.info.regs.cpu_int(0).iclr().write(|w| w.set_cstop(true));
+            self.info.regs.cpu_int(0).imask().modify(|w| w.set_cstop(true));
+
+            // Checked after arming, so a STOP that arrives in between is caught here rather than waited
+            // on forever.
+            if self.info.regs.controller(0).csr().read().busbsy() {
+                return Poll::Pending;
+            }
+
+            Poll::Ready(Ok(()))
+        })
+        .await
+    }
+
     fn master_stop(&mut self) {
         // not the first transaction, delay 1000 cycles
         cortex_m::asm::delay(1000);
@@ -1030,19 +1063,19 @@ impl<'d> I2c<'d, Async> {
 
     pub async fn async_write(&mut self, address: u8, write: &[u8]) -> Result<(), Error> {
         // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.wait_bus_free().await?;
         self.write_async_internal(address, write, true).await
     }
 
     pub async fn async_read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Error> {
         // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.wait_bus_free().await?;
         self.read_async_internal(address, read, false, true).await
     }
 
     pub async fn async_write_read(&mut self, address: u8, write: &[u8], read: &mut [u8]) -> Result<(), Error> {
         // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.wait_bus_free().await?;
 
         let err = self.write_async_internal(address, write, false).await;
         if err != Ok(()) {
@@ -1170,7 +1203,7 @@ impl<'d> embedded_hal_async::i2c::I2c for I2c<'d, Async> {
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> Result<(), Self::Error> {
         // wait until bus is free
-        while self.info.regs.controller(0).csr().read().busbsy() {}
+        self.wait_bus_free().await?;
         for i in 0..operations.len() {
             match &mut operations[i] {
                 embedded_hal::i2c::Operation::Read(buf) => self.read_async_internal(address, buf, false, false).await?,
