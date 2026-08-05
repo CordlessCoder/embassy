@@ -464,6 +464,11 @@ pub enum Error {
     /// Arbitration lost
     Arbitration,
 
+    /// The bus is stuck with a target holding SDA low
+    ///
+    /// Nothing will complete until the line is released. Call [`I2c::recover_stuck_bus`] and retry.
+    BusStuck,
+
     /// ACK not received, and the controller did not say to what
     Nack,
 
@@ -493,6 +498,7 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let message = match self {
             Self::Bus => "Bus Error",
+            Self::BusStuck => "Bus Stuck, SDA Held Low",
             Self::NackAddress => "Address Not Acknowledged",
             Self::NackData => "Data Not Acknowledged",
             Self::Arbitration => "Arbitration Lost",
@@ -716,6 +722,116 @@ impl<'d, M: Mode> I2c<'d, M> {
         let _ = self.init(&resolved);
     }
 
+    /// CPU cycles in half an SCL period, for driving the lines by hand.
+    fn bus_half_period_cycles(&self) -> u32 {
+        // `TPR` is solved as `clock_hz / (bus_speed * 10) - 1`, so this runs it backwards.
+        let bus_speed = self.resolved.clock_hz / (10 * (self.resolved.tpr as u32 + 1));
+        (crate::sysctl::clocks().mclk / (2 * bus_speed.max(1))).max(1)
+    }
+
+    /// Is the bus stuck with a target holding SDA low?
+    ///
+    /// SDA low while SCL sits idle high. Another controller mid-transaction also holds SDA low, but it would
+    /// be clocking SCL, so the line is watched across a few half-periods to tell the two apart. A controller
+    /// that stretches SCL low indefinitely is indistinguishable from a busy bus and reads as not stuck.
+    ///
+    /// This is what [`Error::BusStuck`] reports and what [`I2c::recover_stuck_bus`] acts on, so the two
+    /// cannot disagree about whether there is anything to do.
+    pub fn bus_is_stuck(&self) -> bool {
+        if self.info.regs.controller(0).cbmon().read().sda() {
+            return false;
+        }
+
+        // Time is what separates a stuck target from a STOP still on the wire, which looks identical —
+        // SDA low, SCL high — for up to a bit period after every NACK. Twenty half-periods is ten bit
+        // times, and both questions are re-asked each pass, so the common case costs a bit period rather
+        // than the whole window.
+        let half = self.bus_half_period_cycles();
+        for _ in 0..20 {
+            cortex_m::asm::delay(half);
+
+            let mon = self.info.regs.controller(0).cbmon().read();
+            if mon.sda() {
+                return false;
+            }
+            if !mon.scl() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Clock a target off the bus when it is holding SDA low.
+    ///
+    /// Nine SCL pulses let a target that lost sync finish the byte it is stuck part-way through — eight
+    /// bits and the ACK — after which a STOP leaves the bus idle.
+    ///
+    /// Does nothing when SDA is already high. `Err(Error::Bus)` means nine clocks did not free it, which is
+    /// either a target holding SDA for good or a short to ground — neither recoverable from here.
+    ///
+    /// Only sound when nothing else is using the bus: it drives SCL without arbitration, so calling it while
+    /// another controller is mid-transaction corrupts that transaction.
+    pub fn recover_stuck_bus(&mut self) -> Result<(), Error> {
+        if !self.bus_is_stuck() {
+            return Ok(());
+        }
+        let half = self.bus_half_period_cycles();
+
+        let (Some(scl), Some(sda)) = (self.scl.as_ref(), self.sda.as_ref()) else {
+            return Err(Error::Bus);
+        };
+
+        // Read back rather than remembered: the pin is type-erased by the time it is stored here, so its
+        // peripheral function number is not otherwise recoverable.
+        let scl_pf = pac::IOMUX.pincm(scl._pin_cm() as usize).read().pf();
+        let sda_pf = pac::IOMUX.pincm(sda._pin_cm() as usize).read().pf();
+
+        // `hiz1` is already set on both from `new_inner` and nothing here clears it, so a GPIO output is
+        // open-drain: low is driven, high is released for the pull-up to take.
+        let released = PfType::input(Pull::None, false);
+        for pin in [scl, sda] {
+            pin.set_as_pf(crate::gpio::GPIO_PF, released);
+            pin.block().doutset31_0().write(|w| w.set_dio(pin.bit_index(), true));
+            pin.block().doeset31_0().write(|w| w.set_dio(pin.bit_index(), true));
+        }
+
+        let sda_high = || sda.block().din31_0().read().dio(sda.bit_index());
+
+        // All nine, without breaking at the first high sample: SDA goes high on any `1` bit of the byte the
+        // target is still shifting out, so breaking there leaves it mid-byte and free to pull the line back
+        // down before the STOP lands.
+        for _ in 0..9 {
+            scl.block().doutclr31_0().write(|w| w.set_dio(scl.bit_index(), true));
+            cortex_m::asm::delay(half);
+            scl.block().doutset31_0().write(|w| w.set_dio(scl.bit_index(), true));
+            cortex_m::asm::delay(half);
+        }
+        let freed = sda_high();
+
+        // STOP is SDA rising while SCL is high, so both have to be driven low first to set it up.
+        scl.block().doutclr31_0().write(|w| w.set_dio(scl.bit_index(), true));
+        sda.block().doutclr31_0().write(|w| w.set_dio(sda.bit_index(), true));
+        cortex_m::asm::delay(half);
+        scl.block().doutset31_0().write(|w| w.set_dio(scl.bit_index(), true));
+        cortex_m::asm::delay(half);
+        sda.block().doutset31_0().write(|w| w.set_dio(sda.bit_index(), true));
+        cortex_m::asm::delay(half);
+
+        scl.set_as_pf(scl_pf, released);
+        sda.set_as_pf(sda_pf, released);
+
+        // The controller watched none of that, so its idea of the bus is stale.
+        self.reset_peripheral();
+
+        if freed {
+            debug!("i2c: bus recovery freed SDA");
+            Ok(())
+        } else {
+            warn!("i2c: bus recovery clocked 9 times and SDA is still low");
+            Err(Error::Bus)
+        }
+    }
+
     /// Put the peripheral back in a state the next transfer can use, after `err` ended this one.
     ///
     /// A timeout is the one failure a STOP cannot clear, so it takes the reset. Anything else only needs
@@ -817,9 +933,14 @@ impl<'d, M: Mode> I2c<'d, M> {
 
     /// Wait for whoever holds the bus to release it, giving up on the SCL-low timeout.
     ///
-    /// Only a bus held *low* can time out, because counter A watches SCL low: a bus left marked busy with
-    /// SCL high still waits forever, which is what counter B would be for.
+    /// A bus stuck on SDA is reported as [`Error::BusStuck`] rather than waited on, since no amount of
+    /// waiting fixes it. Otherwise only a bus held *low* can time out, because counter A watches SCL low: a
+    /// bus left marked busy with SCL high still waits forever, which is what counter B would be for.
     fn blocking_wait_bus_free(&mut self) -> Result<(), Error> {
+        if self.bus_is_stuck() {
+            return Err(Error::BusStuck);
+        }
+
         self.clear_timeout();
         while self.info.regs.controller(0).csr().read().busbsy() {
             if self.timed_out() {
@@ -1207,6 +1328,12 @@ impl<'d> I2c<'d, Async> {
             // A reset does every part of the cleanup at once and is the only thing that reliably ends the
             // abandoned burst: nothing is raised when one finishes, so anything else means polling.
             self.reset_peripheral();
+
+            // The reset released our end of the bus. If SDA is still down, the target is holding it, and
+            // only clocking it out will help — which is the caller's call to make, not ours.
+            if self.bus_is_stuck() {
+                return Err(Error::BusStuck);
+            }
         }
 
         self.wait_bus_free().await
@@ -1223,6 +1350,9 @@ impl<'d> I2c<'d, Async> {
     async fn wait_bus_free(&mut self) -> Result<(), Error> {
         if !self.info.regs.controller(0).csr().read().busbsy() {
             return Ok(());
+        }
+        if self.bus_is_stuck() {
+            return Err(Error::BusStuck);
         }
         self.clear_timeout();
 
@@ -1344,6 +1474,7 @@ impl embedded_hal::i2c::Error for Error {
     fn kind(&self) -> embedded_hal::i2c::ErrorKind {
         match *self {
             Self::Bus => embedded_hal::i2c::ErrorKind::Bus,
+            Self::BusStuck => embedded_hal::i2c::ErrorKind::Bus,
             Self::Arbitration => embedded_hal::i2c::ErrorKind::ArbitrationLoss,
             Self::Nack => embedded_hal::i2c::ErrorKind::NoAcknowledge(embedded_hal::i2c::NoAcknowledgeSource::Unknown),
             Self::NackAddress => {
