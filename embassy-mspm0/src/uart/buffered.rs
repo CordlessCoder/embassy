@@ -102,6 +102,9 @@ impl<'d> BufferedUart<'d> {
     }
 
     /// Write to UART TX buffer, blocking execution until done.
+    ///
+    /// Returns once the bytes are in the ring buffer, not once they have been transmitted. Call
+    /// [`Self::blocking_flush`] before anything that can deep sleep.
     pub fn blocking_write(&mut self, buffer: &[u8]) -> Result<usize, Error> {
         self.tx.blocking_write(buffer)
     }
@@ -358,6 +361,9 @@ impl<'d> BufferedUartTx<'d> {
     }
 
     /// Write to UART TX buffer, blocking execution until done.
+    ///
+    /// Returns once the bytes are in the ring buffer, not once they have been transmitted. Call
+    /// [`Self::blocking_flush`] before anything that can deep sleep.
     pub fn blocking_write(&mut self, buffer: &[u8]) -> Result<usize, Error> {
         self.blocking_write_inner(buffer)
     }

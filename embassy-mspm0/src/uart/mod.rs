@@ -1,3 +1,13 @@
+//! Universal Asynchronous Receiver/Transmitter (UART) driver.
+//!
+//! # Deep sleep truncates an unflushed write
+//!
+//! Every write here returns once the bytes are queued, not once they are on the wire. Deep sleep
+//! entered before the transmitter drains cuts the frame mid-byte, and on a PD1 instance the TX pin
+//! then sits low until the next wake. Flush before awaiting anything that can sleep.
+//!
+//! Nothing reports this: the bytes were accepted, and the receiver on the other end sees a framing
+//! error rather than a byte the sender can act on.
 #![macro_use]
 
 mod buffered;
@@ -450,6 +460,9 @@ impl<'d> UartTx<'d, Blocking> {
 
 impl<'d, M: Mode> UartTx<'d, M> {
     /// Perform a blocking UART write
+    ///
+    /// Returns once the last byte is queued, not once it has been transmitted. Call
+    /// [`Self::blocking_flush`] before anything that can deep sleep.
     pub fn blocking_write(&mut self, buffer: &[u8]) -> Result<(), Error> {
         let r = self.info.regs;
 
@@ -557,6 +570,9 @@ impl<'d> Uart<'d, Blocking> {
 
 impl<'d, M: Mode> Uart<'d, M> {
     /// Perform a blocking write
+    ///
+    /// Returns once the last byte is queued, not once it has been transmitted. Call
+    /// [`Self::blocking_flush`] before anything that can deep sleep.
     pub fn blocking_write(&mut self, buffer: &[u8]) -> Result<(), Error> {
         self.tx.blocking_write(buffer)
     }

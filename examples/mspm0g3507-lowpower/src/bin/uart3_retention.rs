@@ -99,6 +99,7 @@ async fn main(_spawner: Spawner) -> ! {
     led.set_inversion(true);
 
     unwrap!(answer.blocking_write(b"boot\n"));
+    unwrap!(answer.blocking_flush());
     info!("armed, going to sleep between bytes");
 
     let expected = uart3_registers();
