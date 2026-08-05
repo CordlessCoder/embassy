@@ -470,6 +470,8 @@ pub struct I2c<'d, M: Mode> {
     scl: Option<Peri<'d, AnyPin>>,
     sda: Option<Peri<'d, AnyPin>>,
     wake_floor: Option<SleepLevel>,
+    /// CPU cycles to let a freshly started transfer settle. See [`I2c::settle_after_start`].
+    settle_cycles: u32,
     _phantom: PhantomData<M>,
 }
 
@@ -573,6 +575,16 @@ impl<'d, M: Mode> I2c<'d, M> {
 
         self.wake_floor = resolved.wake_floor(&self.info.sleep);
 
+        // `I2C_ERR_13`: `CSR` is not valid for three functional clock cycles after a transfer is started,
+        // so the status has to be left alone for that long. Rounded up, and at least one cycle so a
+        // functional clock faster than the CPU still waits.
+        //
+        // Scaling with the clock is what makes this bite on MFCLK and not on the bus clock: at 4 MHz
+        // against a 32 MHz CPU it is 24 cycles, where at 32 MHz it is 3 and the register read alone
+        // covers it.
+        let cpu_hz = crate::sysctl::clocks().mclk;
+        self.settle_cycles = (3 * cpu_hz).div_ceil(resolved.clock_hz.max(1)).max(1);
+
         self.info.regs.controller(0).ctpr().write(|w| w.set_tpr(resolved.tpr));
 
         // Set Tx Fifo threshold, follow TI example
@@ -605,6 +617,15 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// transaction later.
     ///
     /// Only safe once the burst has ended; flushing under a running one takes bytes out from under it.
+    /// Wait out `I2C_ERR_13` before reading `CSR` after starting a transfer.
+    ///
+    /// Polling `BUSY` any sooner reads it before the controller has raised it, so the wait falls straight
+    /// through and the caller checks for errors against a transfer that has not happened yet. A NACK then
+    /// goes unnoticed and the transfer is reported as a success.
+    fn settle_after_start(&self) {
+        cortex_m::asm::delay(self.settle_cycles);
+    }
+
     fn master_stop(&mut self) {
         // not the first transaction, delay 1000 cycles
         cortex_m::asm::delay(1000);
@@ -716,6 +737,8 @@ impl<'d> I2c<'d, Blocking> {
         // Perform transaction
         self.master_continue(length, send_ack_nack, send_stop)?;
 
+        self.settle_after_start();
+
         // Poll until the Controller process all bytes or NACK
         while self.info.regs.controller(0).csr().read().busy() {}
 
@@ -737,6 +760,8 @@ impl<'d> I2c<'d, Blocking> {
 
         self.master_read(address, length, restart, send_ack_nack, send_stop)?;
 
+        self.settle_after_start();
+
         // Poll until the Controller process all bytes or NACK
         while self.info.regs.controller(0).csr().read().busy() {}
 
@@ -749,6 +774,8 @@ impl<'d> I2c<'d, Blocking> {
 
         // Perform writing
         self.master_write(address, length, send_stop)?;
+
+        self.settle_after_start();
 
         // Poll until the Controller writes all bytes or NACK
         while self.info.regs.controller(0).csr().read().busy() {}
@@ -1246,6 +1273,7 @@ impl<'d, M: Mode> I2c<'d, M> {
             scl: scl_inner,
             sda: sda_inner,
             wake_floor: None,
+            settle_cycles: 0,
             _phantom: PhantomData,
         };
         this.init(&config.resolve()?)?;
