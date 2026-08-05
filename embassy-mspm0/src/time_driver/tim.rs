@@ -143,8 +143,10 @@ impl TimxDriver {
             divider: 1,
             prescaler: 1,
             counting_mode: CountingMode::EdgeAlignedUp,
-            // The counter is preloaded below; enabling must not reset it.
-            counter_on_enable: CounterOnEnable::Preserve,
+            // Zeroes the counter in the timer's own clock domain. Writing it from here instead does not
+            // cross into that domain before the first `now()`, which then reads the written value once
+            // and the counter's real zero afterwards — time going backwards by a tick.
+            counter_on_enable: CounterOnEnable::Reset,
             free_run_in_debug: true,
         });
 
@@ -169,17 +171,22 @@ impl TimxDriver {
         // Half of the counter's range, the other point where `period` increments.
         regs.counterregs(0).cc(Channel::Ch0.index()).write_value(1 << HALF_BITS);
 
-        // Start with the counter at 1 to avoid immediately incrementing period.
-        regs.counterregs(0).ctr().write_value(1);
+        // Allow the counter to start counting.
+        regs.counterregs(0).ctrctl().modify(|w| {
+            w.set_en(true);
+        });
+
+        // Enabling latches the events `period` counts. Unmasking without clearing them first delivers
+        // both immediately and advances the clock by a period apiece.
+        regs.cpu_int(0).iclr().write(|w| {
+            w.set_z(true);
+            w.set_ccu0(true);
+            w.set_ccu1(true);
+        });
 
         regs.cpu_int(0).imask().modify(|w| {
             w.set_z(true);
             w.set_ccu0(true);
-        });
-
-        // Allow the counter to start counting.
-        regs.counterregs(0).ctrctl().modify(|w| {
-            w.set_en(true);
         });
 
         <T as tim::Instance>::Interrupt::IRQ.unpend();
