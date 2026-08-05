@@ -621,6 +621,37 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// transaction later.
     ///
     /// Only safe once the burst has ended; flushing under a running one takes bytes out from under it.
+    fn flush_fifos(&mut self) {
+        let ctrl = self.info.regs.controller(0);
+
+        ctrl.cfifoctl().modify(|w| {
+            w.set_txflush(true);
+            w.set_rxflush(true);
+        });
+        while ctrl.cfifosr().read().txfifocnt() as usize != self.info.fifo_size
+            || ctrl.cfifosr().read().rxfifocnt() != 0
+        {}
+        ctrl.cfifoctl().modify(|w| {
+            w.set_txflush(false);
+            w.set_rxflush(false);
+        });
+    }
+
+    /// Put the peripheral back in a state the next transfer can use, after `err` ended this one.
+    ///
+    /// A timeout is the one failure a STOP cannot clear, so it takes the reset. Anything else only needs
+    /// the bus released and the queued bytes dropped, which is what SLAU846 asks for: "if a timeout is
+    /// detected before the end of a transfer, software should flush the FIFO before initializing the next
+    /// transfer".
+    fn recover_after(&mut self, err: Error) {
+        if err == Error::Timeout {
+            self.reset_peripheral();
+        } else {
+            self.master_stop();
+            self.flush_fifos();
+        }
+    }
+
     /// Wait out `I2C_ERR_13` before reading `CSR` after starting a transfer.
     ///
     /// Polling `BUSY` any sooner reads it before the controller has raised it, so the wait falls straight
@@ -810,24 +841,6 @@ impl<'d, M: Mode> I2c<'d, M> {
         }
         Ok(())
     }
-
-    /// Flush both controller FIFOs.
-    ///
-    /// A flush is only legal while the controller is IDLE (TRM §25.2.3.12), so wait for
-    /// that first.
-    fn flush_fifos(&mut self) {
-        let regs = self.info.regs.controller(0);
-
-        while !regs.csr().read().idle() {}
-
-        regs.cfifoctl().modify(|w| w.set_txflush(true));
-        while (regs.cfifosr().read().txfifocnt() as usize) < self.info.fifo_size {}
-        regs.cfifoctl().modify(|w| w.set_txflush(false));
-
-        regs.cfifoctl().modify(|w| w.set_rxflush(true));
-        while regs.cfifosr().read().rxfifocnt() != 0 {}
-        regs.cfifoctl().modify(|w| w.set_rxflush(false));
-    }
 }
 
 impl<'d> I2c<'d, Blocking> {
@@ -918,8 +931,7 @@ impl<'d> I2c<'d, Blocking> {
 
             // check errors
             if let Err(err) = self.check_error() {
-                self.master_stop();
-                self.flush_fifos();
+                self.recover_after(err);
                 return Err(err);
             }
 
@@ -957,10 +969,7 @@ impl<'d> I2c<'d, Blocking> {
 
             // check errors
             if let Err(err) = self.check_error() {
-                self.master_stop();
-                // A NACK leaves the bytes that were never sent queued (TRM §25.2.3.14);
-                // flush them so they don't go out ahead of the next write.
-                self.flush_fifos();
+                self.recover_after(err);
                 return Err(err);
             }
         }
@@ -1049,11 +1058,11 @@ impl<'d> I2c<'d, Async> {
             })
             .await;
 
-            if res.is_err() {
+            if let Err(err) = res {
                 // The guard's cleanup done eagerly, so it must not run a second time.
-                self.master_stop();
+                self.recover_after(err);
                 abort.defuse();
-                return res;
+                return Err(err);
             }
         }
         abort.defuse();
@@ -1116,11 +1125,11 @@ impl<'d> I2c<'d, Async> {
             })
             .await;
 
-            if res.is_err() {
+            if let Err(err) = res {
                 // The guard's cleanup done eagerly, so it must not run a second time.
-                self.master_stop();
+                self.recover_after(err);
                 abort.defuse();
-                return res;
+                return Err(err);
             }
 
             for byte in chunk {

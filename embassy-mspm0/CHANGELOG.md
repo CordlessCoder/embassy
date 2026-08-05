@@ -68,3 +68,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/i2c: the async entry guards wait on `CSTOP` instead of spinning on `BUSBSY`
 - fix: mspm0/i2c: dropping an async transfer no longer wedges the peripheral; the next one resets the controller, which is the only thing that frees the bus afterwards
 - fix: mspm0/i2c: `set_config` did not record the new configuration, so a later internal reset restored the previous one
+- fix: mspm0/i2c: flush the FIFOs after a failed transfer, so its unsent byte is not transmitted by the next one
