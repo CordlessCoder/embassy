@@ -59,6 +59,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     peripheral_kind_cfgs(cfgs);
     peripheral_name_cfgs(cfgs);
     errata_cfgs(cfgs);
+    sysctl_version_cfgs(cfgs);
 
     let mut singletons = get_singletons(cfgs);
 
@@ -137,6 +138,135 @@ fn errata_cfgs(cfgs: &mut CfgSet) {
 
         cfgs.declare(&cfg);
         if METADATA.has_erratum(erratum) {
+            cfgs.enable(cfg);
+        }
+    }
+}
+
+/// What a SYSCTL register block provides that the device metadata does not.
+///
+/// Which clock sources exist is [`METADATA.clock_tree`](clock_tree_cfgs) instead, since two families
+/// can share a block and still differ. What is left here are facts about the block itself: a step the
+/// C-series TRM adds to STOP0 entry, and which `RSTCAUSE.ID` variants its enum defines.
+struct SysctlCaps {
+    /// Whether entering STOP0 must also clear `MCLKCFG.USELFCLK`.
+    ///
+    /// Not field presence — `USELFCLK` exists everywhere — but a step the C-series TRM adds to the
+    /// entry sequence.
+    stop0_clears_lfclk: bool,
+
+    /// Whether SYSCTL has the `SHUTDNSTORE` array, the only bytes that survive SHUTDOWN.
+    ///
+    /// A 4-element array at `0x1400` on every block but `h321x`.
+    shutdnstore: bool,
+
+    /// `RSTCAUSE.ID` causes that only some blocks define: non-PMU trim parity fault, WWDT1
+    /// violation, and uncorrectable flash ECC error.
+    rstcause_nonpmuparity: bool,
+    rstcause_wwdt1: bool,
+    rstcause_flashecc: bool,
+
+    /// Whether SYSCTL has `HSCLKCFG.HSCLKSEL`, the mux between the SYSPLL and HFCLK.
+    ///
+    /// Absent on `c110x` and `l110x_l130x_l134x`. Where it is absent and the device still has an
+    /// HFCLK path, HSCLK is HFCLK with nothing to select. Where it is present it must be programmed
+    /// even without a SYSPLL: it resets to the SYSPLL position, which is a source those devices do
+    /// not have.
+    hsclk_mux: bool,
+}
+
+impl SysctlCaps {
+    const NONE: Self = Self {
+        stop0_clears_lfclk: false,
+        shutdnstore: false,
+        hsclk_mux: false,
+        rstcause_nonpmuparity: false,
+        rstcause_wwdt1: false,
+        rstcause_flashecc: false,
+    };
+}
+
+/// Emit a cfg for the parts of SYSCTL that only the register block can answer.
+///
+/// Keyed on the SYSCTL peripheral *version*, which is what selects the register block, so the table
+/// cannot drift from the enum variants it describes and a new device reusing an existing SYSCTL needs
+/// no edit. An unrecognised version is an error, since a new register block has to be looked at.
+fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
+    let version = METADATA
+        .peripherals
+        .iter()
+        .find(|peripheral| peripheral.kind == "sysctl")
+        .and_then(|peripheral| peripheral.version)
+        .expect("chip has no SYSCTL peripheral version");
+
+    let caps = match version {
+        "c110x" => SysctlCaps {
+            stop0_clears_lfclk: true,
+            shutdnstore: true,
+            ..SysctlCaps::NONE
+        },
+
+        "c1105_c1106" => SysctlCaps {
+            stop0_clears_lfclk: true,
+            shutdnstore: true,
+            hsclk_mux: true,
+            ..SysctlCaps::NONE
+        },
+
+        "l110x_l130x_l134x" => SysctlCaps {
+            shutdnstore: true,
+            rstcause_nonpmuparity: true,
+            rstcause_flashecc: true,
+            ..SysctlCaps::NONE
+        },
+
+        "l122x_l222x" => SysctlCaps {
+            shutdnstore: true,
+            hsclk_mux: true,
+            rstcause_nonpmuparity: true,
+            rstcause_flashecc: true,
+            ..SysctlCaps::NONE
+        },
+
+        "h321x" => SysctlCaps {
+            hsclk_mux: true,
+            rstcause_nonpmuparity: true,
+            rstcause_flashecc: true,
+            ..SysctlCaps::NONE
+        },
+
+        "g350x_g310x_g150x_g110x" => SysctlCaps {
+            shutdnstore: true,
+            hsclk_mux: true,
+            rstcause_wwdt1: true,
+            rstcause_flashecc: true,
+            ..SysctlCaps::NONE
+        },
+
+        "g351x_g151x" => SysctlCaps {
+            shutdnstore: true,
+            hsclk_mux: true,
+            rstcause_wwdt1: true,
+            ..SysctlCaps::NONE
+        },
+
+        other => panic!(
+            "unknown SYSCTL version {other:?}: work out which RSTCAUSE.ID causes it defines, and \
+             whether it has SHUTDNSTORE and whether its TRM adds the USELFCLK step to STOP0 \
+             entry, and add it to `sysctl_version_cfgs`"
+        ),
+    };
+
+    for (cfg, present) in [
+        ("mspm0_stop0_clears_lfclk", caps.stop0_clears_lfclk),
+        ("mspm0_shutdnstore", caps.shutdnstore),
+        ("mspm0_hsclk_mux", caps.hsclk_mux),
+        ("rstcause_nonpmuparity", caps.rstcause_nonpmuparity),
+        ("rstcause_wwdt1", caps.rstcause_wwdt1),
+        ("rstcause_flashecc", caps.rstcause_flashecc),
+    ] {
+        cfgs.declare(cfg);
+        if present {
             cfgs.enable(cfg);
         }
     }

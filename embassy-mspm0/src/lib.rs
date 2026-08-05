@@ -252,6 +252,9 @@ impl Iterator for BitIter {
 /// Reset cause values from SYSCTL.RSTCAUSE register.
 /// Based on MSPM0 L-series Technical Reference Manual Table 2-9 and
 /// MSPM0 G-series Technical Reference Manual Table 2-12.
+///
+/// Three of these exist on only some devices and are gated accordingly. Which, is derived from the
+/// SYSCTL peripheral version rather than from a list of chip families, so it follows the PAC.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ResetCause {
@@ -268,16 +271,7 @@ pub enum ResetCause {
     /// Wake from SHUTDOWN
     BorWakeFromShutdown,
     /// Non-PMU trim parity fault
-    #[cfg(not(any(
-        mspm0c110x,
-        mspm0c1105_c1106,
-        mspm0g110x,
-        mspm0g150x,
-        mspm0g151x,
-        mspm0g310x,
-        mspm0g350x,
-        mspm0g351x
-    )))]
+    #[cfg(rstcause_nonpmuparity)]
     BootrstNonPmuParityFault,
     /// Fatal clock fault
     BootrstClockFault,
@@ -288,14 +282,14 @@ pub enum ResetCause {
     /// WWDT0 violation
     BootrstWwdt0Violation,
     /// WWDT1 violation (G-series only)
-    #[cfg(any(mspm0g110x, mspm0g150x, mspm0g151x, mspm0g310x, mspm0g350x, mspm0g351x, mspm0g518x))]
+    #[cfg(rstcause_wwdt1)]
     SysrstWwdt1Violation,
     /// BSL exit (if present)
     SysrstBslExit,
     /// BSL entry (if present)
     SysrstBslEntry,
     /// Uncorrectable flash ECC error (if present)
-    #[cfg(not(any(mspm0c110x, mspm0c1105_c1106, mspm0g351x, mspm0g151x)))]
+    #[cfg(rstcause_flashecc)]
     SysrstFlashEccError,
     /// CPU lockup violation
     SysrstCpuLockupViolation,
@@ -323,6 +317,9 @@ pub fn read_reset_cause() -> Result<ResetCause, u8> {
     use ResetCause::*;
     use pac::sysctl::vals::Id;
 
+    // Three causes exist on only some devices, where the PAC generates `_RESERVED_n` instead of the
+    // variant, so naming one in an arm is a compile error on the wrong chip. The cfgs guarding them
+    // come from the SYSCTL peripheral version, which is what selects that enum in the first place.
     match cause_raw {
         Id::Norst => Ok(NoReset),
         Id::Porhwfail => Ok(PorHwFailure),
@@ -330,17 +327,7 @@ pub fn read_reset_cause() -> Result<ResetCause, u8> {
         Id::Porsw => Ok(PorSwTriggered),
         Id::Borsupply => Ok(BorSupplyFailure),
         Id::Borwakeshutdn => Ok(BorWakeFromShutdown),
-        #[cfg(not(any(
-            mspm0c110x,
-            mspm0c1105_c1106,
-            mspm0g110x,
-            mspm0g150x,
-            mspm0g151x,
-            mspm0g310x,
-            mspm0g350x,
-            mspm0g351x,
-            mspm0g518x,
-        )))]
+        #[cfg(rstcause_nonpmuparity)]
         Id::Bootnonpmuparity => Ok(BootrstNonPmuParityFault),
         Id::Bootclkfail => Ok(BootrstClockFault),
         Id::Bootsw => Ok(BootrstSwTriggered),
@@ -348,9 +335,9 @@ pub fn read_reset_cause() -> Result<ResetCause, u8> {
         Id::Bootwwdt0 => Ok(BootrstWwdt0Violation),
         Id::Sysbslexit => Ok(SysrstBslExit),
         Id::Sysbslentry => Ok(SysrstBslEntry),
-        #[cfg(any(mspm0g110x, mspm0g150x, mspm0g151x, mspm0g310x, mspm0g350x, mspm0g351x, mspm0g518x))]
+        #[cfg(rstcause_wwdt1)]
         Id::Syswwdt1 => Ok(SysrstWwdt1Violation),
-        #[cfg(not(any(mspm0c110x, mspm0c1105_c1106, mspm0g351x, mspm0g151x)))]
+        #[cfg(rstcause_flashecc)]
         Id::Sysflashecc => Ok(SysrstFlashEccError),
         Id::Syscpulock => Ok(SysrstCpuLockupViolation),
         Id::Sysdbg => Ok(SysrstDebugTriggered),

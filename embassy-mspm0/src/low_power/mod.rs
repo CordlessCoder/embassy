@@ -191,9 +191,9 @@ impl PrefetchSuspend {
 
         // CPU_ERR_02 means the prefetcher will not be disabled until pending flash access is finished.
         // Reading any SYSCTL register after disabling prefetch will complete the pending flash access.
-        #[cfg(not(mspm0h321x))]
+        #[cfg(mspm0_shutdnstore)]
         let _ = pac::SYSCTL.shutdnstore(0).read();
-        #[cfg(mspm0h321x)]
+        #[cfg(not(mspm0_shutdnstore))]
         let _ = pac::SYSCTL.clkstatus().read();
 
         cortex_m::asm::dsb();
