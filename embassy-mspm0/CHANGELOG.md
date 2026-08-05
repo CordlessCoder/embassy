@@ -58,3 +58,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/adc: derive `FRANGE` and `SCLKDIV` from the configured sample clock rate instead of hardcoding the 32 MHz boot tree. The hardcoded `FRANGE` was already wrong on C-series parts, whose SYSOSC base is 24 MHz
 - feat: mspm0/adc: add `SampleClock::Ulpclk` and `SampleClock::Hfclk`, and honour `Config::sample_clk`, which was ignored in favour of SYSOSC
 - fix: mspm0/adc: check the sample clock against the device's `fADCCLK` instead of the span `FRANGE` can encode
+- fix: mspm0/trng: take the divider bands from the device's `TRNGCLKF` range instead of the 9.5-20 MHz the TRM quotes

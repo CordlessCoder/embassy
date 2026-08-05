@@ -78,6 +78,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_groups());
     g.extend(generate_dma_channel_count());
     g.extend(generate_adc_constants(cfgs));
+    g.extend(generate_trng_constants());
     g.extend(generate_clock_ceilings());
     g.extend(clock_tree);
 
@@ -502,6 +503,18 @@ fn peripheral_clock_range(kind: &str) -> Option<(u32, u32)> {
     let range = first?;
 
     Some((range.min_hz, range.max_hz))
+}
+
+/// Emit the TRNG's `TRNGCLKF` input range, on the chips that have one.
+fn generate_trng_constants() -> TokenStream {
+    let Some((min, max)) = peripheral_clock_range("trng") else {
+        return quote! {};
+    };
+
+    quote! {
+        pub const TRNG_CLK_MIN_HZ: u32 = #min;
+        pub const TRNG_CLK_MAX_HZ: u32 = #max;
+    }
 }
 
 /// Emit the ADC facts that the single `adc_v1` register block does not describe.

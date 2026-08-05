@@ -351,26 +351,13 @@ impl TrngInner<'_> {
     }
 
     fn set_div(&mut self) {
-        // L-series TRM 13.2.2: the TRNG is derived from MCLK, and the datasheets specify a 9.5-20 MHz
-        // input range. MCLK depends on the configured tree, so the band is picked at runtime.
-        let hz = crate::sysctl::clocks().mclk;
-        let ratio = if hz >= 80_000_000 {
-            Ratio::DivBy8
-        } else if hz >= 60_000_000 {
-            Ratio::DivBy6
-        } else if hz >= 40_000_000 {
-            Ratio::DivBy4
-        } else if hz >= 20_000_000 {
-            Ratio::DivBy2
-        } else if hz >= 9_500_000 {
-            Ratio::DivBy1
-        } else {
-            panic!("MCLK is below 9.5 MHz, which the TRNG cannot be divided down from")
-        };
-
-        const _: () = core::assert!(
-            crate::sysctl::MAX_MCLK_HZ <= 160_000_000,
-            "MCLK can exceed 160 MHz, which no TRNG divider brings into range"
+        // MCLK now depends on the configured clock tree, so the band is picked at runtime. A tree
+        // that leaves MCLK unusable here is a configuration error the user can only hit deliberately,
+        // and the reset tree is checked at build time below.
+        let mclk = crate::sysctl::clocks().mclk;
+        let ratio = unwrap!(
+            trng_ratio(mclk),
+            "MCLK is outside the 9.5-20 MHz window the TRNG can be divided into"
         );
 
         regs().clkdiv().write(|w| w.set_ratio(ratio));
@@ -457,7 +444,6 @@ impl TrngInner<'_> {
             WAKER.register(cx.waker());
             let result = self.poll();
             if result.is_pending() {
-                // Enable interrupts
                 regs().imask().write(|w| {
                     w.set_irq_captured_rdy(true);
                     w.set_irq_health_fail(true);
@@ -533,6 +519,64 @@ impl TryRng for TrngInner<'_> {
 fn regs() -> crate::pac::trng::Trng {
     crate::pac::TRNG
 }
+
+/// `TRNGCLKF`, the range the clock reaching the module after `CLKDIV.RATIO` must stay within.
+const CLK_MIN_HZ: u32 = crate::_generated::TRNG_CLK_MIN_HZ;
+const CLK_MAX_HZ: u32 = crate::_generated::TRNG_CLK_MAX_HZ;
+
+/// Divider that brings `mclk_hz` into the TRNG's input window, or `None` if none does.
+///
+/// The TRNG is derived from MCLK (SLAU847 13.2.2). The window is the datasheet's, which is wider than
+/// the 9.5-20 MHz that TRM quotes.
+const fn trng_ratio(mclk_hz: u32) -> Option<Ratio> {
+    // Largest divider first, so each band is the smallest division that lands inside the window.
+    if mclk_hz >= 8 * CLK_MIN_HZ {
+        Some(Ratio::DivBy8)
+    } else if mclk_hz >= 6 * CLK_MIN_HZ {
+        Some(Ratio::DivBy6)
+    } else if mclk_hz >= 4 * CLK_MIN_HZ {
+        Some(Ratio::DivBy4)
+    } else if mclk_hz >= 2 * CLK_MIN_HZ {
+        Some(Ratio::DivBy2)
+    } else if mclk_hz >= CLK_MIN_HZ {
+        Some(Ratio::DivBy1)
+    } else {
+        None
+    }
+}
+
+/// Whether dividing `mclk_hz` by `divisor` lands inside the TRNG's input window.
+const fn divides_into_window(mclk_hz: u32, divisor: u32) -> bool {
+    let trngclk = mclk_hz / divisor;
+
+    trngclk >= CLK_MIN_HZ && trngclk <= CLK_MAX_HZ
+}
+
+const _: () = {
+    core::assert!(
+        crate::sysctl::MAX_MCLK_HZ <= 8 * CLK_MAX_HZ,
+        "MCLK can exceed what the largest TRNG divider brings into range"
+    );
+
+    // The tree the device boots with must always be usable, so only a deliberately reconfigured
+    // clock tree can reach the runtime failure in `set_div`.
+    core::assert!(
+        trng_ratio(crate::sysctl::Clocks::RESET.mclk).is_some(),
+        "the reset MCLK is outside the TRNG's input range"
+    );
+
+    // Below the window nothing helps, since dividing can only go lower.
+    core::assert!(matches!(trng_ratio(CLK_MIN_HZ - 1), None));
+
+    // Each band picks the divider it should, and that divider lands inside the window. Checked at
+    // the band's floor, which is where its divided rate is lowest — the thresholds themselves are
+    // per device now, so asserting them would just restate `trng_ratio`.
+    core::assert!(matches!(trng_ratio(CLK_MIN_HZ), Some(Ratio::DivBy1)) && divides_into_window(CLK_MIN_HZ, 1));
+    core::assert!(matches!(trng_ratio(2 * CLK_MIN_HZ), Some(Ratio::DivBy2)) && divides_into_window(2 * CLK_MIN_HZ, 2));
+    core::assert!(matches!(trng_ratio(4 * CLK_MIN_HZ), Some(Ratio::DivBy4)) && divides_into_window(4 * CLK_MIN_HZ, 4));
+    core::assert!(matches!(trng_ratio(6 * CLK_MIN_HZ), Some(Ratio::DivBy6)) && divides_into_window(6 * CLK_MIN_HZ, 6));
+    core::assert!(matches!(trng_ratio(8 * CLK_MIN_HZ), Some(Ratio::DivBy8)) && divides_into_window(8 * CLK_MIN_HZ, 8));
+};
 
 // This symbol is weakly defined as DefaultHandler and is called by the interrupt group implementation.
 // Defining this as no_mangle is required so that the linker will pick this up.
