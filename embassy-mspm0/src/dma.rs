@@ -348,7 +348,7 @@ impl<'a> Transfer<'a> {
     }
 
     /// Request the transfer to pause, keeping the existing configuration for this channel.
-    /// To restart the transfer, call [`start`](Self::start) again.
+    /// To restart the transfer, call [`resume`](Self::resume).
     ///
     /// This doesn't immediately stop the transfer, you have to wait until [`is_running`](Self::is_running) returns false.
     pub fn request_pause(&mut self) {
@@ -358,7 +358,7 @@ impl<'a> Transfer<'a> {
     /// Return whether this transfer is still running.
     ///
     /// If this returns [`false`], it can be because either the transfer finished, or
-    /// it was requested to stop early with [`request_stop`].
+    /// it was paused with [`request_pause`](Self::request_pause).
     pub fn is_running(&mut self) -> bool {
         self.channel.is_running()
     }
@@ -575,7 +575,6 @@ impl<'d> Channel<'d> {
         self.sa().write_value(src as u32);
         self.da().write_value(dst as u32);
 
-        // Enable the channel.
         self.ctl().modify(|w| {
             // FIXME: Why did putting set_req later fix some transfers
             w.set_en(true);
@@ -589,7 +588,6 @@ impl<'d> Channel<'d> {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
 
-        // Request the DMA transfer to start.
         self.ctl().modify(|w| {
             w.set_req(true);
         });
@@ -627,10 +625,7 @@ impl<'d> Channel<'d> {
 
         let ctl = self.ctl().read();
 
-        // Is the transfer requested?
-        ctl.req()
-            // Is the channel enabled?
-            && ctl.en()
+        ctl.req() && ctl.en()
     }
 }
 

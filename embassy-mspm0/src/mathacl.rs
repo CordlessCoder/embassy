@@ -53,7 +53,6 @@ impl<'d> Mathacl<'d> {
             w.set_key(vals::ResetKey::Key);
         });
 
-        // Enable power
         T::regs().gprcm(0).pwren().write(|w| {
             w.set_enable(true);
             w.set_key(vals::PwrenKey::Key);
@@ -77,7 +76,6 @@ impl<'d> Mathacl<'d> {
             return Err(Error::ValueInWrongRange);
         }
 
-        // make division using mathacl
         let native = self.div_iq(IQType::from_f32(rad, 15, true)?, IQType::from_f32(PI, 15, true)?)?;
 
         self.regs.ctl().write(|w| {
@@ -90,7 +88,6 @@ impl<'d> Mathacl<'d> {
             w.set_data(IQType::from_f32(native, 0, true).unwrap().to_reg());
         });
 
-        // check if done
         while self.regs.status().read().busy() == vals::Busy::Notdone {}
 
         match sin {
@@ -134,7 +131,6 @@ impl<'d> Mathacl<'d> {
             w.set_data(dividend as u32);
         });
 
-        // check if done
         while self.regs.status().read().busy() == vals::Busy::Notdone {}
 
         // read quotient
@@ -162,7 +158,6 @@ impl<'d> Mathacl<'d> {
             w.set_data(dividend);
         });
 
-        // check if done
         while self.regs.status().read().busy() == vals::Busy::Notdone {}
 
         // read quotient
@@ -200,7 +195,6 @@ impl<'d> Mathacl<'d> {
             w.set_data(dividend.to_reg());
         });
 
-        // check if done
         while self.regs.status().read().busy() == vals::Busy::Notdone {}
 
         // read quotient
@@ -260,16 +254,12 @@ pub struct IQType {
 /// IQType implements 32-bit fixed point numbers with configurable integer and fractional parts.
 impl IQType {
     pub fn from_reg(data: u32, i_bits: u8, signed: bool) -> Result<Self, IQTypeError> {
-        // check if negative
         let negative = signed && ((1u32 << 31) & data != 0);
 
-        // total bit count
         let total_bits = if signed { 31 } else { 32 };
 
-        // number of fractional bits
         let f_bits = total_bits - i_bits;
 
-        // Compute masks
         let max_mask = if signed { 0x7FFFFFFF } else { 0xFFFFFFFF };
         let (i_mask, f_mask) = if i_bits == 0 {
             (0, max_mask)
@@ -279,7 +269,6 @@ impl IQType {
             ((1u32 << i_bits) - 1, (1u32 << f_bits) - 1)
         };
 
-        // Compute i_data and f_data
         let mut i_data = if i_bits == 0 {
             0
         } else if i_bits == total_bits {
@@ -306,27 +295,22 @@ impl IQType {
     }
 
     pub fn from_f32(data: f32, i_bits: u8, signed: bool) -> Result<Self, IQTypeError> {
-        // check if negative
         let negative = data < 0.0;
 
         if !signed && negative {
             return Err(IQTypeError::FaultySignParameter);
         }
 
-        // absolute value
         let abs = if data < 0.0 { -data } else { data };
 
-        // total bit count
         let total_bits = if signed { 31 } else { 32 };
 
-        // number of fractional bits
         let f_bits: u8 = total_bits - i_bits;
 
         let abs_floor = abs.floor();
         let i_data = abs_floor as u32;
         let f_data = ((abs - abs_floor) * (1u32 << f_bits) as f32).round() as u32;
 
-        // Handle trimming integer part
         if i_bits == 0 && i_data > 0 {
             return Err(IQTypeError::IntPartIsTrimmed);
         }
@@ -352,10 +336,8 @@ impl IQType {
     pub fn to_reg(&self) -> u32 {
         let mut res: u32 = 0;
 
-        // total bit count
         let total_bits: u8 = if self.signed { 31 } else { 32 };
 
-        // Compute masks
         let max_mask = if self.signed { 0x7FFFFFFF } else { 0xFFFFFFFF };
         let (i_mask, f_mask) = if self.i_bits == 0 {
             (0, max_mask)
@@ -365,7 +347,6 @@ impl IQType {
             ((1u32 << self.i_bits) - 1, (1u32 << self.f_bits) - 1)
         };
 
-        // calculate result
         if self.i_bits > 0 {
             res = self.i_data << self.f_bits & (i_mask << self.f_bits);
         }

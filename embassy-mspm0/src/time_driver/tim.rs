@@ -172,7 +172,6 @@ impl TimxDriver {
         // Half of the counter's range, the other point where `period` increments.
         regs.counterregs(0).cc(Channel::Ch0.index()).write_value(1 << HALF_BITS);
 
-        // Allow the counter to start counting.
         regs.counterregs(0).ctrctl().modify(|w| {
             w.set_en(true);
         });

@@ -340,7 +340,6 @@ impl Watchdog {
             w.set_key(vals::ResetKey::Key);
         });
 
-        // Enable power for watchdog
         T::regs().gprcm(0).pwren().write(|w| {
             w.set_enable(true);
             w.set_key(vals::PwrenKey::Key);

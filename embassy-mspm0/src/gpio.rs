@@ -1166,7 +1166,7 @@ pub enum WakeLevel {
 ///
 /// SHUTDOWN powers down `VCORE`, so the GPIO peripheral is off and none of the ordinary pin APIs
 /// survive it; the wake controller watches the pin instead, and waking is a reset rather than a
-/// resume. Hold one of these across [`low_power::shutdown`](crate::low_power::shutdown) and identify
+/// resume. Hold one of these across `low_power::shutdown` and identify
 /// the cause on the next boot with
 /// [`ResetCause::BorWakeFromShutdown`](crate::ResetCause::BorWakeFromShutdown).
 ///

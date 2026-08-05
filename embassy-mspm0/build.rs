@@ -1278,7 +1278,9 @@ fn select_gpio_features(cfgs: &mut CfgSet) {
     ]);
 
     // A GPIO port either owns an NVIC line or shares an interrupt group, and `gpio.rs` needs a
-    // different handler for each.
+    // different handler for each. A peripheral can raise more than one interrupt, so classify every
+    // one it has rather than assuming a single line — a port that somehow had both kinds would need
+    // both handlers, and `gpio.rs` rejects that pair with a `compile_error!`.
     for (peripheral, interrupt) in METADATA
         .peripherals
         .iter()
