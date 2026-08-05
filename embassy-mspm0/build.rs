@@ -58,6 +58,7 @@ fn generate_code(cfgs: &mut CfgSet) {
 
     peripheral_kind_cfgs(cfgs);
     peripheral_name_cfgs(cfgs);
+    errata_cfgs(cfgs);
 
     let mut singletons = get_singletons(cfgs);
 
@@ -117,6 +118,25 @@ fn peripheral_name_cfgs(cfgs: &mut CfgSet) {
 
         cfgs.declare(&cfg);
         if METADATA.peripherals.iter().any(|peripheral| peripheral.name == *name) {
+            cfgs.enable(cfg);
+        }
+    }
+}
+
+/// Errata a driver has a workaround for, by TI's identifier.
+///
+/// Add one here when a driver starts gating on it. The cfg is emitted from the device's own errata
+/// sheet, so unlike the family lists these replace it cannot miss a part — and a new device gets its
+/// workarounds without an edit.
+const ERRATA_CFGS: &[&str] = &["GPIO_ERR_01", "UART_ERR_03", "UART_ERR_08"];
+
+/// Enable a cfg, lowercased, for each erratum in [`ERRATA_CFGS`] that applies to this chip.
+fn errata_cfgs(cfgs: &mut CfgSet) {
+    for erratum in ERRATA_CFGS {
+        let cfg = erratum.to_lowercase();
+
+        cfgs.declare(&cfg);
+        if METADATA.has_erratum(erratum) {
             cfgs.enable(cfg);
         }
     }

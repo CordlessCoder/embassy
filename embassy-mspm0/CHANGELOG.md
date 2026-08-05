@@ -41,3 +41,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0: move to `rand_core` 0.10, whose `TryRng` replaces the `TryRngCore` the TRNG implemented
 - fix: mspm0/trng: enable the driver on G310x parts, which have a TRNG but were left out of the family list gating the module
 - fix: mspm0/wwdt: clear `WWDTLP1RSTDIS` on G5187, whose WWDT1 could not trigger a BOOTRST
+- fix: mspm0/uart: apply the `UART_ERR_03` and `UART_ERR_08` workarounds from the device's errata sheet rather than a hand-written family list

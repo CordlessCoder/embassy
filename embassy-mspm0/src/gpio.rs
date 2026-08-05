@@ -363,11 +363,8 @@ impl<'d> Flex<'d> {
 /// Whether `GPIO_ERR_01` applies, which forces both directions to be detected.
 ///
 /// Its case 2 loses every STANDBY1 wake after the first unless the pin detects both edges, so where it
-/// applies the direction is filtered in software instead. Only L110x/L13xx and G1x0x/G3x0x are
-/// affected.
-const DETECT_BOTH_EDGES: bool = cfg!(any(
-    mspm0l110x, mspm0l130x, mspm0l134x, mspm0g110x, mspm0g150x, mspm0g310x, mspm0g350x,
-));
+/// applies the direction is filtered in software instead.
+const DETECT_BOTH_EDGES: bool = cfg!(gpio_err_01);
 
 /// Which edge a task is waiting for.
 #[derive(Clone, Copy)]

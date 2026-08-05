@@ -988,10 +988,10 @@ fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), Confi
         let ctl0 = regs.ctl0().read();
         let irctl = regs.irctl().read();
 
-        // `UART_ERR_03` (L122x/L222x) — 3x oversampling sourced from BUSCLK or MFCLK sets RXINT
-        // erroneously and can corrupt transmitted data. TI's workaround is to oversample higher, or to
-        // use LFCLK where 3x is required, so drop 3x and let the search fall back.
-        let errata_x3 = if cfg!(any(mspm0l122x, mspm0l222x)) {
+        // `UART_ERR_03` — 3x oversampling sourced from BUSCLK or MFCLK sets RXINT erroneously and can
+        // corrupt transmitted data. TI's workaround is to oversample higher, or to use LFCLK where 3x
+        // is required, so drop 3x and let the search fall back.
+        let errata_x3 = if cfg!(uart_err_03) {
             let clksel = regs.clksel().read();
             clksel.busclk_sel() || clksel.mfclk_sel()
         } else {
@@ -1141,25 +1141,8 @@ fn read_with_error(r: Regs) -> Result<u8, Error> {
 /// This function assumes CTL0.ENABLE is set (for errata cases).
 fn busy(r: Regs) -> bool {
     // `UART_ERR_08` — `STAT.BUSY` stays high even with the module disabled and data in the TX FIFO, so
-    // polling it never finishes. Affects L110x/L13xx, L122x/L222x, G1x0x/G3x0x, G151x/G351x,
-    // H3215/H3216, C1103/C1104 and C1105/C1106 — every family this crate builds for except G511x/G5187,
-    // whose UNICOMM UART is a different module.
-    if cfg!(any(
-        mspm0g110x,
-        mspm0g150x,
-        mspm0g310x,
-        mspm0g350x,
-        mspm0g151x,
-        mspm0g351x,
-        mspm0h321x,
-        mspm0l110x,
-        mspm0l130x,
-        mspm0l134x,
-        mspm0l122x,
-        mspm0l222x,
-        mspm0c110x,
-        mspm0c1105_c1106,
-    )) {
+    // polling it never finishes.
+    if cfg!(uart_err_08) {
         let stat = r.stat().read();
         // "Poll TXFIFO status and the CTL0.ENABLE register bit to identify BUSY status."
         !stat.txfe()
