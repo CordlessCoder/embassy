@@ -6,4 +6,4 @@ runner = "probe-rs run --restore-unwritten --verify --chip MSPM0L2228 --protocol
 target = "thumbv6m-none-eabi"
 
 [env]
-DEFMT_LOG = "trace"
+DEFMT_LOG = "info"

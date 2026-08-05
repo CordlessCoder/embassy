@@ -20,7 +20,12 @@ panic-semihosting = "0.6.0"
 rand_core = "0.10"
 
 [profile.release]
+# Matches what actually gets flashed. Without these a release build has no LTO and
+# `opt-level = 3`, which is roughly 3x larger and makes size comparisons meaningless.
 debug = 2
+opt-level = "z"
+lto = true
+codegen-units = 1
 
 [package.metadata.embassy]
 build = [
