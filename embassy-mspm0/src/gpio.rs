@@ -3,12 +3,22 @@
 use core::convert::Infallible;
 #[cfg(feature = "rt")]
 use core::future::Future;
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+use core::future::poll_fn;
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+use core::ptr::{self, NonNull};
 #[cfg(feature = "rt")]
 use core::sync::atomic::Ordering;
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+use core::task::Poll;
 
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+use embassy_executor::raw::{TaskRef, task_from_waker, wake_task};
 use embassy_hal_internal::{Peri, PeripheralType, impl_peripheral};
-#[cfg(feature = "rt")]
+#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
 use maitake_sync::WaitMap;
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+use portable_atomic::AtomicPtr;
 #[cfg(feature = "rt")]
 use portable_atomic::AtomicU32;
 
@@ -174,10 +184,8 @@ impl<'d> Flex<'d> {
     /// Set the pin as "disconnected", ie doing nothing and consuming the lowest
     /// amount of power possible.
     ///
-    /// This is currently the same as [`Self::set_as_analog()`] but is semantically different
-    /// really. Drivers should `set_as_disconnected()` pins when dropped.
-    ///
-    /// Note that this also disables the internal weak pull-up and pull-down resistors.
+    /// Drivers should disconnect their pins when dropped. This also disables the internal weak
+    /// pull-up and pull-down resistors.
     #[inline]
     pub fn set_as_disconnected(&mut self) {
         let pincm = pac::IOMUX.pincm(self.pin.pin_cm() as usize);
@@ -298,8 +306,8 @@ impl<'d> Flex<'d> {
         !self.is_set_high()
     }
 
-    #[cfg(feature = "rt")]
     /// Wait until the pin is high. If it is already high, return immediately.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_high(&mut self) {
         if self.is_high() {
@@ -309,8 +317,8 @@ impl<'d> Flex<'d> {
         self.wait_for_rising_edge().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait until the pin is low. If it is already low, return immediately.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_low(&mut self) {
         if self.is_low() {
@@ -320,22 +328,22 @@ impl<'d> Flex<'d> {
         self.wait_for_falling_edge().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo a transition from low to high.
+    #[cfg(feature = "rt")]
     #[inline]
     pub fn wait_for_rising_edge(&mut self) -> impl Future<Output = ()> {
         self.wait_inner(Edge::Rising)
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo a transition from high to low.
+    #[cfg(feature = "rt")]
     #[inline]
     pub fn wait_for_falling_edge(&mut self) -> impl Future<Output = ()> {
         self.wait_inner(Edge::Falling)
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
+    #[cfg(feature = "rt")]
     #[inline]
     pub fn wait_for_any_edge(&mut self) -> impl Future<Output = ()> {
         self.wait_inner(Edge::Any)
@@ -346,40 +354,83 @@ impl<'d> Flex<'d> {
         let key = self.pin.pin_port();
         let arm = EdgeArm::new(self.pin.block(), key, edge);
 
-        let result = GPIO_WAIT_MAP
-            .wait_for(key, || {
-                // A withdrawn request is the interrupt reporting the edge, so this is both the
-                // completion check and, on the first poll, what arms the interrupt. Arming from in
-                // here is what keeps it after the waker is registered.
-                if !arm.request.is_outstanding() {
-                    return true;
-                }
-
-                arm.unmask();
-
-                false
-            })
-            .await;
-
-        // Because of the following no error can happen:
-        // 1. The map is never closed (Closed)
-        // 2. The data cannot already be consumed because wait_for registers the key.
-        // 3. wait_for always causes wait to be added to map (NeverAdded)
-        // 4. pin singletons ensure that a wait map entry is ever owned by one entity (Duplicate)
-        debug_assert!(result.is_ok(), "GPIO wait map should never result in error");
+        park(key, &arm).await;
     }
 }
 
-#[cfg(feature = "rt")]
+/// Park until the interrupt reports the edge `arm` was set up for.
+///
+/// A withdrawn request is the interrupt reporting it, so the check below is both the completion test and,
+/// on the first poll, what arms the interrupt — arming from after the waiter is registered is what keeps an
+/// edge from being missed.
+#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
+async fn park(key: u8, arm: &EdgeArm) {
+    let result = GPIO_WAIT_MAP
+        .wait_for(key, || {
+            if !arm.request.is_outstanding() {
+                return true;
+            }
+
+            arm.unmask();
+
+            false
+        })
+        .await;
+
+    // Because of the following no error can happen:
+    // 1. The map is never closed (Closed)
+    // 2. The data cannot already be consumed because wait_for registers the key.
+    // 3. wait_for always causes wait to be added to map (NeverAdded)
+    // 4. pin singletons ensure that a wait map entry is ever owned by one entity (Duplicate)
+    debug_assert!(result.is_ok(), "GPIO wait map should never result in error");
+}
+
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+async fn park(key: u8, arm: &EdgeArm) {
+    let slot = &PIN_TASKS[usize::from(key)];
+
+    poll_fn(|cx| {
+        // Panics if the waiter is not an embassy task, which is what the feature asserts it always is.
+        let task = task_from_waker(cx.waker());
+        slot.store(task.as_raw().as_ptr(), Ordering::Release);
+
+        if !arm.request.is_outstanding() {
+            return Poll::Ready(());
+        }
+
+        arm.unmask();
+
+        Poll::Pending
+    })
+    .await;
+}
+
+/// Report the edge to whoever is parked on `key`.
+#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
+fn report_edge(key: u8) {
+    let _ = GPIO_WAIT_MAP.wake(&key, ());
+}
+
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+fn report_edge(key: u8) {
+    // Left in place rather than cleared: every poll stores it again, and waking a task that has already
+    // been woken is harmless, so there is nothing to gain from a read-modify-write here.
+    if let Some(task) = NonNull::new(PIN_TASKS[usize::from(key)].load(Ordering::Acquire)) {
+        // SAFETY: written by `park` from `as_raw`, and an embassy task lives for the rest of the program.
+        unsafe { wake_task(TaskRef::from_raw(task)) };
+    }
+}
+
 /// Whether `GPIO_ERR_01` applies, which forces both directions to be detected.
 ///
 /// Its case 2 loses every STANDBY1 wake after the first unless the pin detects both edges, so where it
 /// applies the direction is filtered in software instead.
+#[cfg(feature = "rt")]
 const DETECT_BOTH_EDGES: bool = cfg!(gpio_err_01);
 
-#[cfg(feature = "rt")]
 /// Which edge a task is waiting for.
 #[derive(Clone, Copy)]
+#[cfg(feature = "rt")]
 enum Edge {
     Rising,
     Falling,
@@ -397,8 +448,8 @@ impl Edge {
     }
 }
 
-#[cfg(feature = "rt")]
 /// Holds a pin's edge detection armed for one wait, and disarms it however the wait ends.
+#[cfg(feature = "rt")]
 struct EdgeArm {
     block: gpio::Gpio,
     bit: usize,
@@ -473,11 +524,11 @@ impl Drop for EdgeArm {
     }
 }
 
-#[cfg(feature = "rt")]
 /// One pin's standing request for an edge, which [`irq_handler`] answers by withdrawing it.
 ///
 /// Withdrawal is deliberately the completion signal rather than the status bit, which says nothing
 /// about direction and, under [`DETECT_BOTH_EDGES`], is set by edges the task did not ask for.
+#[cfg(feature = "rt")]
 struct EdgeRequest {
     rise: &'static AtomicU32,
     fall: &'static AtomicU32,
@@ -539,11 +590,19 @@ static WANT_RISE: [AtomicU32; PORT_COUNT] = [const { AtomicU32::new(0) }; PORT_C
 #[cfg(feature = "rt")]
 static WANT_FALL: [AtomicU32; PORT_COUNT] = [const { AtomicU32::new(0) }; PORT_COUNT];
 
-#[cfg(feature = "rt")]
 /// Wait map for GPIO wakers
 ///
 /// This map must **never** be closed because gpio wakers may be used forever.
+#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
 static GPIO_WAIT_MAP: WaitMap<u8, ()> = WaitMap::new();
+
+/// The task parked on each pin, as a bare pointer.
+///
+/// One word where a `Waker` is two, so this is half a waker array. It also needs no lock: only load and
+/// store are used, and those are atomic on this core without a compare-and-swap to emulate, where a
+/// `Waker` or a `Cell` would have to be guarded by a critical section on both paths.
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+static PIN_TASKS: [AtomicPtr<()>; 32 * PORT_COUNT] = [const { AtomicPtr::new(ptr::null_mut()) }; 32 * PORT_COUNT];
 
 impl<'d> Drop for Flex<'d> {
     #[inline]
@@ -593,36 +652,36 @@ impl<'d> Input<'d> {
         self.pin.set_inversion(invert)
     }
 
-    #[cfg(feature = "rt")]
     /// Wait until the pin is high. If it is already high, return immediately.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_high(&mut self) {
         self.pin.wait_for_high().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait until the pin is low. If it is already low, return immediately.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_low(&mut self) {
         self.pin.wait_for_low().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo a transition from low to high.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_rising_edge(&mut self) {
         self.pin.wait_for_rising_edge().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo a transition from high to low.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_falling_edge(&mut self) {
         self.pin.wait_for_falling_edge().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_any_edge(&mut self) {
         self.pin.wait_for_any_edge().await
@@ -786,36 +845,36 @@ impl<'d> OutputOpenDrain<'d> {
         self.pin.set_inversion(invert)
     }
 
-    #[cfg(feature = "rt")]
     /// Wait until the pin is high. If it is already high, return immediately.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_high(&mut self) {
         self.pin.wait_for_high().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait until the pin is low. If it is already low, return immediately.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_low(&mut self) {
         self.pin.wait_for_low().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo a transition from low to high.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_rising_edge(&mut self) {
         self.pin.wait_for_rising_edge().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo a transition from high to low.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_falling_edge(&mut self) {
         self.pin.wait_for_falling_edge().await
     }
 
-    #[cfg(feature = "rt")]
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
+    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_any_edge(&mut self) {
         self.pin.wait_for_any_edge().await
@@ -900,31 +959,26 @@ impl<'d> embedded_hal::digital::StatefulOutputPin for Flex<'d> {
 
 #[cfg(feature = "rt")]
 impl<'d> embedded_hal_async::digital::Wait for Flex<'d> {
-    #[cfg(feature = "rt")]
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
         self.wait_for_high().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
         self.wait_for_low().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_rising_edge().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_falling_edge().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_any_edge().await;
         Ok(())
@@ -949,31 +1003,26 @@ impl<'d> embedded_hal::digital::InputPin for Input<'d> {
 
 #[cfg(feature = "rt")]
 impl<'d> embedded_hal_async::digital::Wait for Input<'d> {
-    #[cfg(feature = "rt")]
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
         self.wait_for_high().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
         self.wait_for_low().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_rising_edge().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_falling_edge().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_any_edge().await;
         Ok(())
@@ -1050,31 +1099,26 @@ impl<'d> embedded_hal::digital::StatefulOutputPin for OutputOpenDrain<'d> {
 
 #[cfg(feature = "rt")]
 impl<'d> embedded_hal_async::digital::Wait for OutputOpenDrain<'d> {
-    #[cfg(feature = "rt")]
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
         self.wait_for_high().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
         self.wait_for_low().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_rising_edge().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_falling_edge().await;
         Ok(())
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
         self.wait_for_any_edge().await;
         Ok(())
@@ -1325,7 +1369,8 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
         }
 
         request.withdraw();
-        let _ = GPIO_WAIT_MAP.wake(&key, ());
+
+        report_edge(key);
 
         // Nothing left to report until the task arms the next wait, so keep this pin out of here —
         // and out of the wake path, in case the device sleeps first.
