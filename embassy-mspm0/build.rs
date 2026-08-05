@@ -25,7 +25,9 @@ fn main() {
 }
 
 fn generate_code(cfgs: &mut CfgSet) {
-    #[cfg(any(feature = "rt"))]
+    // Unconditional, even though `interrupt_group.x` only does anything where there is a vector table
+    // to patch: every example's build script passes `-Tinterrupt_group.x`, so a search path that
+    // appeared only with `rt` turned a missing feature into a linker script that cannot be found.
     println!(
         "cargo:rustc-link-search={}",
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).display(),

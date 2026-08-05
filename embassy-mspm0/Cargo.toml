@@ -100,7 +100,14 @@ critical-section = { version = "1.2.0", features = ["std"] }
 [features]
 default = ["rt"]
 
-## Enable `mspm0-metapac`'s `rt` feature
+## Provide the vector table, via `mspm0-metapac`'s `rt` feature, and with it the handlers this crate
+## installs itself: the time driver's timer and the GPIO ports.
+##
+## Without it a `time-driver-*` feature is a compile error, and GPIO edge waits do not exist. Everything
+## else works, including the async peripheral drivers — `bind_interrupts!` emits plain `extern "C"`
+## handlers, so an application that owns its own vector table can still reach them.
+##
+## Not covered by CI: the build matrix can only add features, so no build without `rt` is ever compiled.
 rt = ["mspm0-metapac/rt"]
 
 ## Use [`defmt`](https://docs.rs/defmt/latest/defmt/) for logging

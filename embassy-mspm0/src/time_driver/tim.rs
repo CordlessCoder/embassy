@@ -6,6 +6,7 @@ use critical_section::{CriticalSection, Mutex};
 use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_time_driver::Driver;
 use embassy_time_queue_utils::Queue;
+#[cfg(feature = "rt")]
 use mspm0_metapac::interrupt;
 use mspm0_metapac::tim::Tim;
 
@@ -345,103 +346,103 @@ pub(crate) fn init(cs: CriticalSection) {
     DRIVER.init(cs);
 }
 
-#[cfg(time_driver_timg0)]
+#[cfg(all(time_driver_timg0, feature = "rt"))]
 #[interrupt]
 fn TIMG0() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg1)]
+#[cfg(all(time_driver_timg1, feature = "rt"))]
 #[interrupt]
 fn TIMG1() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg2)]
+#[cfg(all(time_driver_timg2, feature = "rt"))]
 #[interrupt]
 fn TIMG2() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg3)]
+#[cfg(all(time_driver_timg3, feature = "rt"))]
 #[interrupt]
 fn TIMG3() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg4)]
+#[cfg(all(time_driver_timg4, feature = "rt"))]
 #[interrupt]
 fn TIMG4() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg5)]
+#[cfg(all(time_driver_timg5, feature = "rt"))]
 #[interrupt]
 fn TIMG5() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg6)]
+#[cfg(all(time_driver_timg6, feature = "rt"))]
 #[interrupt]
 fn TIMG6() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg7)]
+#[cfg(all(time_driver_timg7, feature = "rt"))]
 #[interrupt]
 fn TIMG7() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg8)]
+#[cfg(all(time_driver_timg8, feature = "rt"))]
 #[interrupt]
 fn TIMG8() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg9)]
+#[cfg(all(time_driver_timg9, feature = "rt"))]
 #[interrupt]
 fn TIMG9() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg10)]
+#[cfg(all(time_driver_timg10, feature = "rt"))]
 #[interrupt]
 fn TIMG10() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg11)]
+#[cfg(all(time_driver_timg11, feature = "rt"))]
 #[interrupt]
 fn TIMG11() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg12)]
+#[cfg(all(time_driver_timg12, feature = "rt"))]
 #[interrupt]
 fn TIMG12() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg13)]
+#[cfg(all(time_driver_timg13, feature = "rt"))]
 #[interrupt]
 fn TIMG13() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_timg14)]
+#[cfg(all(time_driver_timg14, feature = "rt"))]
 #[interrupt]
 fn TIMG14() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_tima0)]
+#[cfg(all(time_driver_tima0, feature = "rt"))]
 #[interrupt]
 fn TIMA0() {
     DRIVER.on_interrupt();
 }
 
-#[cfg(time_driver_tima1)]
+#[cfg(all(time_driver_tima1, feature = "rt"))]
 #[interrupt]
 fn TIMA1() {
     DRIVER.on_interrupt();

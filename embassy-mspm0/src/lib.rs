@@ -54,6 +54,13 @@ pub mod mode {
     impl Mode for Async {}
 }
 
+#[cfg(all(feature = "_time-driver", not(feature = "rt")))]
+compile_error!(
+    "a `time-driver-*` feature needs `rt`. The time driver installs its own interrupt handler, and \
+     without `rt` there is no vector table to install it into, so it could never keep time. Enable \
+     `rt`, or drop the time driver and use the HAL's blocking APIs."
+);
+
 #[cfg(feature = "_time-driver")]
 mod time_driver;
 
@@ -236,11 +243,13 @@ pub fn init(config: Config) -> Peripherals {
         #[cfg(gpio_pc)]
         gpio::init(pac::GPIOC);
 
+        // Without `rt` there is no handler behind these, so the first edge would reach `DefaultHandler`.
+        #[cfg(feature = "rt")]
         _generated::enable_group_interrupts(cs);
 
         // Where GPIOA has an NVIC line of its own rather than sharing an interrupt group,
         // `enable_group_interrupts` does not reach it.
-        #[cfg(gpioa_interrupt)]
+        #[cfg(all(gpioa_interrupt, feature = "rt"))]
         unsafe {
             use crate::_generated::interrupt::typelevel::Interrupt;
             crate::interrupt::typelevel::GPIOA::enable();

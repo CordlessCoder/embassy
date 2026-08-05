@@ -1,11 +1,13 @@
 //! True Random Number Generator (TRNG) driver.
 use core::fmt::Display;
+#[cfg(feature = "rt")]
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
 use cortex_m::asm;
 use embassy_hal_internal::Peri;
+#[cfg(feature = "rt")]
 use embassy_sync::waitqueue::AtomicWaker;
 use mspm0_metapac::trng::regs::Int;
 use mspm0_metapac::trng::vals::Cmd::*;
@@ -16,6 +18,8 @@ use crate::peripherals::TRNG;
 use crate::sealed;
 use crate::sysctl::{LowPowerInstance, WakeGuard};
 
+/// Woken by the TRNG interrupt, so it only exists where there is one to install.
+#[cfg(feature = "rt")]
 static WAKER: AtomicWaker = AtomicWaker::new();
 
 /// Decimation rate marker types. See [`DecimRate`].
