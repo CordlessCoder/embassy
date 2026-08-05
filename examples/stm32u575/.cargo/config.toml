@@ -6,4 +6,4 @@ runner = "probe-rs run --chip STM32U575CIUxQ"
 target = "thumbv8m.main-none-eabihf"
 
 [env]
-DEFMT_LOG = "trace"
+DEFMT_LOG = "info"
