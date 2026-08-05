@@ -66,3 +66,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/gpio: add `gpio-embassy-tasks-only`, storing the waiting task rather than a waker. Halves the RAM per pin and requires every edge wait to be awaited from an embassy task
 - fix: mspm0/i2c: apply the `I2C_ERR_13` settling delay before polling `CSR`, without which a controller transfer was checked before it started and a NACK came back as success
 - fix: mspm0/i2c: the async entry guards wait on `CSTOP` instead of spinning on `BUSBSY`
+- fix: mspm0/i2c: dropping an async transfer no longer wedges the peripheral; the next one resets the controller, which is the only thing that frees the bus afterwards
+- fix: mspm0/i2c: `set_config` did not record the new configuration, so a later internal reset restored the previous one

@@ -2,7 +2,7 @@
 
 use core::future;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::Poll;
 
 use embassy_embedded_hal::SetConfig;
@@ -471,6 +471,8 @@ pub struct I2c<'d, M: Mode> {
     scl: Option<Peri<'d, AnyPin>>,
     sda: Option<Peri<'d, AnyPin>>,
     wake_floor: Option<SleepLevel>,
+    /// What the peripheral is configured to, kept so [`I2c::reset_peripheral`] can restore it.
+    resolved: Resolved,
     /// CPU cycles to let a freshly started transfer settle. See [`I2c::settle_after_start`].
     settle_cycles: u32,
     _phantom: PhantomData<M>,
@@ -525,6 +527,7 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// Reconfigure the driver
     pub fn set_config(&mut self, config: Config) -> Result<(), ConfigError> {
         let resolved = config.resolve()?;
+        self.resolved = resolved;
 
         self.info.interrupt.disable();
 
@@ -623,6 +626,28 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// Polling `BUSY` any sooner reads it before the controller has raised it, so the wait falls straight
     /// through and the caller checks for errors against a transfer that has not happened yet. A NACK then
     /// goes unnoticed and the transfer is reported as a success.
+    /// Reset the controller and reapply the configuration.
+    ///
+    /// The only thing that reliably ends an abandoned burst, since nothing is raised when one finishes.
+    /// Cheap: a few register writes and a 16-cycle settle.
+    fn reset_peripheral(&mut self) {
+        self.info.regs.gprcm(0).rstctl().write(|w| {
+            w.set_resetstkyclr(true);
+            w.set_resetassert(true);
+            w.set_key(vals::ResetKey::Key);
+        });
+        self.info.regs.gprcm(0).pwren().write(|w| {
+            w.set_enable(true);
+            w.set_key(vals::PwrenKey::Key);
+        });
+        cortex_m::asm::delay(16);
+
+        // Re-derives `wake_floor` and `settle_cycles` too. Infallible: the config was resolved once
+        // already, and nothing about the clock tree can have changed since.
+        let resolved = self.resolved;
+        let _ = self.init(&resolved);
+    }
+
     fn settle_after_start(&self) {
         cortex_m::asm::delay(self.settle_cycles);
     }
@@ -632,6 +657,46 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// Waits on the STOP that ends the transfer holding it, rather than spinning on `BUSBSY`: the bus can
     /// be held by another controller for as long as it likes, and an async caller must not block the
     /// executor for that.
+    /// Mask this transfer's interrupts and mark the peripheral dirty.
+    ///
+    /// Deliberately does not release the bus. A STOP-only command is only legal "after previous
+    /// transaction success finished" (SLAU846 table 25-10) and a cancelled transaction has not, so one
+    /// issued here is never executed; waiting for the burst to end instead is unbounded, which a drop
+    /// handler may not do. [`I2c::recover_bus`] finishes the job at the front of the next transfer.
+    ///
+    /// [`OnDrop::defuse`] it when the transfer finished on its own.
+    fn abort_on_drop(regs: Regs, state: &'static State) -> OnDrop<impl FnOnce()> {
+        OnDrop::new(move || {
+            // Masking matters on its own: an armed interrupt with nothing left to consume it fires into a
+            // handler that only wakes, and re-enters until something masks it. The flags it latched need no
+            // clearing here, because `recover_bus` resets the peripheral before the next transfer.
+            regs.cpu_int(0).imask().write_value(i2c::regs::CpuInt::default());
+
+            state.abandoned.store(true, Ordering::Relaxed);
+        })
+    }
+
+    /// Make the peripheral fit for a new transfer after a dropped one, then wait for the bus.
+    ///
+    /// A dropped transfer leaves a burst running that nobody is servicing, and nothing short of a reset
+    /// ends it in bounded time: a STOP-only command is illegal until the transaction finishes (SLAU846
+    /// table 25-10), and no interrupt is raised when it does, so waiting for it means polling.
+
+    /// Finish the cleanup a dropped transfer could not do, before touching the bus again.
+    async fn recover_bus(&mut self) -> Result<(), Error> {
+        // Load and clear rather than swap: `thumbv6m` has no CAS, and both sides of this flag run in task
+        // context on a `&mut self`, never against an interrupt.
+        if self.state.abandoned.load(Ordering::Relaxed) {
+            self.state.abandoned.store(false, Ordering::Relaxed);
+
+            // A reset does every part of the cleanup at once and is the only thing that reliably ends the
+            // abandoned burst: nothing is raised when one finishes, so anything else means polling.
+            self.reset_peripheral();
+        }
+
+        self.wait_bus_free().await
+    }
+
     async fn wait_bus_free(&mut self) -> Result<(), Error> {
         if !self.info.regs.controller(0).csr().read().busbsy() {
             return Ok(());
@@ -934,6 +999,7 @@ impl<'d> I2c<'d, Blocking> {
 impl<'d> I2c<'d, Async> {
     async fn write_async_internal(&mut self, addr: u8, write: &[u8], end_w_stop: bool) -> Result<(), Error> {
         let _guard = self.wake_floor.map(WakeGuard::new);
+        let abort = Self::abort_on_drop(self.info.regs, self.state);
 
         let ctrl = self.info.regs.controller(0);
 
@@ -984,10 +1050,13 @@ impl<'d> I2c<'d, Async> {
             .await;
 
             if res.is_err() {
+                // The guard's cleanup done eagerly, so it must not run a second time.
                 self.master_stop();
+                abort.defuse();
                 return res;
             }
         }
+        abort.defuse();
         Ok(())
     }
 
@@ -999,6 +1068,7 @@ impl<'d> I2c<'d, Async> {
         end_w_stop: bool,
     ) -> Result<(), Error> {
         let _guard = self.wake_floor.map(WakeGuard::new);
+        let abort = Self::abort_on_drop(self.info.regs, self.state);
 
         let read_len = read.len();
 
@@ -1047,7 +1117,9 @@ impl<'d> I2c<'d, Async> {
             .await;
 
             if res.is_err() {
+                // The guard's cleanup done eagerly, so it must not run a second time.
                 self.master_stop();
+                abort.defuse();
                 return res;
             }
 
@@ -1055,6 +1127,7 @@ impl<'d> I2c<'d, Async> {
                 *byte = self.info.regs.controller(0).crxdata().read().value();
             }
         }
+        abort.defuse();
         Ok(())
     }
 
@@ -1063,19 +1136,19 @@ impl<'d> I2c<'d, Async> {
 
     pub async fn async_write(&mut self, address: u8, write: &[u8]) -> Result<(), Error> {
         // wait until bus is free
-        self.wait_bus_free().await?;
+        self.recover_bus().await?;
         self.write_async_internal(address, write, true).await
     }
 
     pub async fn async_read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Error> {
         // wait until bus is free
-        self.wait_bus_free().await?;
+        self.recover_bus().await?;
         self.read_async_internal(address, read, false, true).await
     }
 
     pub async fn async_write_read(&mut self, address: u8, write: &[u8], read: &mut [u8]) -> Result<(), Error> {
         // wait until bus is free
-        self.wait_bus_free().await?;
+        self.recover_bus().await?;
 
         let err = self.write_async_internal(address, write, false).await;
         if err != Ok(()) {
@@ -1203,7 +1276,7 @@ impl<'d> embedded_hal_async::i2c::I2c for I2c<'d, Async> {
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> Result<(), Self::Error> {
         // wait until bus is free
-        self.wait_bus_free().await?;
+        self.recover_bus().await?;
         for i in 0..operations.len() {
             match &mut operations[i] {
                 embedded_hal::i2c::Operation::Read(buf) => self.read_async_internal(address, buf, false, false).await?,
@@ -1258,6 +1331,10 @@ pub(crate) struct State {
     /// The clock rate of the I2C. This might be configured.
     pub(crate) clock: AtomicU32,
     pub(crate) waker: AtomicWaker,
+
+    /// Set when an async transfer was dropped part-way, so the peripheral is left mid-burst and needs
+    /// servicing. Set by [`I2c::abort_on_drop`] and cleared by [`I2c::recover_bus`].
+    pub(crate) abandoned: AtomicBool,
 }
 
 impl<'d, M: Mode> I2c<'d, M> {
@@ -1300,16 +1377,19 @@ impl<'d, M: Mode> I2c<'d, M> {
             });
         }
 
+        let resolved = config.resolve()?;
+
         let mut this = Self {
             info: T::info(),
             state: T::state(),
             scl: scl_inner,
             sda: sda_inner,
             wake_floor: None,
+            resolved,
             settle_cycles: 0,
             _phantom: PhantomData,
         };
-        this.init(&config.resolve()?)?;
+        this.init(&resolved)?;
 
         Ok(this)
     }
@@ -1352,6 +1432,7 @@ macro_rules! impl_i2c_instance {
                 static STATE: State = State {
                     clock: core::sync::atomic::AtomicU32::new(0),
                     waker: embassy_sync::waitqueue::AtomicWaker::new(),
+                    abandoned: core::sync::atomic::AtomicBool::new(false),
                 };
                 &STATE
             }
