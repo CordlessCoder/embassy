@@ -55,3 +55,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/i2c: add `Timing`, a timer period solved by a `const fn` and taken by `Config::with_timing`
 - fix: mspm0/i2c: program the I2C target's clock source from the resolved configuration, which for a bus speed above 200 kHz differed from `Config::clock_source`
 - fix: mspm0/tim: compute the PWM duty fraction without a 64-bit division
+- fix: mspm0/adc: derive `FRANGE` and `SCLKDIV` from the configured sample clock rate instead of hardcoding the 32 MHz boot tree. The hardcoded `FRANGE` was already wrong on C-series parts, whose SYSOSC base is 24 MHz
+- feat: mspm0/adc: add `SampleClock::Ulpclk` and `SampleClock::Hfclk`, and honour `Config::sample_clk`, which was ignored in favour of SYSOSC
+- fix: mspm0/adc: check the sample clock against the device's `fADCCLK` instead of the span `FRANGE` can encode

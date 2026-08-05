@@ -478,24 +478,73 @@ fn generate_dma_channel_count() -> TokenStream {
     quote! { pub const DMA_CHANNELS: usize = #count; }
 }
 
-fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
-    let adc = METADATA
+/// The `clock_range_hz` every instance of `kind` shares, or `None` where the datasheet gives none.
+///
+/// Per device rather than per family: two parts can share `max_mclk_hz` and a SYSCTL version and
+/// still have different `fADCCLK` ranges, and the minimum is not always 4 MHz.
+fn peripheral_clock_range(kind: &str) -> Option<(u32, u32)> {
+    let mut instances = METADATA
         .peripherals
         .iter()
-        .find_map(|peripheral| peripheral.adc)
-        .expect("chip has no ADC instance");
-    let vrsel = adc.vrsel;
-    let memctl = adc.memctl;
+        .filter(|peripheral| peripheral.kind == kind)
+        .map(|peripheral| (peripheral.name, peripheral.clock_range_hz));
 
+    let (first_name, first) = instances.next()?;
+
+    for (name, range) in instances {
+        assert_eq!(
+            range, first,
+            "{name} and {first_name} give different input clock ranges, so the {kind} driver can no \
+             longer hold one as a crate-wide constant"
+        );
+    }
+
+    let range = first?;
+
+    Some((range.min_hz, range.max_hz))
+}
+
+/// Emit the ADC facts that the single `adc_v1` register block does not describe.
+///
+/// The metadata states these per ADC instance, but no device has two ADCs that disagree, so they
+/// stay crate-wide constants and `MAX_SEQUENCE_LEN` stays a `pub const` a caller can size an array
+/// with. A device that breaks the assumption fails the build here rather than silently taking
+/// whichever instance came first.
+fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
     cfgs.declare("adc_neg_vref");
-    match vrsel {
+
+    let mut instances = METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.adc.map(|adc| (peripheral.name, adc)));
+
+    let (first_name, first) = instances.next().expect("chip has no ADC instance");
+
+    for (name, adc) in instances {
+        assert_eq!(
+            adc, first,
+            "{name} and {first_name} disagree about MEMCTL or VRSEL, so the ADC driver can no \
+             longer hold them as crate-wide constants"
+        );
+    }
+
+    match first.vrsel {
         3 => (),
         5 => cfgs.enable("adc_neg_vref"),
-        _ => panic!("Unsupported ADC VRSEL value: {vrsel}"),
+        vrsel => panic!("Unsupported ADC VRSEL value: {vrsel}"),
     }
+
+    let vrsel = first.vrsel;
+    let memctl = first.memctl;
+    let (min, max) = peripheral_clock_range("adc").expect("chip's ADC has no fADCCLK range");
+
     quote! {
         pub const ADC_VRSEL: u8 = #vrsel;
         pub const ADC_MEMCTL: u8 = #memctl;
+
+        /// `fADCCLK`, the range the clock selected by `CLKCFG.SAMPCLK` must stay within.
+        pub const ADC_CLK_MIN_HZ: u32 = #min;
+        pub const ADC_CLK_MAX_HZ: u32 = #max;
     }
 }
 

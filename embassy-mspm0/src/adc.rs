@@ -41,14 +41,44 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     }
 }
 
-/// Sample clock source for ADC.
+/// Sample clock source for ADC, which becomes ADCCLK.
+///
+/// Constructing an [`Adc`] panics if the chosen source is stopped, or outside this device's
+/// `fADCCLK` range — which is per device rather than per family: 4-48 MHz on a G3507, 4-32 MHz on an
+/// L1306, 12-24 MHz on a C1104.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SampleClock {
-    // TODO: ULPCLK after clock config
-    /// Source ADC clock from SYSOSC.
+    /// ULPCLK, the PD0 bus clock, which follows MCLK.
+    ///
+    /// Useful for a deterministic start of sampling, and the only source that lets several ADC
+    /// instances sample simultaneously, since it is the same clock the trigger is timed against.
+    Ulpclk,
+
+    /// SYSOSC, at whatever operating point the clock tree left it.
+    ///
+    /// Unlike the others this cannot fail to be present: an ADC trigger with SYSOSC switched off
+    /// makes the ADC request it back at its base frequency for the conversion.
     Sysosc,
-    // TODO: HFCLK after clock config (if available)
+
+    /// HFCLK, which has to be configured through [`sysctl::clock::Config::with_hfclk`].
+    ///
+    /// The lowest-jitter option, for when the sampling instant has to be accurate.
+    ///
+    /// [`sysctl::clock::Config::with_hfclk`]: crate::sysctl::clock::Config::with_hfclk
+    #[cfg(mspm0_hfxt)]
+    Hfclk,
+}
+
+impl SampleClock {
+    const fn to_sampclk(self) -> vals::Sampclk {
+        match self {
+            Self::Ulpclk => vals::Sampclk::Ulpclk,
+            Self::Sysosc => vals::Sampclk::Sysosc,
+            #[cfg(mspm0_hfxt)]
+            Self::Hfclk => vals::Sampclk::Hfclk,
+        }
+    }
 }
 
 /// Conversion resolution of the ADC results.
@@ -183,6 +213,9 @@ impl Default for Config {
 pub struct Adc<'d, T: Instance, M: Mode> {
     #[allow(unused)]
     adc: crate::Peri<'d, T>,
+    /// Kept so the sleep guard knows which clock a conversion depends on.
+    #[allow(unused)]
+    sample_clk: SampleClock,
     _mode: PhantomData<M>,
 }
 
@@ -191,6 +224,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         Self::setup(config);
         Adc {
             adc: peri,
+            sample_clk: config.sample_clk,
             _mode: PhantomData,
         }
     }
@@ -200,9 +234,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         let r = T::info().regs;
         let channel = channel.reborrow_adc();
 
-        // Wait until ADC is not converting to start.
-        //
-        // This is needed a future which started sampling could have been dropped half way through.
+        // A sampling future dropped half way through leaves a conversion running.
         while r.ctl0().read().enc() {}
 
         Self::setup_sequence([(channel.get_hw_channel(), conversion)].into_iter());
@@ -273,21 +305,25 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         unsafe { T::info().interrupt.enable() };
         Self {
             adc: peri,
+            sample_clk: config.sample_clk,
             _mode: PhantomData,
         }
     }
 
     /// Shallowest sleep level to block while a conversion is in flight.
-    fn conversion_guard() -> Option<WakeGuard> {
-        // TODO: The sample clock is SYSOSC, which is what MCLK runs from until the clock tree is configurable.
+    fn conversion_guard(&self) -> Option<WakeGuard> {
+        // Asks about ADCCLK rather than MCLK. The two used to be interchangeable, since the sample
+        // clock was always SYSOSC and MCLK always ran from it, but a configured tree can now put
+        // HFCLK far above an LFCLK-sourced MCLK — where the MCLK answer would allow a sleep deep
+        // enough to stop the clock the conversion is running on.
         <T as crate::sysctl::LowPowerInstance>::SLEEP
-            .floor_for_operation(crate::sysctl::clocks().mclk)
+            .floor_for_operation(adc_clock_hz(self.sample_clk))
             .map(WakeGuard::new)
     }
 
     /// Read an ADC pin asynchronously using the irq handler.
     pub async fn irq_read<'a>(&mut self, channel: impl BorrowedChannel<'a, T>, conversion: Conversion) -> u16 {
-        let _guard = Self::conversion_guard();
+        let _guard = self.conversion_guard();
         let r = T::info().regs;
         let channel = channel.reborrow_adc();
 
@@ -331,11 +367,10 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
             MAX_SEQUENCE_LEN
         );
 
-        let _guard = Self::conversion_guard();
+        let _guard = self.conversion_guard();
         let sequence_len = sequence.len();
         let r = T::info().regs;
 
-        // Wait until ADC is not converting to start.
         Self::wait_for_conversion().await;
         Self::setup_sequence(sequence.map(|(ch, conv)| (ch.get_hw_channel(), conv)));
 
@@ -425,7 +460,6 @@ pub trait AdcChannel<T>: SealedAdcChannel<T> + Sized {
 
 // Impl details
 
-// Constants from the metapac crate
 const ADC_VRSEL: u8 = crate::_generated::ADC_VRSEL;
 const ADC_MEMCTL: u8 = crate::_generated::ADC_MEMCTL;
 
@@ -452,20 +486,20 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
 
         r.gprcm(0).clkcfg().write(|w| {
             w.set_key(vals::ClkcfgKey::Key);
-            w.set_sampclk(vals::Sampclk::Sysosc);
+            w.set_sampclk(config.sample_clk.to_sampclk());
         });
 
-        // FIXME: Consider clock config
-        // This code assumes the 24/32 MHz boot frequency
+        let adcclk = adc_clock_hz(config.sample_clk);
+
         r.ctl0().write(|w| {
             w.set_enc(false);
             // TODO: power down config
             w.set_pwrdn(vals::Pwrdn::Manual);
-            w.set_sclkdiv(vals::Sclkdiv::DivBy4);
+            w.set_sclkdiv(sample_clock_div(adcclk));
         });
 
         r.clkfreq().write(|w| {
-            w.set_frange(vals::Frange::Range24to32);
+            w.set_frange(clock_range(adcclk));
         });
 
         r.ctl1().write(|w| {
@@ -498,7 +532,6 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         });
     }
 
-    // (channel, conversion)
     fn setup_sequence(sequence: impl ExactSizeIterator<Item = (u8, Conversion)>) {
         let r = T::info().regs;
         let len = sequence.len();
@@ -603,6 +636,133 @@ const fn convert_stime(stime: SampleTimeComparator) -> vals::Stime {
         SampleTimeComparator::Scomp1 => vals::Stime::SelScomp1,
     }
 }
+
+/// What ADCCLK runs at with `source` selected as the sample clock.
+///
+/// # Panics
+/// If the source is outside `fADCCLK`. Selecting [`SampleClock::Hfclk`] without configuring HFCLK
+/// reads as stopped and lands here, as does [`SampleClock::Ulpclk`] under an LFCLK-sourced MCLK.
+fn adc_clock_hz(source: SampleClock) -> u32 {
+    let clocks = crate::sysctl::clocks();
+
+    let hz = match source {
+        SampleClock::Ulpclk => clocks.ulpclk,
+
+        // Switching SYSOSC off does not take the ADC with it: the TRM (G-series 18.2.5) has the ADC
+        // request SYSOSC back at its base frequency for the duration of a conversion, so that is
+        // the rate the registers have to be programmed for.
+        SampleClock::Sysosc => match clocks.sysosc {
+            0 => crate::sysctl::clock::SYSOSC_BASE_HZ,
+            hz => hz,
+        },
+
+        #[cfg(mspm0_hfxt)]
+        SampleClock::Hfclk => clocks.hfclk,
+    };
+
+    assert!(
+        hz >= ADC_CLK_MIN_HZ && hz <= ADC_CLK_MAX_HZ,
+        "the selected ADC sample clock is stopped or outside this device's fADCCLK range"
+    );
+
+    hz
+}
+
+/// `fADCCLK`, the range this device's datasheet specifies for the selected sample clock.
+///
+/// Per device, and narrower than [`FRANGE_MIN_HZ`]..[`FRANGE_MAX_HZ`]: MSPM0C1104 is 12-24 MHz where
+/// most parts are 4-32 or 4-48, and it does not follow the family or the SYSCTL version — MSPM0G3507
+/// and MSPM0G5187 share both and are 4-48 and 4-32 respectively.
+const ADC_CLK_MIN_HZ: u32 = crate::_generated::ADC_CLK_MIN_HZ;
+const ADC_CLK_MAX_HZ: u32 = crate::_generated::ADC_CLK_MAX_HZ;
+
+/// Span of ADCCLK the `CLKFREQ.FRANGE` bands cover, from band 0's floor to band 7's ceiling.
+///
+/// A property of the register field, the same on every device. What the device actually supports is
+/// [`ADC_CLK_MIN_HZ`]..[`ADC_CLK_MAX_HZ`], which is always inside this.
+const FRANGE_MIN_HZ: u32 = 1_000_000;
+const FRANGE_MAX_HZ: u32 = 48_000_000;
+
+/// Rate this driver aims to run SAMPCLK at.
+///
+/// `SCOMPx` counts the sample window in SAMPCLK cycles, so holding SAMPCLK steady is what keeps
+/// [`Config::sample_period_0`] a fixed duration across clock trees. Its 125 ns period leaves twice
+/// the 62.5 ns minimum sampling time the datasheets specify.
+const TARGET_SAMPCLK_HZ: u32 = 8_000_000;
+
+/// Smallest `CTL0.SCLKDIV` that brings `adcclk_hz` down to [`TARGET_SAMPCLK_HZ`] or below.
+const fn sample_clock_div(adcclk_hz: u32) -> vals::Sclkdiv {
+    if adcclk_hz <= TARGET_SAMPCLK_HZ {
+        vals::Sclkdiv::DivBy1
+    } else if adcclk_hz <= 2 * TARGET_SAMPCLK_HZ {
+        vals::Sclkdiv::DivBy2
+    } else if adcclk_hz <= 4 * TARGET_SAMPCLK_HZ {
+        vals::Sclkdiv::DivBy4
+    } else {
+        vals::Sclkdiv::DivBy8
+    }
+}
+
+/// The `CLKFREQ.FRANGE` band `adcclk_hz` falls in.
+///
+/// Describes ADCCLK itself, *before* `SCLKDIV`. A band that does not match the real input gives
+/// "unintended results" (SLAU846 table 18-2). Bands are open at the bottom and closed at the top, so
+/// a rate on a boundary belongs to the lower one.
+const fn clock_range(adcclk_hz: u32) -> vals::Frange {
+    if adcclk_hz <= 4_000_000 {
+        vals::Frange::Range1to4
+    } else if adcclk_hz <= 8_000_000 {
+        vals::Frange::Range4to8
+    } else if adcclk_hz <= 16_000_000 {
+        vals::Frange::Range8to16
+    } else if adcclk_hz <= 20_000_000 {
+        vals::Frange::Range16to20
+    } else if adcclk_hz <= 24_000_000 {
+        vals::Frange::Range20to24
+    } else if adcclk_hz <= 32_000_000 {
+        vals::Frange::Range24to32
+    } else if adcclk_hz <= 40_000_000 {
+        vals::Frange::Range32to40
+    } else {
+        vals::Frange::Range40to48
+    }
+}
+
+const _: () = {
+    use crate::sysctl::clock::SYSOSC_BASE_HZ;
+
+    // Band edges, against table 18-2.
+    core::assert!(matches!(clock_range(4_000_000), vals::Frange::Range1to4));
+    core::assert!(matches!(clock_range(4_000_001), vals::Frange::Range4to8));
+    core::assert!(matches!(clock_range(24_000_000), vals::Frange::Range20to24));
+    core::assert!(matches!(clock_range(24_000_001), vals::Frange::Range24to32));
+    core::assert!(matches!(clock_range(32_000_000), vals::Frange::Range24to32));
+    core::assert!(matches!(clock_range(48_000_000), vals::Frange::Range40to48));
+
+    // The reset tree keeps the divider the hardcoded value used to give, on either base frequency.
+    // The band is where it differs: on a 24 MHz part the old `Range24to32` named a band SYSOSC
+    // never reached.
+    core::assert!(SYSOSC_BASE_HZ == 32_000_000 || SYSOSC_BASE_HZ == 24_000_000);
+    core::assert!(matches!(sample_clock_div(SYSOSC_BASE_HZ), vals::Sclkdiv::DivBy4));
+
+    // The 4 MHz SYSOSC operating point sits at the bottom of the `fADCCLK` range, where no division
+    // is left to do.
+    core::assert!(matches!(sample_clock_div(4_000_000), vals::Sclkdiv::DivBy1));
+
+    // The window `adc_clock_hz` accepts is exactly the one `clock_range` can name: nothing below it
+    // has a band, and `sample_clock_div` assumes nothing above it can occur.
+    core::assert!(matches!(clock_range(FRANGE_MIN_HZ), vals::Frange::Range1to4));
+    core::assert!(matches!(clock_range(FRANGE_MAX_HZ), vals::Frange::Range40to48));
+    core::assert!(matches!(sample_clock_div(FRANGE_MAX_HZ), vals::Sclkdiv::DivBy8));
+
+    // The device's own range has to sit inside what `FRANGE` can name, or a legal ADCCLK would have
+    // no band to describe it.
+    core::assert!(ADC_CLK_MIN_HZ >= FRANGE_MIN_HZ && ADC_CLK_MAX_HZ <= FRANGE_MAX_HZ);
+
+    // SYSOSC at its base frequency is the reset sample clock, so it must be in range on every part
+    // or the ADC is unusable before any tree is configured. The other sources depend on the tree.
+    core::assert!(SYSOSC_BASE_HZ >= ADC_CLK_MIN_HZ && SYSOSC_BASE_HZ <= ADC_CLK_MAX_HZ);
+};
 
 macro_rules! impl_adc_instance {
     ($instance: ident) => {
