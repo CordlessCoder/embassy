@@ -14,6 +14,7 @@ cargo run --release --bin min_sleep_gate
 | `min_sleep_gate` | that `Config::min_sleep` keeps short sleeps out of a deep mode, by timing what each sleep costs | one board |
 | `wake_latency` | how long each sleep level takes to answer a pin edge, timed by the L1306 | `wake_latency_host` on an L1306 |
 | `wake_latency_irq` | the same, with the answering task on an interrupt-mode executor — an A/B against the above | `wake_latency_host` on an L1306 |
+| `wake_latency_probe` | splits a wake into silicon, GPIO handler and executor, via marker pins the HAL drives | the above, plus an analyser on `PB13`, `PB0`, `PB1` |
 | `uart3_retention` | that a PD1 `UART3` comes back configured after deep sleep | `uart3_retention_host` on an L1306 |
 | `uart3_sleep_glitch` | that sleep entry does not corrupt a UART frame, at every level | analyser on `PB2` |
 
@@ -22,4 +23,5 @@ cannot be re-flashed normally — recover it with a mass erase in UniFlash. Each
 seconds before its first sleep to leave a window for `probe-rs` to take the device back.
 
 This crate enables `unsafe-atomics-single-core` and `gpio-embassy-tasks-only`, which together take a GPIO
-wake from 73.4 µs to 39.2 µs on this part — time spent out of sleep, so it is current.
+wake from 73.4 µs to 39.2 µs on this part — time spent out of sleep, so it is current. `wake_latency_probe`
+is what measures it, and its module doc says how the segments divide up.

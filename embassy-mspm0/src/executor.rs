@@ -106,7 +106,17 @@ mod thread {
 
             loop {
                 unsafe {
+                    // A woken task's own pin moves inside this bracket, which is what separates "getting
+                    // back to the executor" from "the executor running the task".
+                    #[cfg(feature = "_probe")]
+                    let poll_marker = crate::probe::target(crate::probe::Marker::Poll);
+                    #[cfg(feature = "_probe")]
+                    crate::probe::set(poll_marker);
+
                     self.inner.poll();
+
+                    #[cfg(feature = "_probe")]
+                    crate::probe::clear(poll_marker);
 
                     critical_section::with(|cs| {
                         if SIGNAL_WORK_THREAD_MODE.load(Ordering::SeqCst) {

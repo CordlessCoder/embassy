@@ -22,5 +22,5 @@ point: the two parts are different SYSCTL families with different published wake
 one has no STOP0 figure at all.
 
 This crate enables `unsafe-atomics-single-core` and `gpio-embassy-tasks-only`, which shorten every GPIO wake
-and so the time spent out of sleep. Measured on a G3507, not here — see `wake_latency` in
-`examples/mspm0g3507-lowpower`.
+and so the time spent out of sleep. Measured on a G3507, not here — see `wake_latency_probe` in
+`examples/mspm0g3507-lowpower` for the instrumented version.

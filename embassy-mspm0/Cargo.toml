@@ -117,7 +117,6 @@ atomics-critical-section = ["portable-atomic/critical-section"]
 ## Set `default-features = false` to use it, and re-list `rt` if you want it.
 unsafe-atomics-single-core = ["portable-atomic/unsafe-assume-single-core"]
 
-
 ## Provide the vector table, via `mspm0-metapac`'s `rt` feature, and with it the handlers this crate
 ## installs itself: the time driver's timer and the GPIO ports.
 ##
@@ -172,6 +171,10 @@ executor-thread = ["_executor"]
 executor-interrupt = ["_executor"]
 
 _executor = ["dep:embassy-executor", "low-power"]
+
+# Bench instrumentation, not API: marker pins driven across stages of a wake, so an analyser can say which
+# part of one costs what. See `src/probe.rs`.
+_probe = []
 
 #! ## Time
 

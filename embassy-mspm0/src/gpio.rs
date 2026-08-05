@@ -1346,6 +1346,18 @@ pub(crate) fn init(gpio: gpio::Gpio) {
 fn irq_handler(gpio: gpio::Gpio, port: Port) {
     use crate::BitIter;
 
+    // Opened as the handler's first action, so the rising edge timestamps the silicon wake plus the
+    // interrupt entry and group dispatch, with none of this handler in it. Both markers are resolved
+    // here so that neither bracket pays for a lookup.
+    #[cfg(feature = "_probe")]
+    let (handler_marker, waker_marker) = {
+        use crate::probe::{Marker, target};
+
+        let markers = (target(Marker::Handler), target(Marker::Waker));
+        crate::probe::set(markers.0);
+        markers
+    };
+
     // Only pins with the interrupt unmasked, which is only pins with a wait armed.
     let pending = gpio.cpu_int().mis().read().0;
 
@@ -1370,7 +1382,13 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
 
         request.withdraw();
 
+        #[cfg(feature = "_probe")]
+        crate::probe::set(waker_marker);
+
         report_edge(key);
+
+        #[cfg(feature = "_probe")]
+        crate::probe::clear(waker_marker);
 
         // Nothing left to report until the task arms the next wait, so keep this pin out of here —
         // and out of the wake path, in case the device sleeps first.
@@ -1378,6 +1396,11 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
             w.set_dio(bit, false);
         });
     }
+
+    // Falling edge closes the handler, so what remains before the task's own pin moves is the return to
+    // whichever executor is waiting and one poll of it.
+    #[cfg(feature = "_probe")]
+    crate::probe::clear(handler_marker);
 }
 
 #[cfg(all(gpioa_interrupt, gpioa_group))]

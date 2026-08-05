@@ -26,6 +26,8 @@ pub mod i2c_target;
 pub mod low_power;
 #[cfg(mathacl)]
 pub mod mathacl;
+#[cfg(feature = "_probe")]
+pub mod probe;
 pub mod sysctl;
 pub mod tim;
 #[cfg(trng)]
