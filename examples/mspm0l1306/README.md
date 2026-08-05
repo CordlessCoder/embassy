@@ -25,3 +25,12 @@ If you are unsure, please drop by the Embassy Matrix chat for support, and let u
 * Which chip and board you are using
 
 Embassy Chat: https://matrix.to/#/#embassy-rs:matrix.org
+
+## Examples that pair with another board
+
+| Example | Other side |
+|---|---|
+| `uart3_retention_host` | `uart3_retention` on an LP-MSPM0G3507 |
+| `i2c_target` | `i2c_controller` on a NUCLEO-U575ZI-Q, in `examples/stm32u575` |
+
+`clock_tree` measures the programmed clock tree against LFCLK and needs no second board.
