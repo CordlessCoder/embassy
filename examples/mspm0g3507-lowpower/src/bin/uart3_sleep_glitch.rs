@@ -37,8 +37,9 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_mspm0::gpio::{Level, Output};
-use embassy_mspm0::sysctl::{SleepLevel, WakeGuard};
-use embassy_mspm0::uart::{ClockSel, Config, UartTx};
+use embassy_mspm0::peripherals;
+use embassy_mspm0::sysctl::{LowPowerInstance, PowerDomain, SleepLevel, WakeGuard, clock};
+use embassy_mspm0::uart::{Baud, ClockSel, Config, UartTx};
 use embassy_time::Timer;
 use panic_halt as _;
 
@@ -57,6 +58,15 @@ const DURATIONS_MS: &[u64] = &[20, 100, 500];
 
 const MARKER: [u8; CASES.len()] = [0x55; CASES.len()];
 
+/// UART3 is on the bus clock, whose rate depends on which power domain the instance sits in, so the
+/// domain is taken from the instance rather than assumed.
+const CLOCKS: clock::Clocks = clock::RESET_SETUP.clocks();
+const UART3_DOMAIN: PowerDomain = <peripherals::UART3 as LowPowerInstance>::SLEEP.power_domain;
+const BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART3_DOMAIN), 9600) {
+    Some(baud) => baud,
+    None => core::panic!("9600 baud is not reachable from the bus clock"),
+};
+
 #[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -64,8 +74,7 @@ async fn main(_spawner: Spawner) -> ! {
     info!("re-flash window, starting in 5s");
     Timer::after_secs(5).await;
 
-    let mut config = Config::default();
-    config.baudrate = 9600;
+    let mut config = Config::default().with_baud(BAUD);
     config.clock_source = ClockSel::BusClk;
     let mut uart = unwrap!(UartTx::new_blocking(p.UART3, p.PB2, config));
 

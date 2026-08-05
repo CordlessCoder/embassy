@@ -18,7 +18,8 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_mspm0::uart::{self, BufferedUart, Config};
+use embassy_mspm0::sysctl::clock;
+use embassy_mspm0::uart::{self, Baud, BufferedUart, Config};
 use embassy_mspm0::{bind_interrupts, peripherals};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
@@ -34,14 +35,20 @@ bind_interrupts!(
 /// time driver's own ~1 Hz wake so a pass cannot be explained by the G3507 having woken on its own.
 const REPLY_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// The UART runs from MFCLK under the default clock tree, so the baud divider is solved here
+/// rather than searched for on the device.
+const BAUD: Baud = match Baud::solve(clock::RESET_SETUP.clocks().mfclk, 9600) {
+    Some(baud) => baud,
+    None => core::panic!("this baud rate is not reachable from MFCLK"),
+};
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     info!("Hello world!");
 
     let p = embassy_mspm0::init(Default::default());
 
-    let mut config = Config::default();
-    config.baudrate = 9600;
+    let config = Config::default().with_baud(BAUD);
 
     let mut tx_buf = [0u8; 32];
     let mut rx_buf = [0u8; 32];

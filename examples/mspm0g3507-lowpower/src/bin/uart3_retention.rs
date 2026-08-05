@@ -37,7 +37,8 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_mspm0::gpio::{Level, Output};
-use embassy_mspm0::uart::{self, BufferedUartRx, ClockSel, Config, UartTx};
+use embassy_mspm0::sysctl::{LowPowerInstance, PowerDomain, clock};
+use embassy_mspm0::uart::{self, Baud, BufferedUartRx, ClockSel, Config, UartTx};
 use embassy_mspm0::{bind_interrupts, pac, peripherals};
 use embassy_time::Timer;
 use embedded_io_async::Read;
@@ -51,6 +52,22 @@ bind_interrupts!(
 
 const BAUD: u32 = 9600;
 
+/// Both instances run from the bus clock, whose rate depends on the power domain each sits in, so
+/// the dividers are solved per instance rather than shared.
+const CLOCKS: clock::Clocks = clock::RESET_SETUP.clocks();
+
+const UART3_DOMAIN: PowerDomain = <peripherals::UART3 as LowPowerInstance>::SLEEP.power_domain;
+const ANSWER_BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART3_DOMAIN), BAUD) {
+    Some(baud) => baud,
+    None => core::panic!("this baud rate is not reachable from UART3's bus clock"),
+};
+
+const UART1_DOMAIN: PowerDomain = <peripherals::UART1 as LowPowerInstance>::SLEEP.power_domain;
+const WAKE_BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART1_DOMAIN), BAUD) {
+    Some(baud) => baud,
+    None => core::panic!("this baud rate is not reachable from UART1's bus clock"),
+};
+
 #[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -63,15 +80,13 @@ async fn main(_spawner: Spawner) -> ! {
     // On the bus clock rather than the default MFCLK, which is off in STANDBY and has to restart. That
     // is not on its own enough to make the post-wake write come out at the right rate — see the note at
     // the top about what the register check cannot see.
-    let mut answer_config = Config::default();
-    answer_config.baudrate = BAUD;
+    let mut answer_config = Config::default().with_baud(ANSWER_BAUD);
     answer_config.clock_source = ClockSel::BusClk;
     let mut answer = unwrap!(UartTx::new_blocking(p.UART3, p.PB2, answer_config));
 
     // The wake source has to be a PD0 instance on the bus clock: the asynchronous clock request only
     // speeds the MCLK/ULPCLK tree back up, so an LFCLK-sourced receiver cannot frame at all.
-    let mut wake_config = Config::default();
-    wake_config.baudrate = BAUD;
+    let mut wake_config = Config::default().with_baud(WAKE_BAUD);
     wake_config.clock_source = ClockSel::BusClk;
     wake_config.low_power_rx_wake = true;
 

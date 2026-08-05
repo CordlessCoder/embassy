@@ -37,6 +37,29 @@ pub enum ClockSel {
     BusClk,
 }
 
+impl ClockSel {
+    /// Frequency of this source, in Hz, for an instance in `domain`.
+    ///
+    /// A `const fn`, so a [`Baud`] for a `BusClk`-sourced UART can be solved at compile time. Take
+    /// `domain` from the instance rather than assuming it:
+    ///
+    /// ```ignore
+    /// use embassy_mspm0::sysctl::{LowPowerInstance, clock};
+    /// use embassy_mspm0::{peripherals, uart::ClockSel};
+    ///
+    /// const CLOCKS: clock::Clocks = clock::RESET_SETUP.clocks();
+    /// const DOMAIN: sysctl::PowerDomain = <peripherals::UART1 as LowPowerInstance>::SLEEP.power_domain;
+    /// const RATE: u32 = ClockSel::BusClk.frequency(&CLOCKS, DOMAIN);
+    /// ```
+    pub const fn frequency(self, clocks: &crate::sysctl::Clocks, domain: crate::sysctl::PowerDomain) -> u32 {
+        match self {
+            ClockSel::LfClk => clocks.lfclk,
+            ClockSel::MfClk => clocks.mfclk,
+            ClockSel::BusClk => clocks.bus_clock(domain),
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -116,8 +139,16 @@ pub struct Config {
     /// UART clock source.
     pub clock_source: ClockSel,
 
-    /// Baud rate
+    /// Baud rate.
+    ///
+    /// Ignored when [`Self::baud`] carries a pre-solved divider.
     pub baudrate: u32,
+
+    /// A divider solved ahead of time, skipping the search on the device.
+    ///
+    /// Build one with [`Baud::solve`] in a `const` when the clock and baud rate are both known at
+    /// compile time. Leave as [`None`] to solve at runtime from [`Self::baudrate`].
+    pub baud: Option<Baud>,
 
     /// Number of data bits.
     pub data_bits: DataBits,
@@ -176,11 +207,22 @@ pub struct Config {
     pub low_power_rx_wake: bool,
 }
 
+impl Config {
+    /// Use a divider solved ahead of time, skipping the search on the device.
+    ///
+    /// [`Self::baudrate`] is ignored once this is set.
+    pub const fn with_baud(mut self, baud: Baud) -> Self {
+        self.baud = Some(baud);
+        self
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             clock_source: ClockSel::MfClk,
             baudrate: 115200,
+            baud: None,
             data_bits: DataBits::DataBits8,
             stop_bits: StopBits::Stop1,
             parity: Parity::ParityNone,
@@ -208,8 +250,7 @@ impl Default for Config {
 ///
 /// [`embedded_io::Read`] requires guarantees that the base [`UartRx`] cannot provide.
 ///
-/// See [`UartRx`] for more details, and see [`BufferedUart`] and [`RingBufferedUartRx`]
-/// as alternatives that do provide the necessary guarantees for `embedded_io::Read`.
+/// See [`UartRx`] for more details, and [`BufferedUart`] for an alternative that does provide them.
 pub struct Uart<'d, M: Mode> {
     tx: UartTx<'d, M>,
     rx: UartRx<'d, M>,
@@ -835,10 +876,13 @@ fn configure(
         }
     });
 
+    // Read the tree once rather than per arm, and take the rates from it instead of assuming the
+    // reset values: MFCLK in particular reads as absent when the clock configuration left it off.
+    let clocks = crate::sysctl::clocks();
     let clock = match config.clock_source {
-        ClockSel::LfClk => 32768,
-        ClockSel::MfClk => 4_000_000,
-        ClockSel::BusClk => crate::sysctl::bus_clock_hz(info.sleep.power_domain),
+        ClockSel::LfClk => clocks.lfclk,
+        ClockSel::MfClk => clocks.mfclk,
+        ClockSel::BusClk => clocks.bus_clock(info.sleep.power_domain),
     };
 
     state.clock.store(clock, Ordering::Relaxed);
@@ -898,7 +942,12 @@ fn configure(
         // ignore extdir_setup and extdir_hold, only used in RS-485 mode.
     });
 
-    set_baudrate_inner(info.regs, clock, config.baudrate)?;
+    // A pre-solved divider skips the search entirely, which is what keeps the software divider out
+    // of the binary when the clock and baud rate are both compile-time constants.
+    match config.baud {
+        Some(baud) => baud.apply(info.regs),
+        None => set_baudrate_inner(info.regs, clock, config.baudrate)?,
+    }
 
     r.ctl0().modify(|w| {
         w.set_enable(true);
@@ -952,12 +1001,66 @@ fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(), ConfigErro
 }
 
 fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), ConfigError> {
+    // 3x oversampling is not supported with manchester coding, DALI or IrDA.
+    let allow_x3 = {
+        let ctl0 = regs.ctl0().read();
+        let irctl = regs.irctl().read();
+
+        // `UART_ERR_03` — 3x oversampling sourced from BUSCLK or MFCLK sets RXINT erroneously and can
+        // corrupt transmitted data. TI's workaround is to oversample higher, or to use LFCLK where 3x
+        // is required, so drop 3x and let the search fall back.
+        let errata_x3 = if cfg!(uart_err_03) {
+            let clksel = regs.clksel().read();
+            clksel.busclk_sel() || clksel.mfclk_sel()
+        } else {
+            false
+        };
+
+        !(ctl0.menc() || matches!(ctl0.mode(), vals::Mode::Dali) || irctl.iren() || errata_x3)
+    };
+
+    let Some(baud) = Baud::solve_inner(clock, baudrate, allow_x3) else {
+        return Err(ConfigError::InvalidBaudRate);
+    };
+
+    baud.apply(regs);
+
+    Ok(())
+}
+
+/// A solved baud-rate divider.
+///
+/// [`Baud::solve`] is a `const fn`, so a program whose clock and baud rate are known up front can
+/// solve at compile time and keep the search out of the binary:
+///
+/// ```ignore
+/// use embassy_mspm0::uart::{Baud, Config};
+/// use embassy_mspm0::sysctl;
+///
+/// // The clock tree is a constant, so its rates are too.
+/// const CLOCK: u32 = sysctl::clock::RESET_SETUP.clocks().ulpclk;
+/// const BAUD: Baud = match Baud::solve(CLOCK, 9600) {
+///     Some(baud) => baud,
+///     None => panic!("9600 baud is not reachable from this clock"),
+/// };
+///
+/// let config = Config::default().with_baud(BAUD);
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Baud {
+    hse: vals::Hse,
+    div: vals::Clkdiv,
+    ibrd: u16,
+    fbrd: u8,
+}
+
+impl Baud {
     // Quoting SLAU846 section 18.2.3.4:
     // "When IBRD = 0, FBRD is ignored and no data gets transferred by the UART."
     const MIN_IBRD: u16 = 1;
 
-    // FBRD can be 0
-    // FBRD is at most a 6-bit number.
+    // FBRD can be 0. FBRD is at most a 6-bit number.
     const MAX_FBRD: u8 = 2_u8.pow(6);
 
     const DIVS: [(u8, vals::Clkdiv); 8] = [
@@ -983,87 +1086,105 @@ fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), Confi
     // sample rate until valid parameters are found.
     const OVS: [(u8, vals::Hse); 3] = [(16, vals::Hse::Ovs16), (8, vals::Hse::Ovs8), (3, vals::Hse::Ovs3)];
 
-    // 3x oversampling is not supported with manchester coding, DALI or IrDA.
-    let x3_invalid = {
-        let ctl0 = regs.ctl0().read();
-        let irctl = regs.irctl().read();
+    /// Solve for `baudrate` from a `clock_hz` source, or [`None`] if it cannot be reached.
+    ///
+    /// Usable in a `const`. Only 8x and 16x oversampling are considered, which covers every ordinary
+    /// baud rate: whether 3x is legal depends on runtime state a compile-time solve cannot inspect.
+    pub const fn solve(clock_hz: u32, baudrate: u32) -> Option<Self> {
+        Self::solve_inner(clock_hz, baudrate, false)
+    }
 
-        // `UART_ERR_03` — 3x oversampling sourced from BUSCLK or MFCLK sets RXINT erroneously and can
-        // corrupt transmitted data. TI's workaround is to oversample higher, or to use LFCLK where 3x
-        // is required, so drop 3x and let the search fall back.
-        let errata_x3 = if cfg!(uart_err_03) {
-            let clksel = regs.clksel().read();
-            clksel.busclk_sel() || clksel.mfclk_sel()
-        } else {
-            false
-        };
+    /// [`Self::solve`], with 3x oversampling permitted when the caller has checked it is legal.
+    const fn solve_inner(clock: u32, baudrate: u32, allow_x3: bool) -> Option<Self> {
+        let mut o = 0;
+        while o < Self::OVS.len() {
+            let (oversampling, hse) = Self::OVS[o];
+            o += 1;
 
-        ctl0.menc() || matches!(ctl0.mode(), vals::Mode::Dali) || irctl.iren() || errata_x3
-    };
-    let mut found = None;
-
-    'outer: for &(oversampling, hse_value) in &OVS {
-        if matches!(hse_value, vals::Hse::Ovs3) && x3_invalid {
-            continue;
-        }
-
-        // Verify that the selected oversampling does not require a clock faster than what the hardware
-        // is provided.
-        let Some(min_clock) = baudrate.checked_mul(oversampling as u32) else {
-            trace!(
-                "{}x oversampling would cause overflow for clock: {} Hz",
-                oversampling, clock
-            );
-            continue;
-        };
-
-        if min_clock > clock {
-            trace!("{} oversampling is too high for clock: {} Hz", oversampling, clock);
-            continue;
-        }
-
-        for &(div, div_value) in &DIVS {
-            trace!(
-                "Trying div: {}, oversampling {} for {} baud",
-                div, oversampling, baudrate
-            );
-
-            let Some((ibrd, fbrd)) = calculate_brd(clock, div, baudrate, oversampling) else {
-                trace!("Calculating BRD overflowed: trying another divider");
-                continue;
-            };
-
-            if ibrd < MIN_IBRD || fbrd > MAX_FBRD {
-                trace!("BRD was invalid: trying another divider");
+            if matches!(hse, vals::Hse::Ovs3) && !allow_x3 {
                 continue;
             }
 
-            found = Some((hse_value, div_value, ibrd, fbrd));
-            break 'outer;
+            // Verify that the selected oversampling does not require a clock faster than what the
+            // hardware is provided.
+            let Some(min_clock) = baudrate.checked_mul(oversampling as u32) else {
+                continue;
+            };
+
+            if min_clock > clock {
+                continue;
+            }
+
+            let mut d = 0;
+            while d < Self::DIVS.len() {
+                let (div, div_value) = Self::DIVS[d];
+                d += 1;
+
+                let Some((ibrd, fbrd)) = calculate_brd(clock, div, baudrate, oversampling) else {
+                    continue;
+                };
+
+                if ibrd < Self::MIN_IBRD || fbrd > Self::MAX_FBRD {
+                    continue;
+                }
+
+                return Some(Self {
+                    hse,
+                    div: div_value,
+                    ibrd,
+                    fbrd,
+                });
+            }
         }
+
+        None
     }
 
-    let Some((hse, div, ibrd, fbrd)) = found else {
-        return Err(ConfigError::InvalidBaudRate);
-    };
+    /// The integer and fractional parts of `BRD`, as programmed.
+    pub const fn brd(&self) -> (u16, u8) {
+        (self.ibrd, self.fbrd)
+    }
 
-    regs.clkdiv().write(|w| {
-        w.set_ratio(div);
-    });
+    /// Program this divider into the peripheral.
+    fn apply(&self, regs: Regs) {
+        regs.clkdiv().write(|w| w.set_ratio(self.div));
+        regs.ibrd().write(|w| w.set_divint(self.ibrd));
+        regs.fbrd().write(|w| w.set_divfrac(self.fbrd));
+        regs.ctl0().modify(|w| w.set_hse(self.hse));
+    }
+}
 
-    regs.ibrd().write(|w| {
-        w.set_divint(ibrd);
-    });
+/// `floor(num * 64 / den)`, or [`None`] if the quotient does not fit a `u32`.
+///
+/// Produces the 6 fractional bits one at a time rather than widening `num` by 64 up front, which
+/// would overflow a `u32` above 67.1 MHz and in 64 bits would pull in `__aeabi_uldivmod`.
+const fn scaled_div_q6(num: u32, den: u32) -> Option<u32> {
+    // `r` is doubled each round, so anything above this would wrap before being reduced.
+    if den == 0 || den > u32::MAX / 2 {
+        return None;
+    }
 
-    regs.fbrd().write(|w| {
-        w.set_divfrac(fbrd);
-    });
+    let mut q = num / den;
+    let mut r = num % den;
 
-    regs.ctl0().modify(|w| {
-        w.set_hse(hse);
-    });
+    let mut bit = 0;
+    while bit < 6 {
+        q = match q.checked_mul(2) {
+            Some(q) => q,
+            None => return None,
+        };
 
-    Ok(())
+        // `r < den` holds on entry, so this cannot overflow given the bound checked above.
+        r *= 2;
+        if r >= den {
+            r -= den;
+            q += 1;
+        }
+
+        bit += 1;
+    }
+
+    Some(q)
 }
 
 /// Calculate the integer and fractional parts of the `BRD` value.
@@ -1071,53 +1192,39 @@ fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), Confi
 /// Returns [`None`] if calculating this results in overflows.
 ///
 /// Values returned are `(ibrd, fbrd)`
-fn calculate_brd(clock: u32, div: u8, baud: u32, oversampling: u8) -> Option<(u16, u8)> {
-    use fixed::types::U26F6;
-
+const fn calculate_brd(clock: u32, div: u8, baud: u32, oversampling: u8) -> Option<(u16, u8)> {
     // Calculate BRD according to SLAU 846 section 18.2.3.4.
     //
     // BRD is a 22-bit value with 16 integer bits and 6 fractional bits.
     //
     // uart_clock = clock / div
-    // brd = ibrd.fbrd = uart_clock / (oversampling * baud)"
+    // brd = ibrd.fbrd = uart_clock / (oversampling * baud)
     //
-    // It is tempting to rearrange the equation such that there is only a single division in
-    // order to reduce error. However this is wrong since the denominator ends up being too
-    // small to represent in 6 fraction bits. This means that FBRD would always be 0.
-    //
-    // Calculations are done in a U16F6 format. However the fixed crate has no such representation.
-    // U26F6 is used since it has the same number of fractional bits and we verify at the end that
-    // the integer part did not overflow.
-    let clock = U26F6::from_num(clock);
-    let div = U26F6::from_num(div);
-    let oversampling = U26F6::from_num(oversampling);
-    let baud = U26F6::from_num(baud);
+    // Both divisions truncate to the 6 fractional bits BRD can represent, and for positive integers
+    // `floor(floor(a / b) / c) == floor(a / (b * c))`, so the two collapse into one division by
+    // `div * oversampling * baud` without changing the result.
+    let Some(den) = (div as u32).checked_mul(oversampling as u32) else {
+        return None;
+    };
+    let Some(den) = den.checked_mul(baud) else {
+        return None;
+    };
 
-    let uart_clock = clock.checked_div(div)?;
+    let Some(brd) = scaled_div_q6(clock, den) else {
+        return None;
+    };
 
-    // oversampling * baud
-    let denom = oversampling.checked_mul(baud)?;
-    // uart_clock / (oversampling * baud)
-    let brd = uart_clock.checked_div(denom)?;
+    // BRD is a U16F6, so anything above this cannot be programmed.
+    let ibrd = brd >> 6;
+    if ibrd > u16::MAX as u32 {
+        return None;
+    }
 
-    // Checked is used to determine overflow in the 10 most singificant bits since the
-    // actual representation of BRD is U16F6.
-    let ibrd = brd.checked_to_num::<u16>()?;
+    // The fractional part is already scaled by 64 by virtue of being the low 6 bits, which is what
+    // `FBRD = INT(FRAC(BRD) * 64)` asks for.
+    let fbrd = (brd & 0x3f) as u8;
 
-    // We need to scale FBRD's representation to an integer.
-    let fbrd_scale = U26F6::from_num(2_u32.checked_pow(U26F6::FRAC_NBITS)?);
-
-    // It is suggested that 0.5 is added to ensure that any fractional parts round up to the next
-    // integer. If it doesn't round up then it'll get discarded which is okay.
-    let half = U26F6::from_num(1) / U26F6::from_num(2);
-    // fbrd = INT(((FRAC(BRD) * 64) + 0.5))
-    let fbrd = brd
-        .frac()
-        .checked_mul(fbrd_scale)?
-        .checked_add(half)?
-        .checked_to_num::<u8>()?;
-
-    Some((ibrd, fbrd))
+    Some((ibrd as u16, fbrd))
 }
 
 fn read_with_error(r: Regs) -> Result<u8, Error> {
@@ -1141,7 +1248,8 @@ fn read_with_error(r: Regs) -> Result<u8, Error> {
 /// This function assumes CTL0.ENABLE is set (for errata cases).
 fn busy(r: Regs) -> bool {
     // `UART_ERR_08` — `STAT.BUSY` stays high even with the module disabled and data in the TX FIFO, so
-    // polling it never finishes.
+    // polling it never finishes. Applies to every family this crate builds for except G511x/G5187,
+    // whose UNICOMM UART is a different module.
     if cfg!(uart_err_08) {
         let stat = r.stat().read();
         // "Poll TXFIFO status and the CTL0.ENABLE register bit to identify BUSY status."
@@ -1240,7 +1348,7 @@ macro_rules! impl_uart_rts_pin {
 
 #[cfg(test)]
 mod tests {
-    use super::calculate_brd;
+    use super::{Baud, calculate_brd};
 
     /// This is a smoke test based on the example in SLAU 846 section 18.2.3.4.
     #[test]
@@ -1248,5 +1356,107 @@ mod tests {
         let brd = calculate_brd(40_000_000, 1, 19200, 16);
 
         core::assert!(matches!(brd, Some((130, 13))));
+    }
+
+    /// What `calculate_brd` is defined to compute, done in 64 bits.
+    ///
+    /// `BRD = clock / (div * oversampling * baud)`, truncated to 6 fractional bits.
+    fn reference(clock: u32, div: u8, baud: u32, oversampling: u8) -> Option<(u16, u8)> {
+        let den = (div as u64) * (oversampling as u64) * (baud as u64);
+        if den == 0 {
+            return None;
+        }
+
+        let brd = (clock as u64) * 64 / den;
+        let ibrd = brd >> 6;
+        if ibrd > u16::MAX as u64 {
+            return None;
+        }
+
+        Some((ibrd as u16, (brd & 0x3f) as u8))
+    }
+
+    /// The 32-bit implementation must agree with the 64-bit definition everywhere it is reachable.
+    #[test]
+    fn matches_reference() {
+        // Every divider and oversampling the search loop in `set_baudrate_inner` can pick.
+        const DIVS: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        const OVS: [u8; 3] = [16, 8, 3];
+
+        // Clocks the tree can produce, including the 80 MHz the G-series reaches through SYSPLL,
+        // and the standard baud rates plus the extremes around them.
+        const CLOCKS: [u32; 9] = [
+            32_768, 4_000_000, 16_000_000, 24_000_000, 32_000_000, 40_000_000, 48_000_000, 64_000_000, 80_000_000,
+        ];
+        const BAUDS: [u32; 12] = [
+            300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115_200, 230_400, 921_600, 4_000_000,
+        ];
+
+        for clock in CLOCKS {
+            for div in DIVS {
+                for ovs in OVS {
+                    for baud in BAUDS {
+                        core::assert_eq!(
+                            calculate_brd(clock, div, baud, ovs),
+                            reference(clock, div, baud, ovs),
+                            "clock={clock} div={div} baud={baud} ovs={ovs}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The const solver must agree with what the runtime search would pick.
+    #[test]
+    fn const_baud_matches_search() {
+        for clock in [32_768u32, 4_000_000, 32_000_000, 80_000_000] {
+            for baud in [9600u32, 19200, 115_200] {
+                // `solve` excludes 3x oversampling, so compare against the same restriction.
+                core::assert_eq!(
+                    Baud::solve(clock, baud),
+                    Baud::solve_inner(clock, baud, false),
+                    "clock={clock} baud={baud}"
+                );
+            }
+        }
+    }
+
+    /// The case this exists for: a constant clock and a constant baud rate, solved at build time.
+    #[test]
+    fn const_baud_is_const_evaluable() {
+        const BAUD: Baud = match Baud::solve(4_000_000, 9600) {
+            Some(baud) => baud,
+            None => core::panic!("9600 baud must be reachable from MFCLK"),
+        };
+
+        // 4 MHz / (1 * 16 * 9600) = 26.041..., so IBRD 26 and FBRD 2 (0.0416 * 64 = 2.67 -> 2).
+        core::assert_eq!(BAUD.brd(), (26, 2));
+        core::assert_eq!(Some(BAUD), Baud::solve_inner(4_000_000, 9600, false));
+    }
+
+    /// The previous implementation converted the clock into a `U26F6`, whose integer part tops out
+    /// at 67_108_863, so it panicked for any clock above that. The G-series reaches 80 MHz.
+    #[test]
+    fn handles_clocks_above_26_bits() {
+        // 80 MHz / (1 * 16 * 115200) = 43.402..., so IBRD 43 and FBRD 25 (0.402 * 64 = 25.7).
+        core::assert_eq!(calculate_brd(80_000_000, 1, 115_200, 16), Some((43, 25)));
+        core::assert_eq!(
+            calculate_brd(80_000_000, 1, 115_200, 16),
+            reference(80_000_000, 1, 115_200, 16)
+        );
+    }
+
+    /// Denominators large enough to overflow must be rejected, not wrap.
+    #[test]
+    fn rejects_unrepresentable() {
+        // Baud far above the clock leaves IBRD 0, which the caller rejects, but it must not panic.
+        core::assert_eq!(calculate_brd(32_768, 8, 4_000_000, 16), Some((0, 0)));
+
+        // A denominator beyond `u32::MAX / 2` is refused rather than wrapping.
+        core::assert_eq!(calculate_brd(80_000_000, 8, u32::MAX, 16), None);
+
+        // A clock this low with a slow baud still fits, and agrees with the definition.
+        core::assert_eq!(calculate_brd(32_768, 1, 300, 3), reference(32_768, 1, 300, 3));
     }
 }

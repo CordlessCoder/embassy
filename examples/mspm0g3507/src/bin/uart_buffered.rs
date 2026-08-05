@@ -8,7 +8,8 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::uart::{self, BufferedUart, Config};
+use embassy_mspm0::sysctl::clock;
+use embassy_mspm0::uart::{self, Baud, BufferedUart, Config};
 use embassy_mspm0::{bind_interrupts, peripherals};
 use embedded_io_async::{Read, Write};
 use panic_halt as _;
@@ -18,6 +19,13 @@ bind_interrupts!(
         UART0 => uart::BufferedInterruptHandler<peripherals::UART0>;
     }
 );
+
+/// The UART runs from MFCLK under the default clock tree, so the baud divider is solved here
+/// rather than searched for on the device.
+const BAUD: Baud = match Baud::solve(clock::RESET_SETUP.clocks().mfclk, 115200) {
+    Some(baud) => baud,
+    None => core::panic!("this baud rate is not reachable from MFCLK"),
+};
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
@@ -31,7 +39,7 @@ async fn main(_spawner: Spawner) -> ! {
     let mut tx_buf = [0u8; 32];
     let mut rx_buf = [0u8; 32];
 
-    let config = Config::default();
+    let config = Config::default().with_baud(BAUD);
     let mut uart = unwrap!(BufferedUart::new(
         instance,
         tx,

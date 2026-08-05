@@ -50,3 +50,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/sysctl: skip publishing the resolved clock tree when it is the reset tree, which the static already holds
 - **breaking** mspm0/sysctl: `MCLK_HZ` and `ULPCLK_HZ` are replaced by `sysctl::clocks()`; `bus_clock_hz` is no longer `const`
 - **breaking** mspm0/tim: `ClockSel::frequency` takes the resolved `Clocks` as its first argument
+- feat: mspm0/uart: add `Baud`, a baud-rate divider solved by a `const fn` and taken by `Config::with_baud`
+- fix: mspm0/uart: compute the baud rate divider in 32-bit arithmetic, which also fixes a panic for clocks above 67.1 MHz

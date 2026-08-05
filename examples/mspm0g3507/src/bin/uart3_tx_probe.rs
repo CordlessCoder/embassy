@@ -10,16 +10,23 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::uart::{Config, UartTx};
+use embassy_mspm0::sysctl::clock;
+use embassy_mspm0::uart::{Baud, Config, UartTx};
 use embassy_time::Timer;
 use panic_halt as _;
+
+/// The UART runs from MFCLK under the default clock tree, so the baud divider is solved here
+/// rather than searched for on the device.
+const BAUD: Baud = match Baud::solve(clock::RESET_SETUP.clocks().mfclk, 9600) {
+    Some(baud) => baud,
+    None => core::panic!("this baud rate is not reachable from MFCLK"),
+};
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
-    let mut config = Config::default();
-    config.baudrate = 9600;
+    let config = Config::default().with_baud(BAUD);
 
     let mut uart = unwrap!(UartTx::new_blocking(p.UART3, p.PB2, config));
     info!("transmitting on UART3/PB2 at 9600");
