@@ -30,6 +30,7 @@ Embassy Chat: https://matrix.to/#/#embassy-rs:matrix.org
 
 | Example | Other side |
 |---|---|
+| `i2c_crosscheck` | `i2c_target` on a NUCLEO-U575ZI-Q, in `examples/stm32u575` |
 | `uart_crosscheck` | `usart_echo` on a NUCLEO-U575ZI-Q |
 | `i2c_target` | `i2c_controller` on a NUCLEO-U575ZI-Q |
 
