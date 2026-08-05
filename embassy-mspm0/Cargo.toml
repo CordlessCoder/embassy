@@ -79,9 +79,9 @@ mspm0-metapac = { git = "https://github.com/CordlessCoder/mspm0-data-generated/"
 rand_core = "0.10"
 # Force no cache padding or the types are too large.
 maitake-sync = { version = "0.3.0", default-features = false, features = ["critical-section", "no-cache-pad"]}
-# maitake sync requires portable atomic. For Cortex-M0 it is fine to force a dependency on the critical section feature.
-# however on MSPM33 parts it may be desired to use hardware atomics instead.
-portable-atomic = { version = "1.14.0", features = ["critical-section"] }
+# MSPM0 is Cortex-M0+, which has no atomic CAS, so the read-modify-writes this crate and maitake-sync need
+# have to be emulated. Which way is a choice the `atomics-*` features make; one of them must be on.
+portable-atomic = { version = "1.14.0" }
 
 [build-dependencies]
 proc-macro2 = "1.0.107"
@@ -98,7 +98,25 @@ mspm0-metapac = { git = "https://github.com/CordlessCoder/mspm0-data-generated/"
 critical-section = { version = "1.2.0", features = ["std"] }
 
 [features]
-default = ["rt"]
+default = ["rt", "atomics-critical-section"]
+
+#! ## Atomics
+#!
+#! Cortex-M0+ has no atomic compare-and-swap, so the read-modify-writes this crate needs are emulated.
+#! **Enable exactly one of these two.** Both, or neither, fails to build.
+
+## Emulate them through the `critical-section` crate, so they use whatever implementation the application
+## registered. On by default.
+atomics-critical-section = ["portable-atomic/critical-section"]
+
+## Emulate them by disabling interrupts inline, asserting that the target is single-core.
+##
+## True of every MSPM0, and worth about 18% of a GPIO wake. It bypasses the application's
+## `critical-section` implementation, which is why it is opt-in.
+##
+## Set `default-features = false` to use it, and re-list `rt` if you want it.
+unsafe-atomics-single-core = ["portable-atomic/unsafe-assume-single-core"]
+
 
 ## Provide the vector table, via `mspm0-metapac`'s `rt` feature, and with it the handlers this crate
 ## installs itself: the time driver's timer and the GPIO ports.
