@@ -212,7 +212,7 @@ impl Config {
     fn source_hz(&self) -> u32 {
         match self.clock_source {
             ClockSel::MfClk => 4_000_000,
-            ClockSel::BusClk => crate::sysctl::ULPCLK_HZ,
+            ClockSel::BusClk => crate::sysctl::clocks().ulpclk,
         }
     }
 

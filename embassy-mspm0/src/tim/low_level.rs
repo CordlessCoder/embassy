@@ -250,7 +250,9 @@ impl<'d, T: Instance> Timer<'d, T> {
         let divider = r.clkdiv().read().ratio() as u32 + 1;
         let prescaler = r.commonregs(0).cps().read().pcnt() as u32 + 1;
 
-        self.clock_source().frequency(T::SLEEP.power_domain) / divider / prescaler
+        let clocks = crate::sysctl::clocks();
+
+        self.clock_source().frequency(&clocks, T::SLEEP.power_domain) / divider / prescaler
     }
 
     /// Ticks in one counting period.
@@ -364,10 +366,12 @@ pub(crate) fn configure<T: Instance>(config: &Config) {
 
 /// Shallowest sleep level to block so an instance clocked from `clock` keeps counting, if any.
 ///
-/// `None` means the counter survives every mode the chip has, so nothing needs blocking. Kept `const` so
-/// the cost of a clock choice is answerable at compile time; only taking the guard has to be at runtime.
-pub(crate) const fn sleep_floor<T: Instance>(clock: ClockSel) -> Option<SleepLevel> {
-    let clock_hz = clock.frequency(T::SLEEP.power_domain);
+/// `None` means the counter survives every mode the chip has, so nothing needs blocking.
+///
+/// Depends on the configured tree, so this reads the live clocks rather than answering at compile
+/// time as it did while the tree was fixed.
+pub(crate) fn sleep_floor<T: Instance>(clock: ClockSel) -> Option<SleepLevel> {
+    let clock_hz = clock.frequency(&crate::sysctl::clocks(), T::SLEEP.power_domain);
 
     // The domain-level answer cannot know which instances stay clocked in STANDBY1, and reports
     // STANDBY1 for any LFCLK peripheral in PD0.

@@ -58,6 +58,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     peripheral_name_cfgs(cfgs);
     errata_cfgs(cfgs);
     sysctl_version_cfgs(cfgs);
+    let clock_tree = clock_tree_cfgs(cfgs);
 
     let mut singletons = get_singletons(cfgs);
 
@@ -78,6 +79,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_dma_channel_count());
     g.extend(generate_adc_constants(cfgs));
     g.extend(generate_clock_ceilings());
+    g.extend(clock_tree);
 
     let out_dir = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let out_file = out_dir.join("_generated.rs").to_string_lossy().to_string();
@@ -270,6 +272,52 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
     }
 }
 
+/// Emit a cfg for each clock source and divider the device has, and the HFCLK input range.
+///
+/// Curated per device rather than derived from the SYSCTL block, because the two disagree: mspm0l112x
+/// and mspm0l211x share a block whose `SYSOSCCFG.USE4MHZSTOP` exists but have no STOP1, and
+/// mspm0c1105_c1106 has a crystal driver its `c110x` sibling does not.
+///
+/// `mspm0_hfxt` and `mspm0_hfclk_in` are separate hardware — a crystal driver and a digital clock
+/// input — and mspm0c110x has the input without the driver. `mspm0_hfclk` is the umbrella that gates
+/// the HSCLK path itself.
+fn clock_tree_cfgs(cfgs: &mut CfgSet) -> TokenStream {
+    let tree = METADATA.clock_tree;
+
+    for (cfg, present) in [
+        ("mspm0_hfclk", tree.hfxt || tree.hfclk_in),
+        ("mspm0_hfxt", tree.hfxt),
+        ("mspm0_hfclk_in", tree.hfclk_in),
+        ("mspm0_hfclk_range", tree.hfclk_hz.is_some()),
+        ("mspm0_lfxt", tree.lfxt),
+        ("mspm0_lfclk_in", tree.lfclk_in),
+        ("mspm0_syspll", tree.syspll),
+        ("mspm0_ulpclk_div", tree.ulpclk_div),
+        ("mspm0_stop1", tree.stop1),
+        // More than one band means `MCLKCFG.FLASHWAIT` exists and software has to program it. A
+        // single band means the device's MCLK ceiling is inside the zero-wait-state range.
+        ("mspm0_flashwait", METADATA.flash_wait_hz.len() > 1),
+    ] {
+        cfgs.declare(cfg);
+        if present {
+            cfgs.enable(cfg);
+        }
+    }
+
+    // `None` on mspm0c110x, which offers HFCLK_IN but whose datasheet specifies no `fHFIN`. The
+    // input stays usable there; only the range check is skipped, and the MCLK ceiling still bounds it.
+    let Some(range) = tree.hfclk_hz else {
+        return quote! {};
+    };
+
+    let (min, max) = (range.min_hz, range.max_hz);
+
+    quote! {
+        pub const HFCLK_MIN_HZ: u32 = #min;
+        pub const HFCLK_MAX_HZ: u32 = #max;
+    }
+}
+
 fn get_chip_cfgs(chip_name: &str) -> Vec<String> {
     let mut cfgs = Vec::new();
 
@@ -459,10 +507,16 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
 fn generate_clock_ceilings() -> TokenStream {
     let max_mclk = METADATA.max_mclk_hz;
     let max_ulpclk = METADATA.max_ulpclk_hz;
+    let sysosc_base = METADATA.sysosc_base_hz;
+    let flash_wait = METADATA.flash_wait_hz;
 
     quote! {
         pub const MAX_MCLK_HZ: u32 = #max_mclk;
         pub const MAX_ULPCLK_HZ: u32 = #max_ulpclk;
+        pub const SYSOSC_BASE_HZ: u32 = #sysosc_base;
+
+        /// MCLK ceiling for each `MCLKCFG.FLASHWAIT` setting, starting at zero wait states.
+        pub const FLASH_WAIT_HZ: &[u32] = &[#(#flash_wait),*];
     }
 }
 

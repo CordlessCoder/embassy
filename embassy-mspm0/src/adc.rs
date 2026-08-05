@@ -281,7 +281,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
     fn conversion_guard() -> Option<WakeGuard> {
         // TODO: The sample clock is SYSOSC, which is what MCLK runs from until the clock tree is configurable.
         <T as crate::sysctl::LowPowerInstance>::SLEEP
-            .floor_for_operation(crate::sysctl::MCLK_HZ)
+            .floor_for_operation(crate::sysctl::clocks().mclk)
             .map(WakeGuard::new)
     }
 

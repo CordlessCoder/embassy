@@ -352,23 +352,20 @@ impl TrngInner<'_> {
 
     fn set_div(&mut self) {
         // L-series TRM 13.2.2: the TRNG is derived from MCLK, and the datasheets specify a 9.5-20 MHz
-        // input range. MCLK is a compile-time constant, so an unusable rate is a build failure rather
-        // than a panic on first use. The bands stop at the chip's own ceiling instead of a made-up one.
-        const RATIO: Ratio = {
-            let hz = crate::sysctl::MCLK_HZ;
-            if hz >= 80_000_000 {
-                Ratio::DivBy8
-            } else if hz >= 60_000_000 {
-                Ratio::DivBy6
-            } else if hz >= 40_000_000 {
-                Ratio::DivBy4
-            } else if hz >= 20_000_000 {
-                Ratio::DivBy2
-            } else if hz >= 9_500_000 {
-                Ratio::DivBy1
-            } else {
-                core::panic!("MCLK is below 9.5 MHz, which the TRNG cannot be divided down from")
-            }
+        // input range. MCLK depends on the configured tree, so the band is picked at runtime.
+        let hz = crate::sysctl::clocks().mclk;
+        let ratio = if hz >= 80_000_000 {
+            Ratio::DivBy8
+        } else if hz >= 60_000_000 {
+            Ratio::DivBy6
+        } else if hz >= 40_000_000 {
+            Ratio::DivBy4
+        } else if hz >= 20_000_000 {
+            Ratio::DivBy2
+        } else if hz >= 9_500_000 {
+            Ratio::DivBy1
+        } else {
+            panic!("MCLK is below 9.5 MHz, which the TRNG cannot be divided down from")
         };
 
         const _: () = core::assert!(
@@ -376,7 +373,7 @@ impl TrngInner<'_> {
             "MCLK can exceed 160 MHz, which no TRNG divider brings into range"
         );
 
-        regs().clkdiv().write(|w| w.set_ratio(RATIO));
+        regs().clkdiv().write(|w| w.set_ratio(ratio));
     }
 
     fn set_decim_rate(&mut self) {
@@ -453,7 +450,7 @@ impl TrngInner<'_> {
     async fn async_read_u32(&mut self) -> Result<u32, Error> {
         let _guard = <TRNG as LowPowerInstance>::SLEEP
             .power_domain
-            .floor_to_keep_running(crate::sysctl::MCLK_HZ)
+            .floor_to_keep_running(crate::sysctl::clocks().mclk)
             .map(WakeGuard::new);
 
         poll_fn(|cx| {

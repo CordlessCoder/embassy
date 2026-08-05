@@ -93,6 +93,11 @@ cfg_aliases = "0.2.2"
 # Fork, temporarily: see the note on the dependency above.
 mspm0-metapac = { git = "https://github.com/CordlessCoder/mspm0-data-generated/", tag = "mspm0-data-95936d19113d806cf82858bd516f189062b7240b", default-features = false, features = ["metadata"] }
 
+[dev-dependencies]
+# The host test binary links `sysctl::clocks`, which takes a critical section. Only the tests need a
+# real implementation; on target the application provides one.
+critical-section = { version = "1.2.0", features = ["std"] }
+
 [features]
 default = ["rt"]
 

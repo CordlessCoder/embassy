@@ -2,6 +2,9 @@
 
 #![macro_use]
 
+use core::cell::Cell;
+
+use critical_section::{CriticalSection, Mutex};
 use embassy_hal_internal::PeripheralType;
 
 use crate::gpio::{AnyPin, PfType, Pin, Pull, SealedPin};
@@ -23,6 +26,11 @@ use crate::{Peri, pac};
 #[cfg_attr(any(mspm0l122x, mspm0l222x), path = "l_typeb.rs")]
 mod inner;
 
+pub mod clock;
+
+#[cfg(mspm0_ulpclk_div)]
+pub use clock::UlpclkDiv;
+pub use clock::{ClockError, Clocks, Config as ClockConfig, MclkSource, Sysosc};
 pub use inner::ClkOutSource;
 
 /// Deep-sleep idle modes, ordered by increasing power saving.
@@ -368,45 +376,46 @@ pub const MAX_MCLK_HZ: u32 = crate::_generated::MAX_MCLK_HZ;
 /// Highest frequency ULPCLK may run at on this chip, in RUN and SLEEP.
 pub const MAX_ULPCLK_HZ: u32 = crate::_generated::MAX_ULPCLK_HZ;
 
-/// Rate SYSOSC comes up at, where the chip's ceiling does not cap it lower.
-const SYSOSC_BOOT_HZ: u32 = 32_000_000;
-
-/// Frequency MCLK runs at after [`crate::init`].
-///
-/// The clock tree is not configurable yet, so this is the reset SYSOSC rate, capped at
-/// [`MAX_MCLK_HZ`].
-// TODO: Compute this once the MCLK rate can be adjusted.
-pub const MCLK_HZ: u32 = if MAX_MCLK_HZ < SYSOSC_BOOT_HZ {
-    MAX_MCLK_HZ
-} else {
-    SYSOSC_BOOT_HZ
-};
-
-/// Frequency ULPCLK runs at, the "bus clock" driving PD0 peripherals.
-///
-/// ULPCLK follows MCLK, capped at [`MAX_ULPCLK_HZ`], so it equals [`MCLK_HZ`] on every family today.
-// TODO: Compute this once the MCLK rate can be adjusted.
-pub const ULPCLK_HZ: u32 = if MCLK_HZ < MAX_ULPCLK_HZ {
-    MCLK_HZ
-} else {
-    MAX_ULPCLK_HZ
-};
-
 /// Frequency of LFCLK, the only clock that survives STANDBY.
 pub const LFCLK_HZ: u32 = 32_768;
 
 /// Frequency of MFCLK, the middle-frequency clock available down to STOP1.
 pub const MFCLK_HZ: u32 = 4_000_000;
 
+/// The clock tree currently programmed.
+///
+/// Written once by [`crate::init`] and read by every driver that needs a rate. It starts at
+/// [`Clocks::RESET`], so a read before initialisation reports the tree the device actually boots
+/// with rather than panicking.
+static CLOCKS: Mutex<Cell<Clocks>> = Mutex::new(Cell::new(Clocks::RESET));
+
+/// The rates the clock tree is running at.
+///
+/// Before [`crate::init`] this is the reset tree. Configure it through
+/// [`Config::clock`](crate::Config::clock).
+pub fn clocks() -> Clocks {
+    critical_section::with(|cs| CLOCKS.borrow(cs).get())
+}
+
+/// Publish the tree [`crate::init`] just programmed.
+#[inline(always)]
+pub(crate) fn set_clocks(cs: CriticalSection, clocks: Clocks) {
+    // The static already holds the reset tree, so a program that does not configure one has nothing
+    // to publish. Folds away entirely when the tree is a constant, which is the common case.
+    if clocks != Clocks::RESET {
+        CLOCKS.borrow(cs).set(clocks);
+    }
+}
+
 /// Rate an instance sees when it selects the bus clock, which depends on the domain it is in.
 ///
 /// [`PowerDomain::Backup`] answers ULPCLK: its logic runs from LFCLK, but its registers are reached
 /// over the PD0 bus.
-pub const fn bus_clock_hz(domain: PowerDomain) -> u32 {
-    match domain {
-        PowerDomain::Pd1 => MCLK_HZ,
-        PowerDomain::Pd0 | PowerDomain::Backup => ULPCLK_HZ,
-    }
+///
+/// This reads the live tree; where a driver already holds a [`Clocks`], prefer
+/// [`Clocks::bus_clock`] to avoid a second critical section.
+pub fn bus_clock_hz(domain: PowerDomain) -> u32 {
+    clocks().bus_clock(domain)
 }
 
 /// Divider applied to the clock source of the CLK_OUT pin.

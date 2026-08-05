@@ -186,11 +186,16 @@ pub enum ClockSel {
 
 impl ClockSel {
     /// Frequency of this source, in Hz, for a timer in `domain`.
-    pub const fn frequency(self, domain: PowerDomain) -> u32 {
+    ///
+    /// Takes the tree rather than reading it, so this stays a `const fn`. Get one from
+    /// [`crate::sysctl::clocks`].
+    pub const fn frequency(self, clocks: &crate::sysctl::Clocks, domain: PowerDomain) -> u32 {
         match self {
-            ClockSel::LfClk => crate::sysctl::LFCLK_HZ,
-            ClockSel::MfClk => crate::sysctl::MFCLK_HZ,
-            ClockSel::BusClk => crate::sysctl::bus_clock_hz(domain),
+            ClockSel::LfClk => clocks.lfclk,
+            // MFCLK is held at 4 MHz by SYSCTL whatever SYSOSC is doing, and reads as 0 when it was
+            // never enabled, in which case the timer would not be counting at all.
+            ClockSel::MfClk => clocks.mfclk,
+            ClockSel::BusClk => clocks.bus_clock(domain),
         }
     }
 }

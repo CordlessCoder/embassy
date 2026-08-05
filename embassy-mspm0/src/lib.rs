@@ -155,7 +155,32 @@ macro_rules! bind_interrupts {
 #[non_exhaustive]
 #[derive(Clone, Copy)]
 pub struct Config {
-    // TODO: OSC configuration.
+    /// The clock tree to program.
+    ///
+    /// Defaults to the reset tree: SYSOSC at its base frequency driving MCLK, LFCLK from the
+    /// internal oscillator, and MFCLK enabled. Build another with [`sysctl::clock::Config`], which
+    /// resolves in a `const`, so an invalid tree fails to compile:
+    ///
+    /// ```ignore
+    /// use embassy_mspm0::sysctl::clock::{self, MclkSource, SysPllConfig, SysPllRef, SysPllTap, UlpclkDiv};
+    ///
+    /// // 80 MHz MCLK from the SYSPLL, with ULPCLK halved to stay inside its 40 MHz ceiling.
+    /// const CLOCK: clock::Config = clock::Config::new()
+    ///     .with_syspll(SysPllConfig {
+    ///         reference: SysPllRef::Sysosc,
+    ///         pdiv: 2,
+    ///         qdiv: 5,
+    ///         clk0_div: None,
+    ///         clk1_div: Some(2),
+    ///         clk2x_div: Some(2),
+    ///         mclk_tap: SysPllTap::Clk2x,
+    ///     })
+    ///     .with_mclk(MclkSource::Hsclk)
+    ///     .with_ulpclk_div(UlpclkDiv::Div2);
+    /// const _: () = assert!(CLOCK.resolve().is_ok());
+    /// ```
+    pub clock: sysctl::clock::ClockSetup,
+
     /// The size of DMA block transfer burst.
     ///
     /// If this is set to a value
@@ -172,31 +197,32 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            clock: sysctl::clock::RESET_SETUP,
             dma_burst_size: dma::BurstSize::Complete,
             dma_round_robin: false,
         }
     }
 }
 
+// Called exactly once — `Peripherals::take_with_cs` panics otherwise — so inlining costs no
+// duplication and lets a constant `Config` fold the clock programming down to its live branches.
+#[inline(always)]
 pub fn init(config: Config) -> Peripherals {
     critical_section::with(|cs| {
         let peripherals = Peripherals::take_with_cs(cs);
 
-        // TODO: Further clock configuration
-
-        pac::SYSCTL.mclkcfg().modify(|w| {
-            // Enable MFCLK
-            w.set_usemftick(true);
-            // MDIV must be disabled if MFCLK is enabled.
-            w.set_mdiv(0);
-        });
-
-        // Enable MFCLK for peripheral use
+        // Program the clock tree before anything reads a rate from it. Every driver constructed
+        // later asks `sysctl::clocks()` what it is running at.
         //
-        // TODO: Optional?
-        pac::SYSCTL.genclken().modify(|w| {
-            w.set_mfpclken(true);
-        });
+        // Matched rather than unwrapped: the tree was already validated by `Config::build`, so the
+        // only failure left is an oscillator that never started, and formatting the error would pull
+        // the whole `defmt` value-formatting path into every binary for a case that cannot be
+        // recovered from anyway.
+        let clocks = match sysctl::clock::apply(&config.clock) {
+            Ok(clocks) => clocks,
+            Err(_) => core::panic!("a configured clock source never started"),
+        };
+        sysctl::set_clocks(cs, clocks);
 
         // TODO: Errata PMCU_ERR_03 states that BOR thresholds other than 0 don't work in STANDBY.
         // It is only listed for L110x/L13xx, so we can expose this option on other MCUs.

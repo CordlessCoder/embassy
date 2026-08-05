@@ -44,3 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: apply the `UART_ERR_03` and `UART_ERR_08` workarounds from the device's errata sheet rather than a hand-written family list
 - fix: mspm0: derive the SYSCTL capability cfgs from the SYSCTL peripheral version instead of chip family lists. An unrecognised version is now a build error rather than a silently reduced feature set
 - fix: mspm0/gpio: enable the GPIOA interrupt on C1105/C1106 and H3216, where port A has its own NVIC line and took no interrupts at all
+- feat: mspm0/sysctl: add a configurable clock tree via `Config::clock`, reported by `sysctl::clocks()`. Resolution is a `const fn`, so an out-of-range tree fails to compile
+- feat: mspm0/sysctl: support HFXT and the SYSPLL, letting G-series parts reach 80 MHz MCLK. Flash wait states are programmed alongside the MCLK switch
+- feat: mspm0/sysctl: derive the flash wait-state bands and the SYSOSC base frequency per device
+- feat: mspm0/sysctl: skip publishing the resolved clock tree when it is the reset tree, which the static already holds
+- **breaking** mspm0/sysctl: `MCLK_HZ` and `ULPCLK_HZ` are replaced by `sysctl::clocks()`; `bus_clock_hz` is no longer `const`
+- **breaking** mspm0/tim: `ClockSel::frequency` takes the resolved `Clocks` as its first argument
