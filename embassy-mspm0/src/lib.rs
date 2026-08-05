@@ -212,7 +212,9 @@ pub fn init(config: Config) -> Peripherals {
 
         _generated::enable_group_interrupts(cs);
 
-        #[cfg(any(mspm0c110x, mspm0l110x))]
+        // Where GPIOA has an NVIC line of its own rather than sharing an interrupt group,
+        // `enable_group_interrupts` does not reach it.
+        #[cfg(gpioa_interrupt)]
         unsafe {
             use crate::_generated::interrupt::typelevel::Interrupt;
             crate::interrupt::typelevel::GPIOA::enable();
