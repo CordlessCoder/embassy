@@ -9,8 +9,9 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_mspm0::bind_interrupts;
-use embassy_mspm0::i2c::{Config, I2c, InterruptHandler};
+use embassy_mspm0::i2c::{ClockDiv, ClockSel, Config, I2c, InterruptHandler, Timing};
 use embassy_mspm0::peripherals::I2C0;
+use embassy_mspm0::sysctl::clock;
 use embassy_time::Timer;
 use panic_halt as _;
 
@@ -20,6 +21,12 @@ bind_interrupts!(struct Irqs {
     I2C0 => InterruptHandler<I2C0>;
 });
 
+/// The default 100 kHz bus off MFCLK, solved here rather than divided for on the device.
+const TIMING: Timing = match Timing::solve(&clock::RESET_SETUP.clocks(), ClockSel::MfClk, ClockDiv::DivBy1, 100_000) {
+    Some(timing) => timing,
+    None => core::panic!("100 kHz is not reachable from MFCLK"),
+};
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -28,7 +35,13 @@ async fn main(_spawner: Spawner) -> ! {
     let scl = p.PA1;
     let sda = p.PA0;
 
-    let mut i2c = unwrap!(I2c::new_async(instance, scl, sda, Irqs, Config::default()));
+    let mut i2c = unwrap!(I2c::new_async(
+        instance,
+        scl,
+        sda,
+        Irqs,
+        Config::default().with_timing(TIMING)
+    ));
 
     let mut pot_value: u8 = 0;
 

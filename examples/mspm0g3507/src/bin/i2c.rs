@@ -9,11 +9,18 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::i2c::{Config, I2c};
+use embassy_mspm0::i2c::{ClockDiv, ClockSel, Config, I2c, Timing};
+use embassy_mspm0::sysctl::clock;
 use embassy_time::Timer;
 use panic_halt as _;
 
 const ADDRESS: u8 = 0x68;
+
+/// The default 100 kHz bus off MFCLK, solved here rather than divided for on the device.
+const TIMING: Timing = match Timing::solve(&clock::RESET_SETUP.clocks(), ClockSel::MfClk, ClockDiv::DivBy1, 100_000) {
+    Some(timing) => timing,
+    None => core::panic!("100 kHz is not reachable from MFCLK"),
+};
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
@@ -23,7 +30,12 @@ async fn main(_spawner: Spawner) -> ! {
     let scl = p.PB2;
     let sda = p.PB3;
 
-    let mut i2c = unwrap!(I2c::new_blocking(instance, scl, sda, Config::default()));
+    let mut i2c = unwrap!(I2c::new_blocking(
+        instance,
+        scl,
+        sda,
+        Config::default().with_timing(TIMING)
+    ));
 
     loop {
         for reg in 0..20u8 {

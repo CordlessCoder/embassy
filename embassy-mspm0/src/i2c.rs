@@ -34,6 +34,22 @@ pub enum ClockSel {
     MfClk,
 }
 
+impl ClockSel {
+    /// Rate this source feeds the peripheral at, before the peripheral's own divider.
+    ///
+    /// Takes the tree rather than reading it, so this stays a `const fn` and [`Timing::solve`] can be
+    /// evaluated at compile time. `BusClk` is ULPCLK rather than MCLK because every I2C instance is in
+    /// PD0 — asserted per instance in `impl_i2c_instance!`, so this does not have to ask for the domain.
+    pub const fn frequency(self, clocks: &crate::sysctl::Clocks) -> u32 {
+        match self {
+            // MFCLK is held at 4 MHz by SYSCTL whatever SYSOSC is doing, and reads as 0 when it was
+            // never enabled, in which case the peripheral would not be clocked at all.
+            Self::MfClk => clocks.mfclk,
+            Self::BusClk => clocks.ulpclk,
+        }
+    }
+}
+
 /// The clock divider for the I2C.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -70,7 +86,7 @@ impl ClockDiv {
         }
     }
 
-    fn divider(self) -> u32 {
+    const fn divider(self) -> u32 {
         match self {
             Self::DivBy1 => 1,
             Self::DivBy2 => 2,
@@ -141,6 +157,95 @@ pub enum ConfigError {
     InvalidTargetAddress,
 }
 
+/// A solved I2C timing, so the device never has to divide.
+///
+/// [`Timing::solve`] is a `const fn`, so a bus speed known up front costs no division on the device:
+///
+/// ```ignore
+/// use embassy_mspm0::i2c::{ClockDiv, ClockSel, Config, Timing};
+/// use embassy_mspm0::sysctl::clock;
+///
+/// const CLOCK: clock::ClockSetup = clock::Config::new().build();
+/// const TIMING: Timing = match Timing::solve(&CLOCK.clocks(), ClockSel::MfClk, ClockDiv::DivBy1, 100_000) {
+///     Some(timing) => timing,
+///     None => panic!("100 kHz is not reachable from MFCLK"),
+/// };
+///
+/// let config = Config::default().with_timing(TIMING);
+/// ```
+///
+/// A period only means anything against the clock it was solved for, so the source is part of the
+/// solution and [`Config::with_timing`] programs both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Timing {
+    clock_source: ClockSel,
+    clock_div: ClockDiv,
+    tpr: u8,
+    clock_hz: u32,
+}
+
+impl Timing {
+    /// Solve the timer period for `bus_speed_hz` from `clock_source` on the tree `clocks` describes.
+    ///
+    /// Takes the tree rather than reading it, so this stays a `const fn`: pass
+    /// [`clock::ClockSetup::clocks`](crate::sysctl::clock::ClockSetup::clocks) for the tree
+    /// [`crate::init`] is being given, which is the one the peripheral will run on.
+    ///
+    /// Returns [`None`] if the resulting `TPR` is outside the 1..=127 the register holds, or if the
+    /// source is not at least 20x the bus speed, which is the same headroom the runtime path checks.
+    pub const fn solve(
+        clocks: &crate::sysctl::Clocks,
+        clock_source: ClockSel,
+        clock_div: ClockDiv,
+        bus_speed_hz: u32,
+    ) -> Option<Self> {
+        let i2c_clk = clock_source.frequency(clocks) / clock_div.divider();
+
+        // Same 20x headroom [`Config::resolve`] requires at runtime.
+        let Some(needed) = bus_speed_hz.checked_mul(20) else {
+            return None;
+        };
+        if i2c_clk < needed {
+            return None;
+        }
+
+        let Some(denominator) = bus_speed_hz.checked_mul(10) else {
+            return None;
+        };
+        if denominator == 0 {
+            return None;
+        }
+
+        let ticks = i2c_clk / denominator;
+        if ticks == 0 || ticks > 128 {
+            return None;
+        }
+
+        Some(Self {
+            clock_source,
+            clock_div,
+            tpr: (ticks - 1) as u8,
+            clock_hz: i2c_clk,
+        })
+    }
+
+    /// The `TPR` value this programs.
+    pub const fn tpr(&self) -> u8 {
+        self.tpr
+    }
+
+    /// The rate the peripheral sees after its own divider.
+    pub const fn clock_hz(&self) -> u32 {
+        self.clock_hz
+    }
+
+    /// The clock this period was solved against.
+    pub const fn clock_source(&self) -> ClockSel {
+        self.clock_source
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Config
@@ -150,6 +255,13 @@ pub struct Config {
 
     /// I2C clock divider.
     pub clock_div: ClockDiv,
+
+    /// A timing solved ahead of time, skipping the divisions on the device.
+    ///
+    /// Build one with [`Timing::solve`] in a `const`. When set, [`Self::bus_speed`],
+    /// [`Self::clock_div`] and the clock source all come from it rather than being picked from the
+    /// bus speed.
+    pub timing: Option<Timing>,
 
     /// If true: invert SDA pin signal values (V<sub>DD</sub> = 0/mark, Gnd = 1/idle).
     pub invert_sda: bool,
@@ -172,6 +284,7 @@ impl Default for Config {
         Self {
             clock_source: ClockSel::MfClk,
             clock_div: ClockDiv::DivBy1,
+            timing: None,
             invert_sda: false,
             invert_scl: false,
             sda_pull: Pull::None,
@@ -182,86 +295,122 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Use a timing solved ahead of time, skipping the divisions on the device.
+    ///
+    /// Sets the clock source as well: the timing carries the clock it was solved against, and a period
+    /// programmed against a different one puts the bus at the wrong speed.
+    pub const fn with_timing(mut self, timing: Timing) -> Self {
+        self.clock_source = timing.clock_source;
+        self.clock_div = timing.clock_div;
+        self.timing = Some(timing);
+        self
+    }
+
     pub fn sda_pf(&self) -> PfType {
         PfType::input(self.sda_pull, self.invert_sda)
     }
     pub fn scl_pf(&self) -> PfType {
         PfType::input(self.scl_pull, self.invert_scl)
     }
-    fn calculate_timer_period(&self) -> u8 {
-        // Sets the timer period to bring the clock frequency to the selected I2C speed
+    /// Derive everything the driver needs from this configuration, in one place.
+    ///
+    /// This is deliberately the *only* place the I2C setup path divides. Cortex-M0+ has no divide
+    /// instruction, so each division site that survives optimization drags in a ~400 byte software
+    /// divider; funnelling them here means a pre-solved [`Timing`] removes every one of them.
+    pub(crate) fn resolve(&self) -> Result<Resolved, ConfigError> {
+        let clocks = crate::sysctl::clocks();
+
+        // A pre-solved timing already carries its clock source, the divider, the resulting rate and the
+        // timer period, so nothing below needs computing.
+        if let Some(timing) = self.timing {
+            return Ok(Resolved {
+                clock_source: timing.clock_source(),
+                clock_div: timing.clock_div,
+                clock_hz: timing.clock_hz(),
+                source_hz: timing.clock_source().frequency(&clocks),
+                tpr: timing.tpr(),
+            });
+        }
+
+        let divider = self.clock_div.divider();
+        let bus_speed = self.bus_speed.hertz();
+
+        // Pick the source from the bus speed: at or below 200 kHz MFCLK suffices, above it the bus
+        // clock is needed.
+        let clock_source = if bus_speed / divider > 200_000 {
+            // TODO: check if BUSCLK enabled
+            ClockSel::BusClk
+        } else {
+            if !pac::SYSCTL.mclkcfg().read().usemftick() {
+                return Err(ConfigError::ClockSourceNotEnabled);
+            }
+
+            ClockSel::MfClk
+        };
+
+        let source_hz = clock_source.frequency(&clocks);
+        let clock_hz = source_hz / divider;
+
+        // The source must be ~20x the bus speed.
+        if clock_hz < (bus_speed / divider) * 20 {
+            return Err(ConfigError::InvalidClockRate);
+        }
+
+        // Sets the timer period to bring the clock frequency to the selected I2C speed.
         // From the documentation: TPR = (I2C_CLK / (I2C_FREQ * (SCL_LP + SCL_HP))) - 1 where:
         // - I2C_FREQ is desired I2C frequency (= I2C_BASE_FREQ divided by I2C_DIV)
         // - TPR is the Timer Period register value (range of 1 to 127)
         // - SCL_LP is the SCL Low period (fixed at 6)
         // - SCL_HP is the SCL High period (fixed at 4)
         // - I2C_CLK is functional clock frequency
-        return ((self.calculate_clock_source() / (self.bus_speed.hertz() * 10u32)) - 1)
-            .try_into()
-            .unwrap();
-    }
-
-    pub(crate) fn calculate_clock_source(&self) -> u32 {
-        self.source_hz() / self.clock_div.divider()
-    }
-
-    /// Rate of the clock feeding the peripheral, before its own divider.
-    ///
-    /// `BusClk` is ULPCLK rather than MCLK because every I2C instance is in PD0 — asserted per
-    /// instance in `impl_i2c_instance!`, so this does not have to ask for the domain.
-    fn source_hz(&self) -> u32 {
-        match self.clock_source {
-            ClockSel::MfClk => 4_000_000,
-            ClockSel::BusClk => crate::sysctl::clocks().ulpclk,
+        let ticks = clock_hz / (bus_speed * 10);
+        if ticks == 0 || ticks > 128 {
+            return Err(ConfigError::InvalidClockRate);
         }
-    }
 
-    pub(crate) fn wake_floor(&self, sleep: &SleepInfo) -> Option<SleepLevel> {
-        // Undivided on purpose: the question is whether the source still runs at the rate the
-        // peripheral was configured for, not what it was divided down to.
-        sleep.floor_for_operation(self.source_hz())
-    }
-
-    fn check_clock_i2c(&self) -> bool {
-        // make sure source clock is ~20 faster than i2c clock
-        let clk_ratio = 20;
-
-        let i2c_clk = self.bus_speed.hertz() / self.clock_div.divider();
-        let src_clk = self.calculate_clock_source();
-
-        // check clock rate
-        return src_clk >= i2c_clk * clk_ratio;
-    }
-
-    fn define_clock_source(&mut self) -> bool {
-        // decide which clock source to choose based on i2c clock.
-        // If i2c speed <= 200kHz, use MfClk, otherwise use BusClk
-        if self.bus_speed.hertz() / self.clock_div.divider() > 200_000 {
-            // TODO: check if BUSCLK enabled
-            self.clock_source = ClockSel::BusClk;
-        } else {
-            // is MFCLK enabled
-            if !pac::SYSCTL.mclkcfg().read().usemftick() {
-                return false;
-            }
-            self.clock_source = ClockSel::MfClk;
-        }
-        return true;
+        Ok(Resolved {
+            clock_source,
+            clock_div: self.clock_div,
+            clock_hz,
+            source_hz,
+            tpr: (ticks - 1) as u8,
+        })
     }
 
     /// Check the config.
     ///
-    /// Make sure that configuration is valid and enabled by the system.
+    /// Make sure that configuration is valid and enabled by the system, writing back the clock
+    /// source that was chosen for the requested bus speed.
     pub fn check_config(&mut self) -> Result<(), ConfigError> {
-        if !self.define_clock_source() {
-            return Err(ConfigError::ClockSourceNotEnabled);
-        }
-
-        if !self.check_clock_i2c() {
-            return Err(ConfigError::InvalidClockRate);
-        }
+        let resolved = self.resolve()?;
+        self.clock_source = resolved.clock_source;
 
         Ok(())
+    }
+}
+
+/// A [`Config`] with everything the driver needs derived from it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Resolved {
+    pub clock_source: ClockSel,
+    pub clock_div: ClockDiv,
+
+    /// Rate the peripheral sees after its own divider.
+    pub clock_hz: u32,
+
+    /// Rate of the source before the divider, which is what deep-sleep survival depends on.
+    pub source_hz: u32,
+
+    /// The timer period register value.
+    pub tpr: u8,
+}
+
+impl Resolved {
+    /// Shallowest sleep level to block so this instance keeps working.
+    pub(crate) fn wake_floor(&self, sleep: &SleepInfo) -> Option<SleepLevel> {
+        // Undivided on purpose: the question is whether the source still runs at the rate the
+        // peripheral was configured for, not what it was divided down to.
+        sleep.floor_for_operation(self.source_hz)
     }
 }
 
@@ -371,10 +520,8 @@ impl<'d> I2c<'d, Async> {
 
 impl<'d, M: Mode> I2c<'d, M> {
     /// Reconfigure the driver
-    pub fn set_config(&mut self, mut config: Config) -> Result<(), ConfigError> {
-        if let Err(err) = config.check_config() {
-            return Err(err);
-        }
+    pub fn set_config(&mut self, config: Config) -> Result<(), ConfigError> {
+        let resolved = config.resolve()?;
 
         self.info.interrupt.disable();
 
@@ -386,12 +533,11 @@ impl<'d, M: Mode> I2c<'d, M> {
             scl.update_pf(config.scl_pf());
         }
 
-        self.init(&config)
+        self.init(&resolved)
     }
 
-    fn init(&mut self, config: &Config) -> Result<(), ConfigError> {
-        // Init I2C
-        self.info.regs.clksel().write(|w| match config.clock_source {
+    fn init(&mut self, resolved: &Resolved) -> Result<(), ConfigError> {
+        self.info.regs.clksel().write(|w| match resolved.clock_source {
             ClockSel::BusClk => {
                 w.set_mfclk_sel(false);
                 w.set_busclk_sel(true);
@@ -401,9 +547,11 @@ impl<'d, M: Mode> I2c<'d, M> {
                 w.set_busclk_sel(false);
             }
         });
-        self.info.regs.clkdiv().write(|w| w.set_ratio(config.clock_div.into()));
+        self.info
+            .regs
+            .clkdiv()
+            .write(|w| w.set_ratio(resolved.clock_div.into()));
 
-        // set up glitch filter
         self.info.regs.gfctl().modify(|w| {
             w.set_agfen(false);
             w.set_agfsel(vals::Agfsel::Aglit50);
@@ -421,17 +569,11 @@ impl<'d, M: Mode> I2c<'d, M> {
             w.set_cblen(0);
         });
 
-        self.state
-            .clock
-            .store(config.calculate_clock_source(), Ordering::Relaxed);
+        self.state.clock.store(resolved.clock_hz, Ordering::Relaxed);
 
-        self.wake_floor = config.wake_floor(&self.info.sleep);
+        self.wake_floor = resolved.wake_floor(&self.info.sleep);
 
-        self.info
-            .regs
-            .controller(0)
-            .ctpr()
-            .write(|w| w.set_tpr(config.calculate_timer_period()));
+        self.info.regs.controller(0).ctpr().write(|w| w.set_tpr(resolved.tpr));
 
         // Set Tx Fifo threshold, follow TI example
         self.info
@@ -455,6 +597,14 @@ impl<'d, M: Mode> I2c<'d, M> {
         Ok(())
     }
 
+    /// Discard whatever an abandoned transfer left queued, driverlib's `DL_I2C_flushController*FIFO`.
+    ///
+    /// A cancelled write leaves its unsent bytes in the TX FIFO and a cancelled read leaves what it
+    /// received in the RX FIFO. Left there, the next transfer transmits the previous one's byte and reads
+    /// back the previous one's data — an error reported against a transfer that succeeded, one
+    /// transaction later.
+    ///
+    /// Only safe once the burst has ended; flushing under a running one takes bytes out from under it.
     fn master_stop(&mut self) {
         // not the first transaction, delay 1000 cycles
         cortex_m::asm::delay(1000);
@@ -1098,7 +1248,7 @@ impl<'d, M: Mode> I2c<'d, M> {
             wake_floor: None,
             _phantom: PhantomData,
         };
-        this.init(&config)?;
+        this.init(&config.resolve()?)?;
 
         Ok(this)
     }
@@ -1174,74 +1324,76 @@ macro_rules! impl_i2c_scl_pin {
 
 #[cfg(test)]
 mod tests {
-    use crate::i2c::{BusSpeed, ClockDiv, ClockSel, Config};
+    use crate::i2c::{ClockDiv, ClockSel, Timing};
+    use crate::sysctl::Clocks;
 
-    /// These tests are based on TI's reference caluclation.
+    /// A tree with both sources at explicit rates, so the expected periods below do not depend on what
+    /// this chip's SYSOSC happens to boot at.
+    const CLOCKS: Clocks = Clocks {
+        ulpclk: 32_000_000,
+        mfclk: 4_000_000,
+        ..Clocks::RESET
+    };
+
+    const BUSCLK: ClockSel = ClockSel::BusClk;
+    const MFCLK: ClockSel = ClockSel::MfClk;
+
+    const STANDARD: u32 = 100_000;
+    const FAST_MODE: u32 = 400_000;
+    const FAST_MODE_PLUS: u32 = 1_000_000;
+
+    /// These are based on TI's reference calculation.
     #[test]
-    fn ti_calculate_timer_period() {
-        let mut config = Config::default();
-        config.clock_div = ClockDiv::DivBy1;
-        config.bus_speed = BusSpeed::FastMode;
-        config.clock_source = ClockSel::BusClk;
-        core::assert_eq!(config.calculate_timer_period(), 7u8);
+    fn ti_timer_period() {
+        // 32 MHz / (400 kHz * 10) - 1
+        core::assert_eq!(
+            Timing::solve(&CLOCKS, BUSCLK, ClockDiv::DivBy1, FAST_MODE).map(|t| t.tpr()),
+            Some(7)
+        );
+
+        // 16 MHz / (400 kHz * 10) - 1
+        core::assert_eq!(
+            Timing::solve(&CLOCKS, BUSCLK, ClockDiv::DivBy2, FAST_MODE).map(|t| t.tpr()),
+            Some(3)
+        );
+
+        // 16 MHz / (100 kHz * 10) - 1
+        core::assert_eq!(
+            Timing::solve(&CLOCKS, BUSCLK, ClockDiv::DivBy2, STANDARD).map(|t| t.tpr()),
+            Some(15)
+        );
     }
 
+    /// The divided source rate travels with the timing, so the driver never recomputes it.
     #[test]
-    fn ti_calculate_timer_period_2() {
-        let mut config = Config::default();
-        config.clock_div = ClockDiv::DivBy2;
-        config.bus_speed = BusSpeed::FastMode;
-        config.clock_source = ClockSel::BusClk;
-        core::assert_eq!(config.calculate_timer_period(), 3u8);
+    fn timing_carries_divided_rate() {
+        let timing = Timing::solve(&CLOCKS, BUSCLK, ClockDiv::DivBy2, FAST_MODE).unwrap();
+
+        core::assert_eq!(timing.clock_hz(), CLOCKS.ulpclk / 2);
     }
 
+    /// The source must be at least 20x the bus speed.
     #[test]
-    fn ti_calculate_timer_period_3() {
-        let mut config = Config::default();
-        config.clock_div = ClockDiv::DivBy2;
-        config.bus_speed = BusSpeed::Standard;
-        config.clock_source = ClockSel::BusClk;
-        core::assert_eq!(config.calculate_timer_period(), 15u8);
+    fn rejects_insufficient_headroom() {
+        // 32 MHz against 400 kHz and 1 MHz both clear 20x.
+        core::assert!(Timing::solve(&CLOCKS, BUSCLK, ClockDiv::DivBy1, FAST_MODE).is_some());
+        core::assert!(Timing::solve(&CLOCKS, BUSCLK, ClockDiv::DivBy1, FAST_MODE_PLUS).is_some());
+
+        // 4 MHz does not: 400 kHz needs 8 MHz and 1 MHz needs 20 MHz.
+        core::assert!(Timing::solve(&CLOCKS, MFCLK, ClockDiv::DivBy1, FAST_MODE).is_none());
+        core::assert!(Timing::solve(&CLOCKS, MFCLK, ClockDiv::DivBy1, FAST_MODE_PLUS).is_none());
+
+        // 100 kHz off MFCLK does clear it.
+        core::assert!(Timing::solve(&CLOCKS, MFCLK, ClockDiv::DivBy1, STANDARD).is_some());
     }
 
+    /// A period the register cannot hold is refused rather than wrapping.
     #[test]
-    fn ti_calculate_timer_period_4() {
-        let mut config = Config::default();
-        config.clock_div = ClockDiv::DivBy2;
-        config.bus_speed = BusSpeed::Custom(100_000);
-        config.clock_source = ClockSel::BusClk;
-        core::assert_eq!(config.calculate_timer_period(), 15u8);
-    }
+    fn rejects_unrepresentable_period() {
+        // A very slow bus off a fast clock overflows TPR's 7 bits.
+        core::assert!(Timing::solve(&CLOCKS, BUSCLK, ClockDiv::DivBy1, 1_000).is_none());
 
-    #[test]
-    fn clock_check_fastmodeplus_rate_with_busclk() {
-        let mut config = Config::default();
-        config.clock_source = ClockSel::BusClk;
-        config.bus_speed = BusSpeed::FastModePlus;
-        core::assert!(config.check_clock_i2c());
-    }
-
-    #[test]
-    fn clock_check_fastmode_rate_with_busclk() {
-        let mut config = Config::default();
-        config.clock_source = ClockSel::BusClk;
-        config.bus_speed = BusSpeed::FastMode;
-        core::assert!(config.check_clock_i2c());
-    }
-
-    #[test]
-    fn clock_check_fastmodeplus_rate_with_mfclk() {
-        let mut config = Config::default();
-        config.clock_source = ClockSel::MfClk;
-        config.bus_speed = BusSpeed::FastModePlus;
-        core::assert!(!config.check_clock_i2c());
-    }
-
-    #[test]
-    fn clock_check_fastmode_rate_with_mfclk() {
-        let mut config = Config::default();
-        config.clock_source = ClockSel::MfClk;
-        config.bus_speed = BusSpeed::FastMode;
-        core::assert!(!config.check_clock_i2c());
+        // A zero bus speed cannot be divided by.
+        core::assert!(Timing::solve(&CLOCKS, BUSCLK, ClockDiv::DivBy1, 0).is_none());
     }
 }

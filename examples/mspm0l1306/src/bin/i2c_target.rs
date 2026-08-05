@@ -8,15 +8,26 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::i2c::Config;
+use embassy_mspm0::i2c::{ClockDiv, ClockSel, Config, Timing};
 use embassy_mspm0::i2c_target::{Command, Config as TargetConfig, I2cTarget, ReadStatus};
 use embassy_mspm0::peripherals::I2C0;
+use embassy_mspm0::sysctl::clock;
 use embassy_mspm0::{bind_interrupts, i2c};
 use panic_halt as _;
 
 bind_interrupts!(struct Irqs {
     I2C0 => i2c::InterruptHandler<I2C0>;
 });
+
+/// The default 100 kHz bus off MFCLK, solved here rather than divided for on the device.
+///
+/// A target does not drive SCL, so the solved `TPR` is never programmed — what this is really for is
+/// naming the clock source and divider up front, which is what keeps the software divider out of the
+/// binary.
+const TIMING: Timing = match Timing::solve(&clock::RESET_SETUP.clocks(), ClockSel::MfClk, ClockDiv::DivBy1, 100_000) {
+    Some(timing) => timing,
+    None => core::panic!("100 kHz is not reachable from MFCLK"),
+};
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
@@ -26,7 +37,7 @@ async fn main(_spawner: Spawner) -> ! {
     let scl = p.PA1;
     let sda = p.PA0;
 
-    let config = Config::default();
+    let config = Config::default().with_timing(TIMING);
     let mut target_config = TargetConfig::default();
     target_config.target_addr = 0x48;
     target_config.general_call = true;

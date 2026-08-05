@@ -12,7 +12,6 @@ use embassy_embedded_hal::SetConfig;
 use mspm0_metapac::i2c::vals::CpuIntIidxStat;
 
 use crate::gpio::{AnyPin, SealedPin};
-// Re-use I2c controller types
 use crate::i2c::{ClockSel, ConfigError, Info, Instance, InterruptHandler, SclPin, SdaPin, State};
 use crate::interrupt::InterruptExt;
 use crate::mode::{Async, Blocking, Mode};
@@ -97,7 +96,13 @@ pub struct I2cTarget<'d, M: Mode> {
     state: &'static State,
     scl: Option<Peri<'d, AnyPin>>,
     sda: Option<Peri<'d, AnyPin>>,
-    config: i2c::Config,
+
+    /// The clock source, divider and rate this instance was configured for.
+    ///
+    /// Derived once, when the configuration arrives, so `init` programs the registers and
+    /// [`State::clock`] from one answer rather than re-deriving its own.
+    resolved: i2c::Resolved,
+
     target_config: i2c_target::Config,
     wake_guard: Option<WakeGuard>,
     _phantom: PhantomData<M>,
@@ -118,8 +123,8 @@ impl<'d> SetConfig for I2cTarget<'d, Async> {
             scl.update_pf(config.0.scl_pf());
         }
 
-        self.config = config.0.clone();
-        self.target_config = config.1.clone();
+        self.resolved = config.0.resolve()?;
+        self.target_config = config.1;
 
         self.reset()
     }
@@ -138,8 +143,8 @@ impl<'d> SetConfig for I2cTarget<'d, Blocking> {
             scl.update_pf(config.0.scl_pf());
         }
 
-        self.config = config.0.clone();
-        self.target_config = config.1.clone();
+        self.resolved = config.0.resolve()?;
+        self.target_config = config.1;
 
         self.reset()
     }
@@ -163,7 +168,7 @@ impl<'d> I2cTarget<'d, Async> {
             new_pin!(sda, config.sda_pf()),
             config,
             target_config,
-        );
+        )?;
         this.reset()?;
         Ok(this)
     }
@@ -175,7 +180,7 @@ impl<'d> I2cTarget<'d, Async> {
         self.init()?;
         unsafe { self.info.interrupt.enable() };
 
-        self.wake_guard = self.config.wake_floor(&self.info.sleep).map(WakeGuard::new);
+        self.wake_guard = self.resolved.wake_floor(&self.info.sleep).map(WakeGuard::new);
         Ok(())
     }
 }
@@ -197,7 +202,7 @@ impl<'d> I2cTarget<'d, Blocking> {
             new_pin!(sda, config.sda_pf()),
             config,
             target_config,
-        );
+        )?;
         this.reset()?;
         Ok(this)
     }
@@ -218,7 +223,9 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
         sda: Option<Peri<'d, AnyPin>>,
         config: i2c::Config,
         target_config: i2c_target::Config,
-    ) -> Self {
+    ) -> Result<Self, ConfigError> {
+        let resolved = config.resolve()?;
+
         if let Some(ref scl) = scl {
             let pincm = pac::IOMUX.pincm(scl._pin_cm() as usize);
             pincm.modify(|w| {
@@ -232,24 +239,23 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             });
         }
 
-        Self {
+        Ok(Self {
             info: T::info(),
             state: T::state(),
             scl,
             sda,
-            config,
+            resolved,
             target_config,
             wake_guard: None,
             _phantom: PhantomData,
-        }
+        })
     }
 
     fn init(&mut self) -> Result<(), ConfigError> {
-        let mut config = self.config;
+        let resolved = self.resolved;
         let target_config = self.target_config;
         let regs = self.info.regs;
 
-        config.check_config()?;
         // Target address must be 7-bit
         if !(target_config.target_addr < 0x80) {
             return Err(ConfigError::InvalidTargetAddress);
@@ -277,7 +283,7 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
         cortex_m::asm::delay(16);
 
         // Select and configure the I2C clock using the CLKSEL and CLKDIV registers
-        regs.clksel().write(|w| match config.clock_source {
+        regs.clksel().write(|w| match resolved.clock_source {
             ClockSel::BusClk => {
                 w.set_mfclk_sel(false);
                 w.set_busclk_sel(true);
@@ -287,7 +293,7 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
                 w.set_busclk_sel(false);
             }
         });
-        regs.clkdiv().write(|w| w.set_ratio(config.clock_div.into()));
+        regs.clkdiv().write(|w| w.set_ratio(resolved.clock_div.into()));
 
         // Configure at least one target address by writing the 7-bit address to I2Cx.SOAR register. The additional
         // target address can be enabled and configured by using I2Cx.TOAR2 register.
@@ -296,9 +302,7 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             w.set_oar(target_config.target_addr as u16);
         });
 
-        self.state
-            .clock
-            .store(config.calculate_clock_source(), Ordering::Relaxed);
+        self.state.clock.store(resolved.clock_hz, Ordering::Relaxed);
 
         regs.target(0).tctr().modify(|w| {
             w.set_gencall(target_config.general_call);
