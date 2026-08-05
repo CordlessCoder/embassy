@@ -356,7 +356,7 @@ impl Watchdog {
                     w.set_wwdtlp0rstdis(false);
                 }
 
-                #[cfg(any(mspm0g110x, mspm0g150x, mspm0g151x, mspm0g310x, mspm0g350x, mspm0g351x))]
+                #[cfg(wwdt1)]
                 if *T::regs() == pac::WWDT1 {
                     w.set_wwdtlp1rstdis(false);
                 }

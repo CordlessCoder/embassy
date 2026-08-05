@@ -56,6 +56,9 @@ fn generate_code(cfgs: &mut CfgSet) {
         cfgs.declare_all(&get_chip_cfgs(&chip));
     }
 
+    peripheral_kind_cfgs(cfgs);
+    peripheral_name_cfgs(cfgs);
+
     let mut singletons = get_singletons(cfgs);
 
     time_driver(&mut singletons, cfgs);
@@ -80,6 +83,43 @@ fn generate_code(cfgs: &mut CfgSet) {
     let out_file = out_dir.join("_generated.rs").to_string_lossy().to_string();
     fs::write(&out_file, g.to_string()).unwrap();
     rustfmt(&out_file);
+}
+
+/// Peripheral kinds a module is gated on, so it can say `#[cfg(trng)]` rather than naming the
+/// families that happen to have the peripheral.
+///
+/// A family list goes stale — `trng` was gated on six families while the metadata reported seven.
+/// Add a kind here when a module starts gating on it; an undeclared cfg warns, so an omission shows
+/// up at once.
+const PERIPHERAL_KIND_CFGS: &[&str] = &["mathacl", "trng"];
+
+/// Enable a cfg for each kind in [`PERIPHERAL_KIND_CFGS`] this chip actually has.
+fn peripheral_kind_cfgs(cfgs: &mut CfgSet) {
+    cfgs.declare_all(PERIPHERAL_KIND_CFGS);
+
+    for kind in PERIPHERAL_KIND_CFGS {
+        if METADATA.peripherals.iter().any(|peripheral| peripheral.kind == *kind) {
+            cfgs.enable(kind);
+        }
+    }
+}
+
+/// Peripheral *instances* a driver gates on, where the kind is not specific enough.
+///
+/// `wwdt` is on every chip, but only some have a second instance, and the driver has to name
+/// `pac::WWDT1` to reach it.
+const PERIPHERAL_NAME_CFGS: &[&str] = &["WWDT1"];
+
+/// Enable a cfg, lowercased, for each instance in [`PERIPHERAL_NAME_CFGS`] this chip has.
+fn peripheral_name_cfgs(cfgs: &mut CfgSet) {
+    for name in PERIPHERAL_NAME_CFGS {
+        let cfg = name.to_lowercase();
+
+        cfgs.declare(&cfg);
+        if METADATA.peripherals.iter().any(|peripheral| peripheral.name == *name) {
+            cfgs.enable(cfg);
+        }
+    }
 }
 
 fn get_chip_cfgs(chip_name: &str) -> Vec<String> {

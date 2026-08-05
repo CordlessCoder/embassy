@@ -24,11 +24,11 @@ pub mod i2c;
 pub mod i2c_target;
 #[cfg(feature = "low-power")]
 pub mod low_power;
-#[cfg(any(mspm0g150x, mspm0g151x, mspm0g350x, mspm0g351x))]
+#[cfg(mathacl)]
 pub mod mathacl;
 pub mod sysctl;
 pub mod tim;
-#[cfg(any(mspm0g150x, mspm0g151x, mspm0g350x, mspm0g351x, mspm0l122x, mspm0l222x))]
+#[cfg(trng)]
 pub mod trng;
 // TODO: UART unicomm
 #[cfg(not(unicomm))]
