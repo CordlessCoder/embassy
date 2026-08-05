@@ -1183,7 +1183,7 @@ mod tests {
         config.clock_div = ClockDiv::DivBy1;
         config.bus_speed = BusSpeed::FastMode;
         config.clock_source = ClockSel::BusClk;
-        assert_eq!(config.calculate_timer_period(), 7u8);
+        core::assert_eq!(config.calculate_timer_period(), 7u8);
     }
 
     #[test]
@@ -1192,7 +1192,7 @@ mod tests {
         config.clock_div = ClockDiv::DivBy2;
         config.bus_speed = BusSpeed::FastMode;
         config.clock_source = ClockSel::BusClk;
-        assert_eq!(config.calculate_timer_period(), 3u8);
+        core::assert_eq!(config.calculate_timer_period(), 3u8);
     }
 
     #[test]
@@ -1201,7 +1201,7 @@ mod tests {
         config.clock_div = ClockDiv::DivBy2;
         config.bus_speed = BusSpeed::Standard;
         config.clock_source = ClockSel::BusClk;
-        assert_eq!(config.calculate_timer_period(), 15u8);
+        core::assert_eq!(config.calculate_timer_period(), 15u8);
     }
 
     #[test]
@@ -1210,7 +1210,7 @@ mod tests {
         config.clock_div = ClockDiv::DivBy2;
         config.bus_speed = BusSpeed::Custom(100_000);
         config.clock_source = ClockSel::BusClk;
-        assert_eq!(config.calculate_timer_period(), 15u8);
+        core::assert_eq!(config.calculate_timer_period(), 15u8);
     }
 
     #[test]
@@ -1218,7 +1218,7 @@ mod tests {
         let mut config = Config::default();
         config.clock_source = ClockSel::BusClk;
         config.bus_speed = BusSpeed::FastModePlus;
-        assert!(config.check_clock_i2c());
+        core::assert!(config.check_clock_i2c());
     }
 
     #[test]
@@ -1226,7 +1226,7 @@ mod tests {
         let mut config = Config::default();
         config.clock_source = ClockSel::BusClk;
         config.bus_speed = BusSpeed::FastMode;
-        assert!(config.check_clock_i2c());
+        core::assert!(config.check_clock_i2c());
     }
 
     #[test]
@@ -1234,7 +1234,7 @@ mod tests {
         let mut config = Config::default();
         config.clock_source = ClockSel::MfClk;
         config.bus_speed = BusSpeed::FastModePlus;
-        assert!(!config.check_clock_i2c());
+        core::assert!(!config.check_clock_i2c());
     }
 
     #[test]
@@ -1242,6 +1242,6 @@ mod tests {
         let mut config = Config::default();
         config.clock_source = ClockSel::MfClk;
         config.bus_speed = BusSpeed::FastMode;
-        assert!(!config.check_clock_i2c());
+        core::assert!(!config.check_clock_i2c());
     }
 }

@@ -1264,6 +1264,6 @@ mod tests {
     fn datasheet() {
         let brd = calculate_brd(40_000_000, 1, 19200, 16);
 
-        assert!(matches!(brd, Some((130, 13))));
+        core::assert!(matches!(brd, Some((130, 13))));
     }
 }

@@ -390,13 +390,13 @@ mod tests {
     fn mathacl_iqtype_errors() {
         // integer part trimmed
         let mut test_float = 1.0;
-        assert_eq!(
+        core::assert_eq!(
             IQType::from_f32(test_float, 0, true),
             Err(IQTypeError::IntPartIsTrimmed)
         );
         // negative value for unsigned type
         test_float = -1.0;
-        assert_eq!(
+        core::assert_eq!(
             IQType::from_f32(test_float, 1, false),
             Err(IQTypeError::FaultySignParameter)
         );
@@ -404,43 +404,43 @@ mod tests {
 
     #[test]
     fn mathacl_iqtype_f32_to_f32() {
-        assert_eq!(IQType::from_f32(0.0, 15, true).unwrap().to_f32(), 0.0);
-        assert_eq!(IQType::from_f32(0.0, 16, false).unwrap().to_f32(), 0.0);
+        core::assert_eq!(IQType::from_f32(0.0, 15, true).unwrap().to_f32(), 0.0);
+        core::assert_eq!(IQType::from_f32(0.0, 16, false).unwrap().to_f32(), 0.0);
 
-        assert_eq!(IQType::from_f32(1.5, 16, false).unwrap().to_f32(), 1.5);
-        assert_eq!(IQType::from_f32(1.5, 15, true).unwrap().to_f32(), 1.5);
-        assert_eq!(IQType::from_f32(-1.5, 15, true).unwrap().to_f32(), -1.5);
+        core::assert_eq!(IQType::from_f32(1.5, 16, false).unwrap().to_f32(), 1.5);
+        core::assert_eq!(IQType::from_f32(1.5, 15, true).unwrap().to_f32(), 1.5);
+        core::assert_eq!(IQType::from_f32(-1.5, 15, true).unwrap().to_f32(), -1.5);
     }
 
     #[test]
     fn mathacl_iqtype_reg_to_reg() {
-        assert_eq!(IQType::from_reg(0x0, 15, true).unwrap().to_reg(), 0x0);
-        assert_eq!(IQType::from_reg(0x0, 16, false).unwrap().to_reg(), 0x0);
+        core::assert_eq!(IQType::from_reg(0x0, 15, true).unwrap().to_reg(), 0x0);
+        core::assert_eq!(IQType::from_reg(0x0, 16, false).unwrap().to_reg(), 0x0);
 
-        assert_eq!(IQType::from_reg(0x00018000, 15, true).unwrap().to_reg(), 0x00018000);
-        assert_eq!(IQType::from_reg(0x00018000, 16, false).unwrap().to_reg(), 0x00018000);
-        assert_eq!(IQType::from_reg(0xFFFE5556, 15, true).unwrap().to_reg(), 0xFFFE5556);
+        core::assert_eq!(IQType::from_reg(0x00018000, 15, true).unwrap().to_reg(), 0x00018000);
+        core::assert_eq!(IQType::from_reg(0x00018000, 16, false).unwrap().to_reg(), 0x00018000);
+        core::assert_eq!(IQType::from_reg(0xFFFE5556, 15, true).unwrap().to_reg(), 0xFFFE5556);
     }
 
     #[test]
     fn mathacl_iqtype_f32_to_register() {
         let mut test_float = 0.0;
-        assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0x0);
-        assert_eq!(IQType::from_f32(test_float, 16, false).unwrap().to_reg(), 0x0);
+        core::assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0x0);
+        core::assert_eq!(IQType::from_f32(test_float, 16, false).unwrap().to_reg(), 0x0);
 
         test_float = 1.5;
-        assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0x00018000);
-        assert_eq!(IQType::from_f32(test_float, 16, false).unwrap().to_reg(), 0x00018000);
+        core::assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0x00018000);
+        core::assert_eq!(IQType::from_f32(test_float, 16, false).unwrap().to_reg(), 0x00018000);
 
         test_float = -1.5;
-        assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0xFFFE8000);
+        core::assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0xFFFE8000);
 
         test_float = 1.666657;
-        assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0x0001AAAA);
-        assert_eq!(IQType::from_f32(test_float, 16, false).unwrap().to_reg(), 0x0001AAAA);
+        core::assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0x0001AAAA);
+        core::assert_eq!(IQType::from_f32(test_float, 16, false).unwrap().to_reg(), 0x0001AAAA);
 
         test_float = -1.666657;
-        assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0xFFFE5556);
+        core::assert_eq!(IQType::from_f32(test_float, 15, true).unwrap().to_reg(), 0xFFFE5556);
     }
 
     #[test]
@@ -448,18 +448,18 @@ mod tests {
         let mut test_u32: u32 = 0x7FFFFFFF;
 
         let mut result = IQType::from_reg(test_u32, 0, true).unwrap().to_f32();
-        assert!(result < 1.0 + ERROR_TOLERANCE && result > 1.0 - ERROR_TOLERANCE);
+        core::assert!(result < 1.0 + ERROR_TOLERANCE && result > 1.0 - ERROR_TOLERANCE);
 
         test_u32 = 0x0;
         result = IQType::from_reg(test_u32, 0, true).unwrap().to_f32();
-        assert!(result < 0.0 + ERROR_TOLERANCE && result > 0.0 - ERROR_TOLERANCE);
+        core::assert!(result < 0.0 + ERROR_TOLERANCE && result > 0.0 - ERROR_TOLERANCE);
 
         test_u32 = 0x0001AAAA;
         result = IQType::from_reg(test_u32, 15, true).unwrap().to_f32();
-        assert!(result < 1.666657 + ERROR_TOLERANCE && result > 1.666657 - ERROR_TOLERANCE);
+        core::assert!(result < 1.666657 + ERROR_TOLERANCE && result > 1.666657 - ERROR_TOLERANCE);
 
         test_u32 = 0xFFFE5556;
         result = IQType::from_reg(test_u32, 15, true).unwrap().to_f32();
-        assert!(result < -1.666657 + ERROR_TOLERANCE && result > -1.666657 - ERROR_TOLERANCE);
+        core::assert!(result < -1.666657 + ERROR_TOLERANCE && result > -1.666657 - ERROR_TOLERANCE);
     }
 }
