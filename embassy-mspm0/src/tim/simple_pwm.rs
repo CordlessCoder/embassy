@@ -428,15 +428,137 @@ impl<'d> SimplePwmChannel<'d> {
         let numerator = numerator.min(denominator);
         let max = self.max_duty();
 
-        // Widened so a 32-bit period times the numerator cannot overflow.
-        let duty = u64::from(max) * u64::from(numerator) / u64::from(denominator);
-
-        self.set_duty(duty as u32);
+        self.set_duty(mul_div(max, numerator, denominator));
     }
 
     /// Set the duty as a percentage, clamped to 100.
     pub fn set_duty_percent(&mut self, percent: u8) {
         self.set_duty_fraction(u32::from(percent), 100);
+    }
+}
+
+/// `a * b / d`, for `b <= d` so the quotient always fits.
+///
+/// The product needs more than 32 bits for a long period, but dividing it as a `u64` would link
+/// `__aeabi_uldivmod`. Splitting `a` around `d` keeps the common case to one multiply and one
+/// 32-bit divide.
+const fn mul_div(a: u32, b: u32, d: u32) -> u32 {
+    let whole = a / d;
+    let rem = a % d;
+
+    // `b <= d`, so `whole * b <= whole * d <= a` and cannot overflow.
+    let scaled = whole * b;
+
+    // `rem < d` and `b <= d`, so this only fails to fit for denominators above 2^16.
+    let fraction = match rem.checked_mul(b) {
+        Some(product) => product / d,
+        None => mul_div_bitwise(rem, b, d),
+    };
+
+    scaled + fraction
+}
+
+/// `a * b / d` for `a < d`, without forming the product.
+///
+/// Walks the bits of `b` keeping a quotient and a remainder below `d`, so no intermediate needs
+/// more than 32 bits. Only reached for denominators above 2^16, which a duty fraction realistically
+/// never uses.
+const fn mul_div_bitwise(a: u32, b: u32, d: u32) -> u32 {
+    // Doubling the remainder must stay in range. Halving both sides preserves the ratio, and only
+    // happens for denominators beyond 2^31, where the lost bit is far below the timer's resolution.
+    let (a, b, d) = if d > u32::MAX / 2 {
+        (a / 2, b / 2, d / 2)
+    } else {
+        (a, b, d)
+    };
+
+    if d == 0 {
+        return 0;
+    }
+
+    let mut quotient = 0;
+    let mut remainder = 0;
+
+    let mut bit = 32;
+    while bit > 0 {
+        bit -= 1;
+
+        // Double the running value. `remainder < d` holds here, so this stays in range.
+        quotient *= 2;
+        remainder *= 2;
+        if remainder >= d {
+            remainder -= d;
+            quotient += 1;
+        }
+
+        if (b >> bit) & 1 == 1 {
+            // `a < d` and `remainder < d`, so this stays in range given the halving above.
+            remainder += a;
+            if remainder >= d {
+                remainder -= d;
+                quotient += 1;
+            }
+        }
+    }
+
+    quotient
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mul_div, mul_div_bitwise};
+
+    fn reference(a: u32, b: u32, d: u32) -> u32 {
+        ((a as u64) * (b as u64) / (d as u64)) as u32
+    }
+
+    #[test]
+    fn duty_fractions() {
+        // Percentages against a period too long for `max * percent` to fit 32 bits.
+        for max in [1u32, 999, 65_535, 65_536, 4_000_000_000, u32::MAX] {
+            for percent in [0u32, 1, 33, 50, 99, 100] {
+                core::assert_eq!(
+                    mul_div(max, percent, 100),
+                    reference(max, percent, 100),
+                    "{max} {percent}%"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn large_denominators() {
+        // Denominators above 2^16 take the bitwise path.
+        for &(a, b, d) in &[
+            (u32::MAX, 1u32, 100_000u32),
+            (u32::MAX, 99_999, 100_000),
+            (1_000_000, 500_000, 1_000_000),
+            (u32::MAX, u32::MAX, u32::MAX),
+            (12345, 6789, 70_000),
+        ] {
+            core::assert_eq!(mul_div(a, b, d), reference(a, b, d), "{a} * {b} / {d}");
+        }
+    }
+
+    #[test]
+    fn bitwise_matches_reference() {
+        // `mul_div_bitwise` requires `a < d`; check it directly across a spread of inputs.
+        for &d in &[3u32, 100, 65_537, 1_000_000, u32::MAX / 2] {
+            for &b in &[0u32, 1, d / 3, d / 2, d] {
+                for &a in &[0u32, 1, d / 7, d - 1] {
+                    core::assert_eq!(mul_div_bitwise(a, b, d), reference(a, b, d), "{a} * {b} / {d}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_scale_is_exact() {
+        // 100% must land exactly on the period, never one tick short.
+        for max in [1u32, 65_535, 4_000_000_000, u32::MAX] {
+            core::assert_eq!(mul_div(max, 100, 100), max);
+            core::assert_eq!(mul_div(max, 1, 1), max);
+        }
     }
 }
 

@@ -54,3 +54,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: compute the baud rate divider in 32-bit arithmetic, which also fixes a panic for clocks above 67.1 MHz
 - feat: mspm0/i2c: add `Timing`, a timer period solved by a `const fn` and taken by `Config::with_timing`
 - fix: mspm0/i2c: program the I2C target's clock source from the resolved configuration, which for a bus speed above 200 kHz differed from `Config::clock_source`
+- fix: mspm0/tim: compute the PWM duty fraction without a 64-bit division
