@@ -1,12 +1,15 @@
-//! C-series deep sleep: STOP0/2 + STANDBY0/1 (no STOP1).
-//!
-//! Covers mspm0c110x and mspm0c1105/c1106. These families lack the STOP1 (4 MHz SYSOSC) sub-mode,
-//! and their STOP0 additionally clears `USELFCLK`.
+//! Deep-sleep entry.
 //!
 //! The entry sequence from the TRM is:
 //! `PMODECFG.DSLEEP` selects STOP vs STANDBY,
-//! `SYSOSCCFG.DISABLESTOP` selects STOP0 vs STOP2 (this family has no 4 MHz STOP1) with STOP0 also clearing `MCLKCFG.USELFCLK`,
-//! `MCLKCFG.STOPCLKSTBY` selects STANDBY0 vs STANDBY1.
+//! `SYSOSCCFG.{USE4MHZSTOP, DISABLESTOP}` selects the STOP sub-mode,
+//! `MCLKCFG.STOPCLKSTBY` selects the STANDBY sub-mode.
+//!
+//! Two things vary by device, both decided by the SYSCTL version in `build.rs`:
+//! - `mspm0_stop1` — whether `SYSOSCCFG.USE4MHZSTOP` exists, and with it the STOP1 sub-mode where
+//!   SYSOSC drops to 4 MHz instead of stopping. Absent on the C-series and H321x.
+//! - `mspm0_stop0_clears_lfclk` — whether entering STOP0 must also clear `MCLKCFG.USELFCLK`, which
+//!   the C-series TRM adds to the sequence.
 
 use critical_section::CriticalSection;
 use pac::sysctl::vals::Dsleep;
@@ -17,12 +20,19 @@ use crate::pac;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SleepMode {
-    /// SYSOSC available. Fastest wake, highest STOP current.
+    /// SYSOSC stays at full speed. Fastest wake, highest STOP current.
     Stop0,
+
+    /// SYSOSC limited to 4 MHz.
+    #[cfg(mspm0_stop1)]
+    Stop1,
+
     /// SYSOSC disabled; ULPCLK runs from LFCLK. Lowest STOP current.
     Stop2,
+
     /// low-speed peripherals retained.
     Standby0,
+
     /// only a few timers, named per chip, remain clocked. Lowest wake-capable current.
     Standby1,
 }
@@ -40,16 +50,36 @@ pub unsafe fn enter_sleep(_cs: CriticalSection, mode: SleepMode) {
 
     let dsleep = match mode {
         SleepMode::Stop0 | SleepMode::Stop2 => Dsleep::Stop,
+        #[cfg(mspm0_stop1)]
+        SleepMode::Stop1 => Dsleep::Stop,
         SleepMode::Standby0 | SleepMode::Standby1 => Dsleep::Standby,
     };
     sysctl.pmodecfg().modify(|w| w.set_dsleep(dsleep));
 
     match mode {
         SleepMode::Stop0 => {
-            sysctl.sysosccfg().modify(|w| w.set_disablestop(false));
+            sysctl.sysosccfg().modify(|w| {
+                #[cfg(mspm0_stop1)]
+                w.set_use4mhzstop(false);
+                w.set_disablestop(false);
+            });
+
+            #[cfg(mspm0_stop0_clears_lfclk)]
             sysctl.mclkcfg().modify(|w| w.set_uselfclk(false));
         }
-        SleepMode::Stop2 => sysctl.sysosccfg().modify(|w| w.set_disablestop(true)),
+
+        #[cfg(mspm0_stop1)]
+        SleepMode::Stop1 => sysctl.sysosccfg().modify(|w| {
+            w.set_use4mhzstop(true);
+            w.set_disablestop(false);
+        }),
+
+        SleepMode::Stop2 => sysctl.sysosccfg().modify(|w| {
+            #[cfg(mspm0_stop1)]
+            w.set_use4mhzstop(false);
+            w.set_disablestop(true);
+        }),
+
         SleepMode::Standby0 => sysctl.mclkcfg().modify(|w| w.set_stopclkstby(false)),
         SleepMode::Standby1 => sysctl.mclkcfg().modify(|w| w.set_stopclkstby(true)),
     }
@@ -57,12 +87,20 @@ pub unsafe fn enter_sleep(_cs: CriticalSection, mode: SleepMode) {
     super::arm_and_wait();
 }
 
-/// Map the family-independent [`SleepLevel`](super::SleepLevel) to this family's [`SleepMode`].
+/// Map the family-independent [`SleepLevel`](super::SleepLevel) to this device's [`SleepMode`].
+///
+/// [`SleepLevel`](super::SleepLevel) always names STOP1, since it describes how deep a driver is
+/// willing to let the chip go rather than what the chip implements. Where STOP1 does not exist it
+/// rounds *up* to STOP0, the next shallower mode, so a guard is never weakened.
 pub(super) fn level_to_mode(level: super::SleepLevel) -> SleepMode {
     use super::SleepLevel;
 
     match level {
-        SleepLevel::Stop0 | SleepLevel::Stop1 => SleepMode::Stop0,
+        SleepLevel::Stop0 => SleepMode::Stop0,
+        #[cfg(mspm0_stop1)]
+        SleepLevel::Stop1 => SleepMode::Stop1,
+        #[cfg(not(mspm0_stop1))]
+        SleepLevel::Stop1 => SleepMode::Stop0,
         SleepLevel::Stop2 => SleepMode::Stop2,
         SleepLevel::Standby0 => SleepMode::Standby0,
         SleepLevel::Standby1 => SleepMode::Standby1,

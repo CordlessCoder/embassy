@@ -60,3 +60,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/adc: check the sample clock against the device's `fADCCLK` instead of the span `FRANGE` can encode
 - fix: mspm0/trng: take the divider bands from the device's `TRNGCLKF` range instead of the 9.5-20 MHz the TRM quotes
 - fix: mspm0/time-driver: `Instant::now` stepped back a tick shortly after `init`, from a counter preload that had not crossed into the timer's clock domain
+- feat: mspm0/low-power: support deep sleep on every chip family, rather than failing to compile on the ones without a hand-written entry sequence
+

@@ -24,58 +24,9 @@ use portable_atomic::AtomicU8;
 
 use crate::pac;
 
-#[cfg(any(
-    mspm0l110x, mspm0l130x, mspm0l134x, mspm0l122x, mspm0l222x, mspm0g110x, mspm0g150x, mspm0g310x, mspm0g350x,
-    mspm0g151x, mspm0g351x, mspm0g518x
-))]
-#[path = "full.rs"]
 mod inner;
 
-#[cfg(any(mspm0c110x, mspm0c1105_c1106))]
-#[path = "c110x.rs"]
-mod inner;
-
-#[cfg(mspm0h321x)]
-#[path = "h321x.rs"]
-mod inner;
-
-#[cfg(any(
-    mspm0l110x,
-    mspm0l130x,
-    mspm0l134x,
-    mspm0l122x,
-    mspm0l222x,
-    mspm0g110x,
-    mspm0g150x,
-    mspm0g310x,
-    mspm0g350x,
-    mspm0g151x,
-    mspm0g351x,
-    mspm0g518x,
-    mspm0c110x,
-    mspm0c1105_c1106,
-    mspm0h321x
-))]
 pub use inner::{SleepMode, enter_sleep};
-
-#[cfg(not(any(
-    mspm0l110x,
-    mspm0l130x,
-    mspm0l134x,
-    mspm0l122x,
-    mspm0l222x,
-    mspm0g110x,
-    mspm0g150x,
-    mspm0g310x,
-    mspm0g350x,
-    mspm0g151x,
-    mspm0g351x,
-    mspm0g518x,
-    mspm0c110x,
-    mspm0c1105_c1106,
-    mspm0h321x
-)))]
-compile_error!("the `low-power` feature is not implemented for this chip family");
 
 pub use crate::sysctl::SleepLevel;
 
