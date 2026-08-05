@@ -102,6 +102,7 @@ rt = ["mspm0-metapac/rt"]
 ## Use [`defmt`](https://docs.rs/defmt/latest/defmt/) for logging
 defmt = [
     "dep:defmt",
+    "mspm0-metapac/defmt",
     "embassy-sync/defmt",
     "embassy-embedded-hal/defmt",
     "embassy-hal-internal/defmt",

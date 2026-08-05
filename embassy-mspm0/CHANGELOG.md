@@ -37,3 +37,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/wwdt: add `Config::stop_in_sleep`, so the watchdog no longer has to count through deep sleep
 - feat: mspm0/wwdt: add `Watchdog::run`, an async pet loop to spawn as a task, behind the new `time` feature
 - fix: mspm0/wwdt: remove `Timeout::USec32250`, a misnamed duplicate of `USec31250`
+- fix: mspm0: forward the `defmt` feature to `mspm0-metapac`, so PAC value types implement `defmt::Format`
