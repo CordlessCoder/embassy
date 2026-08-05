@@ -10,7 +10,7 @@ use embassy_sync::waitqueue::AtomicWaker;
 use mspm0_metapac::trng::regs::Int;
 use mspm0_metapac::trng::vals::Cmd::*;
 use mspm0_metapac::trng::vals::{self, PwrenKey, Ratio, RstctlKey};
-use rand_core::{TryCryptoRng, TryRngCore};
+use rand_core::{TryCryptoRng, TryRng};
 
 use crate::peripherals::TRNG;
 use crate::sealed;
@@ -141,7 +141,7 @@ impl core::error::Error for Error {}
 
 /// True Random Number Generator (TRNG) Driver for MSPM0 series.
 ///
-/// The driver provides blocking random numbers with [`TryRngCore`] methods and asynchronous counterparts in [`Trng::async_read_u32`], [`Trng::async_read_u64`], and [`Trng::async_read_bytes`].
+/// The driver provides blocking random numbers with [`TryRng`] methods and asynchronous counterparts in [`Trng::async_read_u32`], [`Trng::async_read_u64`], and [`Trng::async_read_bytes`].
 ///
 /// The TRNG can be configured with different decimation rates. See [`DecimRate`], [`FastDecimRate`], and [`CryptoDecimRate`].
 /// The TRNG can be instantiated with [`Trng::new`], [`Trng::new_fast`], or [`Trng::new_secure`].
@@ -154,7 +154,7 @@ impl core::error::Error for Error {}
 /// use embassy_executor::Spawner;
 /// use embassy_mspm0::Config;
 /// use embassy_mspm0::trng::Trng;
-/// use rand_core::TryRngCore;
+/// use rand_core::TryRng;
 /// use {defmt_rtt as _, panic_halt as _};
 ///
 /// #[embassy_executor::main]
@@ -220,9 +220,9 @@ impl<'d, D: SecurityMarker> Trng<'d, D> {
 
     /// Asynchronously read a 32-bit random value from the TRNG.
     ///
-    /// The synchronous counterpart is given by [`TryRngCore::try_next_u32`].
+    /// The synchronous counterpart is given by [`TryRng::try_next_u32`].
     ///
-    /// As with the [`synchronous`](TryRngCore) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
+    /// As with the [`synchronous`](TryRng) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
     #[cfg(feature = "rt")]
     #[inline(always)]
     pub async fn async_read_u32(&mut self) -> Result<u32, Error> {
@@ -231,9 +231,9 @@ impl<'d, D: SecurityMarker> Trng<'d, D> {
 
     /// Asynchronously read a 64-bit random value from the TRNG.
     ///
-    /// The synchronous counterpart is given by [`TryRngCore::try_next_u64`].
+    /// The synchronous counterpart is given by [`TryRng::try_next_u64`].
     ///
-    /// As with the [`synchronous`](TryRngCore) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
+    /// As with the [`synchronous`](TryRng) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
     #[cfg(feature = "rt")]
     #[inline(always)]
     pub async fn async_read_u64(&mut self) -> Result<u64, Error> {
@@ -242,9 +242,9 @@ impl<'d, D: SecurityMarker> Trng<'d, D> {
 
     /// Asynchronously fill `dest` with random bytes from the TRNG.
     ///
-    /// The synchronous counterpart is given by [`TryRngCore::try_fill_bytes`].
+    /// The synchronous counterpart is given by [`TryRng::try_fill_bytes`].
     ///
-    /// As with the [`synchronous`](TryRngCore) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
+    /// As with the [`synchronous`](TryRng) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
     ///
     /// > **Note**
     /// When an error condition occurs, the buffer may be partially filled.
@@ -255,10 +255,10 @@ impl<'d, D: SecurityMarker> Trng<'d, D> {
     }
 }
 
-/// Implements the fallible [`TryRngCore`].
+/// Implements the fallible [`TryRng`].
 ///
 /// If any of the methods give an [`Err`], the operation may be retried up to two times after calling [`Trng::fail_reset`].
-impl<D: SecurityMarker> TryRngCore for Trng<'_, D> {
+impl<D: SecurityMarker> TryRng for Trng<'_, D> {
     type Error = Error;
 
     #[inline(always)]
@@ -502,7 +502,7 @@ impl Drop for TrngInner<'_> {
     }
 }
 
-impl TryRngCore for TrngInner<'_> {
+impl TryRng for TrngInner<'_> {
     type Error = Error;
 
     fn try_next_u32(&mut self) -> Result<u32, Error> {
