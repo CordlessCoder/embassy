@@ -1014,7 +1014,7 @@ impl<'d, M: Mode> I2c<'d, M> {
         Ok(())
     }
 
-    /// Has the SCL-low timeout fired? Always false unless [`Config::clock_low_timeout`] enabled it.
+    /// Has the SCL-low timeout fired? Always false unless [`Config::clock_low_timeout_us`] enabled it.
     fn timed_out(&self) -> bool {
         self.info.regs.cpu_int(0).ris().read().timeouta()
     }
