@@ -7,19 +7,19 @@ use core::task::Poll;
 
 use cortex_m::asm;
 use embassy_hal_internal::Peri;
-#[cfg(feature = "rt")]
 use embassy_sync::waitqueue::AtomicWaker;
 use mspm0_metapac::trng::regs::Int;
 use mspm0_metapac::trng::vals::Cmd::*;
 use mspm0_metapac::trng::vals::{self, PwrenKey, Ratio, RstctlKey};
 use rand_core::{TryCryptoRng, TryRng};
 
+use crate::interrupt_group::Binding;
 use crate::peripherals::TRNG;
 use crate::sealed;
 use crate::sysctl::{LowPowerInstance, WakeGuard};
 
-/// Woken by the TRNG interrupt, so it only exists where there is one to install.
-#[cfg(feature = "rt")]
+/// Woken by the TRNG interrupt. Reachable only through [`InterruptHandler`], so a binary that binds
+/// no handler drops it along with the handler.
 static WAKER: AtomicWaker = AtomicWaker::new();
 
 /// Decimation rate marker types. See [`DecimRate`].
@@ -152,13 +152,17 @@ impl core::error::Error for Error {}
 ///
 /// Usage example, taking the peripheral from `embassy_mspm0::init`:
 /// ```no_run
-/// use embassy_mspm0::Peri;
 /// use embassy_mspm0::peripherals::TRNG;
-/// use embassy_mspm0::trng::Trng;
+/// use embassy_mspm0::trng::{self, Trng};
+/// use embassy_mspm0::{Peri, bind_group_interrupts};
 /// use rand_core::TryRng;
 ///
+/// bind_group_interrupts!(struct Irqs {
+///     TRNG => trng::InterruptHandler;
+/// });
+///
 /// fn fill(peripheral: Peri<'static, TRNG>) {
-///     let mut trng = Trng::new(peripheral).expect("Failed to initialize TRNG");
+///     let mut trng = Trng::new(peripheral, Irqs).expect("Failed to initialize TRNG");
 ///     let mut randomness = [0u8; 16];
 ///
 ///     trng.try_fill_bytes(&mut randomness).unwrap();
@@ -173,8 +177,11 @@ pub struct Trng<'d, L: SecurityMarker> {
 impl<'d> Trng<'d, Crypto> {
     /// Setup a TRNG driver with the default safe decimation rate (Decim4).
     #[inline(always)]
-    pub fn new(peripheral: Peri<'d, TRNG>) -> Result<Self, Error> {
-        Self::new_secure(peripheral, CryptoDecimRate::Decim4)
+    pub fn new(
+        peripheral: Peri<'d, TRNG>,
+        _irq: impl Binding<crate::interrupt_group::TRNG, InterruptHandler> + 'd,
+    ) -> Result<Self, Error> {
+        Self::new_secure(peripheral, _irq, CryptoDecimRate::Decim4)
     }
 }
 
@@ -184,7 +191,11 @@ impl<'d> Trng<'d, Fast> {
     ///
     /// <div class="warning"> The created TRNG is not suitable for cryptography. Use <a href="struct.Trng.html#method.new_secure"><code>Trng::new_secure</code></a> instead. </div>
     #[inline(always)]
-    pub fn new_fast(peripheral: Peri<'d, TRNG>, rate: FastDecimRate) -> Result<Self, Error> {
+    pub fn new_fast(
+        peripheral: Peri<'d, TRNG>,
+        _irq: impl Binding<crate::interrupt_group::TRNG, InterruptHandler> + 'd,
+        rate: FastDecimRate,
+    ) -> Result<Self, Error> {
         Self::new_with_rate(peripheral, rate)
     }
 }
@@ -192,7 +203,11 @@ impl<'d> Trng<'d, Fast> {
 impl<'d> Trng<'d, Crypto> {
     /// Setup a TRNG driver with a specific cryptographic decimation rate.
     #[inline(always)]
-    pub fn new_secure(peripheral: Peri<'d, TRNG>, rate: CryptoDecimRate) -> Result<Self, Error> {
+    pub fn new_secure(
+        peripheral: Peri<'d, TRNG>,
+        _irq: impl Binding<crate::interrupt_group::TRNG, InterruptHandler> + 'd,
+        rate: CryptoDecimRate,
+    ) -> Result<Self, Error> {
         Self::new_with_rate(peripheral, rate)
     }
 }
@@ -574,12 +589,18 @@ const _: () = {
     core::assert!(matches!(trng_ratio(8 * CLK_MIN_HZ), Some(Ratio::DivBy8)) && divides_into_window(8 * CLK_MIN_HZ, 8));
 };
 
-// This symbol is weakly defined as DefaultHandler and is called by the interrupt group implementation.
-// Defining this as no_mangle is required so that the linker will pick this up.
-#[cfg(feature = "rt")]
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-fn TRNG() {
-    regs().imask().write_value(Int::default()); // Disable all interrupts.
-    WAKER.wake();
+/// Interrupt handler for the TRNG.
+///
+/// TRNG shares an NVIC line through an interrupt group, so bind it with
+/// [`bind_group_interrupts!`](crate::bind_group_interrupts) rather than
+/// [`bind_interrupts!`](crate::bind_interrupts).
+pub struct InterruptHandler {
+    _private: (),
+}
+
+impl crate::interrupt_group::Handler<crate::interrupt_group::TRNG> for InterruptHandler {
+    unsafe fn on_interrupt() {
+        regs().imask().write_value(Int::default()); // Disable all interrupts.
+        WAKER.wake();
+    }
 }

@@ -463,6 +463,25 @@ fn generate_groups() -> TokenStream {
         }
     });
 
+    // One marker per source a group dispatches, so a binding can name the source it handles. A source
+    // has no NVIC line of its own, so `interrupt::typelevel` has nothing to name it with.
+    let sources = METADATA
+        .interrupt_groups
+        .iter()
+        .flat_map(|group| group.interrupts.iter())
+        .map(|interrupt| {
+            let name = Ident::new(interrupt.name, Span::call_site());
+            let doc = format!("The `{}` source, dispatched by its interrupt group.", interrupt.name);
+
+            quote! {
+                #[doc = #doc]
+                #[allow(non_camel_case_types)]
+                pub struct #name;
+
+                impl crate::interrupt_group::Source for #name {}
+            }
+        });
+
     quote! {
         #(#groups)*
 
@@ -471,6 +490,10 @@ fn generate_groups() -> TokenStream {
             unsafe extern "Rust" {
                 #(#group_vectors)*
             }
+        }
+
+        pub mod group_source {
+            #(#sources)*
         }
     }
 }

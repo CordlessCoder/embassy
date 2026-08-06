@@ -88,6 +88,103 @@ pub(crate) use mspm0_metapac as pac;
 
 pub use crate::_generated::interrupt;
 
+/// Interrupt sources dispatched by an interrupt group rather than by an NVIC line of their own.
+///
+/// Several peripherals share one NVIC line, and the group's handler reads `INT_GROUPn.IIDX` to
+/// decide which of them fired and calls that source's symbol. The symbol is weakly defined as
+/// `DefaultHandler`, so a source nothing handles costs its caller a branch and nothing else — which
+/// is why a driver that needs a handler asks to be given one, the same way an NVIC-line driver does.
+///
+/// [`interrupt::typelevel`] cannot describe these: it is keyed on NVIC numbers, and a group source
+/// has none. Bind them with [`bind_group_interrupts!`] instead.
+pub mod interrupt_group {
+    pub use crate::_generated::group_source::*;
+
+    /// A source an interrupt group dispatches.
+    pub trait Source {}
+
+    /// A handler for one group source.
+    pub trait Handler<S: Source> {
+        /// Called by the group's handler when this source fired.
+        ///
+        /// # Safety
+        ///
+        /// Called from an interrupt, and only by the generated group handler.
+        unsafe fn on_interrupt();
+    }
+
+    /// Proof that `H` is bound to `S`, produced by [`bind_group_interrupts!`].
+    ///
+    /// # Safety
+    ///
+    /// Implementing this without defining the source's symbol lets a driver wait on an interrupt
+    /// that reaches no handler. Use the macro.
+    pub unsafe trait Binding<S: Source, H: Handler<S>> {}
+}
+
+/// Macro to bind handlers to sources dispatched by an interrupt group.
+///
+/// The counterpart to [`bind_interrupts!`] for peripherals that share an NVIC line through an
+/// interrupt group — see [`interrupt_group`]. It defines the source's symbol, which is what makes
+/// the group's handler reach the driver, and implements
+/// [`Binding`](crate::interrupt_group::Binding) so a driver can require one.
+///
+/// ```rust,ignore
+/// use embassy_mspm0::{bind_group_interrupts, trng};
+///
+/// bind_group_interrupts!(struct Irqs {
+///     TRNG => trng::InterruptHandler;
+/// });
+/// ```
+#[macro_export]
+macro_rules! bind_group_interrupts {
+    ($(#[$attr:meta])* $vis:vis struct $name:ident {
+        $(
+            $(#[cfg($cond_source:meta)])?
+            $source:ident => $(
+                $(#[cfg($cond_handler:meta)])?
+                $handler:ty
+            ),*;
+        )*
+    }) => {
+        #[derive(Copy, Clone)]
+        $(#[$attr])*
+        $vis struct $name;
+
+        $(
+            // Deliberately not `extern "C"`: the generated group handler declares these
+            // `extern "Rust"`, and the definition has to agree with it.
+            #[allow(non_snake_case)]
+            #[unsafe(no_mangle)]
+            $(#[cfg($cond_source)])?
+            fn $source() {
+                unsafe {
+                    $(
+                        $(#[cfg($cond_handler)])?
+                        <$handler as $crate::interrupt_group::Handler<
+                            $crate::interrupt_group::$source,
+                        >>::on_interrupt();
+                    )*
+                }
+            }
+
+            $(#[cfg($cond_source)])?
+            $crate::bind_group_interrupts!(@inner
+                $(
+                    $(#[cfg($cond_handler)])?
+                    unsafe impl $crate::interrupt_group::Binding<
+                        $crate::interrupt_group::$source,
+                        $handler,
+                    > for $name {}
+                )*
+            );
+        )*
+    };
+    (@inner $($t:tt)*) => {
+        $($t)*
+    }
+}
+
 /// Macro to bind interrupts to handlers.
 ///
 /// This defines the right interrupt handlers, and creates a unit struct (like `struct Irqs;`)

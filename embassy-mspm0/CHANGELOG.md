@@ -78,3 +78,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/i2c: support 10-bit addressing in the controller, including `embedded_hal::i2c::I2c<TenBitAddress>` for the blocking and async drivers
 - **breaking** mspm0/i2c-target: `Config::target_addr` is an `Address`, and may be 10-bit
 - feat: mspm0/i2c-target: add `Config::second_addr`, a second address to answer on with a mask covering a range of them, plus `I2cTarget::matched_address` to ask which one a command arrived on. Pairing it with a 10-bit primary address is rejected, `OAR2` being compared only in 7-bit mode
+- **breaking** mspm0/trng: `Trng::new`, `new_fast` and `new_secure` take an interrupt binding, made with the new `bind_group_interrupts!`; without one the handler is no longer linked into every binary

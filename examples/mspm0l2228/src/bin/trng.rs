@@ -4,23 +4,29 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::Config;
 use embassy_mspm0::gpio::{Level, Output};
-use embassy_mspm0::trng::{CryptoDecimRate, Trng};
+use embassy_mspm0::trng::{self, CryptoDecimRate, Trng};
+use embassy_mspm0::{Config, bind_group_interrupts};
 use embassy_time::Timer;
 use panic_halt as _;
 use rand_core::TryRng;
+
+// TRNG shares an NVIC line with the rest of its interrupt group, so it binds through
+// `bind_group_interrupts!` rather than `bind_interrupts!`.
+bind_group_interrupts!(struct Irqs {
+    TRNG => trng::InterruptHandler;
+});
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Config::default());
 
     let mut trng = expect!(
-        Trng::new_secure(p.TRNG, CryptoDecimRate::Decim6),
+        Trng::new_secure(p.TRNG, Irqs, CryptoDecimRate::Decim6),
         "Failed to initialize RNG"
     );
     // Alternatively, use the default crypto-secure decimation rate (Decim4).
-    // let mut trng = expect!(Trng::new(p.TRNG), "Failed to initialize RNG");
+    // let mut trng = expect!(Trng::new(p.TRNG, Irqs), "Failed to initialize RNG");
 
     // A buffer to collect random bytes in.
     let mut randomness = [0u8; 16];
