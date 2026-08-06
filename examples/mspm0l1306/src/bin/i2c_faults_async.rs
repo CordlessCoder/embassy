@@ -11,6 +11,13 @@
 //! for the next transfer, so it is worth measuring rather than assuming.
 //!
 //! Runs on MFCLK, which is `Config::default` and the setting the blocking path failed under.
+//!
+//! # Reading phase C
+//!
+//! `stale` and `wedged` are defects: bytes from the wrong transfer, or a transfer that never returned.
+//! `target would not release SDA` is not — nine clocks do not rescue every target, and this one keeps
+//! shifting data out and holding the line, so `recover_stuck_bus` reports it rather than pretending.
+//! A pass is `0 stale, 0 wedged`, whatever the last figure says.
 
 #![no_std]
 #![no_main]
@@ -80,6 +87,9 @@ async fn main(_spawner: Spawner) -> ! {
     let mut false_ok = 0u32;
     let mut cancels = 0u32;
     let mut wedged = 0u32;
+    // Counted apart from `stale`: a target that will not release SDA is the target's limit, not the
+    // driver returning another transfer's bytes. Conflated, a clean run reads as dozens of failures.
+    let mut unrecoverable = 0u32;
 
     loop {
         pass += 1;
@@ -192,8 +202,8 @@ async fn main(_spawner: Spawner) -> ! {
                     match i2c.recover_stuck_bus() {
                         Ok(()) => info!("pass {} cancel {}: bus was stuck, recovered", pass, i),
                         Err(e) => {
-                            error!("pass {} cancel {}: bus stuck and unrecoverable: {}", pass, i, e);
-                            stale += 1;
+                            warn!("pass {} cancel {}: bus stuck and unrecoverable: {}", pass, i, e);
+                            unrecoverable += 1;
                             continue;
                         }
                     }
@@ -236,8 +246,8 @@ async fn main(_spawner: Spawner) -> ! {
         }
 
         info!(
-            "pass {}: phase C done, {} cancelled, {} stale, {} wedged",
-            pass, cancels, stale, wedged
+            "pass {}: phase C done, {} cancelled, {} stale, {} wedged, {} target would not release SDA",
+            pass, cancels, stale, wedged, unrecoverable
         );
         Timer::after_millis(SETTLE_MS).await;
     }
