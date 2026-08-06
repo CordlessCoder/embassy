@@ -587,6 +587,11 @@ impl<'d, M: Mode> I2c<'d, M> {
         // built with.
         self.resolved = resolved;
 
+        // Off across the reprogramming and back on afterwards, but only if it was on to begin with: this
+        // method is shared by both modes, `new_async` is what enables the line, and leaving it disabled
+        // strands every later async transfer — the transfer completes on the wire and nothing wakes the
+        // task waiting on it.
+        let was_enabled = self.info.interrupt.is_enabled();
         self.info.interrupt.disable();
 
         if let Some(ref sda) = self.sda {
@@ -597,7 +602,15 @@ impl<'d, M: Mode> I2c<'d, M> {
             scl.update_pf(config.scl_pf());
         }
 
-        self.init(&resolved)
+        let configured = self.init(&resolved);
+
+        if was_enabled {
+            self.info.interrupt.unpend();
+            // SAFETY: re-arming a line this driver owns and had enabled a moment ago.
+            unsafe { self.info.interrupt.enable() };
+        }
+
+        configured
     }
 
     fn init(&mut self, resolved: &Resolved) -> Result<(), ConfigError> {

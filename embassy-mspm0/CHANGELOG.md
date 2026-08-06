@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/low-power: support deep sleep on every chip family, rather than failing to compile on the ones without a hand-written entry sequence
 - feat: mspm0/low-power: add `Config::min_sleep`, below which deep sleep is skipped for a plain `WFI`; defaults to four times the device's published wake-up latency
 - feat: mspm0: add `unsafe-atomics-single-core`, emulating atomic read-modify-writes inline instead of through `critical-section`. Pair with `default-features = false`
+- fix: mspm0/i2c: `set_config` left the interrupt disabled, so every async transfer after it completed on the bus and never woke the task
 - fix: mspm0/i2c: apply the `I2C_ERR_13` settling delay before polling `CSR`, without which a controller transfer was checked before it started and a NACK came back as success
 - fix: mspm0/i2c: the async entry guards wait on `CSTOP` instead of spinning on `BUSBSY`
 - fix: mspm0/i2c: dropping an async transfer no longer wedges the peripheral; the next one resets the controller, which is the only thing that frees the bus afterwards
