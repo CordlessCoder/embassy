@@ -23,6 +23,6 @@ cargo run --release --bin min_sleep_gate
 cannot be re-flashed normally — recover it with a mass erase in UniFlash. Each example waits a few
 seconds before its first sleep to leave a window for `probe-rs` to take the device back.
 
-This crate enables `unsafe-atomics-single-core` and `gpio-embassy-tasks-only`, which together take a GPIO
-wake from 73.4 µs to 39.2 µs on this part — time spent out of sleep, so it is current. `wake_latency_probe`
-is what measures it, and its module doc says how the segments divide up.
+This crate enables `unsafe-atomics-single-core`, which takes a GPIO wake from 35.6 µs to 31.3 µs on this
+part — time spent out of sleep, so it is current. `wake_latency_probe` is what measures it, and its module
+doc says how the segments divide up.

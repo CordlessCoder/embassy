@@ -21,6 +21,6 @@ The L-series counterpart to `examples/mspm0g3507-lowpower`. Running the same mea
 point: the two parts are different SYSCTL families with different published wake-up latencies, and this
 one has no STOP0 figure at all.
 
-This crate enables `unsafe-atomics-single-core` and `gpio-embassy-tasks-only`, which shorten every GPIO wake
-and so the time spent out of sleep. Measured on a G3507, not here — see `wake_latency_probe` in
-`examples/mspm0g3507-lowpower` for the instrumented version.
+This crate enables `unsafe-atomics-single-core`, which shortens every GPIO wake and so the time spent out
+of sleep. Measured on a G3507, not here — see `wake_latency_probe` in `examples/mspm0g3507-lowpower` for
+the instrumented version.

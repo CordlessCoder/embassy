@@ -9,9 +9,9 @@ publish = false
 # `executor-thread` here brings in `low-power` and provides the executor that deep-sleeps on idle, so
 # `embassy-executor` must not also select a platform of its own.
 #
-# `unsafe-atomics-single-core` and `gpio-embassy-tasks-only` halve the cost of a GPIO wake, which is current
-# drawn before the chip can sleep again. The first needs `default-features = false`, hence the explicit `rt`.
-embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", default-features = false, features = ["mspm0g3507pm", "defmt", "rt", "time-driver-any", "time", "executor-thread", "executor-interrupt", "unstable-pac", "_probe", "unsafe-atomics-single-core", "gpio-embassy-tasks-only"] }
+# `unsafe-atomics-single-core` shortens a GPIO wake, which is current drawn before the chip can sleep
+# again. It needs `default-features = false`, hence the explicit `rt`.
+embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", default-features = false, features = ["mspm0g3507pm", "defmt", "rt", "time-driver-any", "time", "executor-thread", "executor-interrupt", "unstable-pac", "_probe", "unsafe-atomics-single-core"] }
 embassy-executor = { version = "0.10.0", path = "../../embassy-executor" }
 embassy-sync = { version = "0.8.0", path = "../../embassy-sync", features = ["defmt"] }
 embassy-time = { version = "0.5.1", path = "../../embassy-time", features = ["defmt"] }

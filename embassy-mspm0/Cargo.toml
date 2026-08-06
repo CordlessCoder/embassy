@@ -150,13 +150,6 @@ nrst-pin-as-gpio = []
 ## Allow using the SWD pins as regular GPIO pins.
 swd-pins-as-gpio = []
 
-## Store the waiting task rather than a full waker for GPIO edge waits.
-##
-## Worth about 37% of a GPIO wake and a kilobyte of flash, at 4 bytes of RAM per pin. **Every GPIO edge wait
-## must then be awaited from an `embassy-executor` task**: any other waker panics, including
-## `embassy_futures::block_on`. Opt in only if that holds for the whole application.
-gpio-embassy-tasks-only = ["dep:embassy-executor"]
-
 ## Deep-sleep support: the [`low_power`] module, the sleep guards the drivers hold, and the executor
 ## that idles into a sleep mode.
 ##

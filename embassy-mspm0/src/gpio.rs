@@ -12,8 +12,6 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 #[cfg(feature = "rt")]
 use core::task::{Poll, Waker};
 
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
-use embassy_executor::raw::{TaskRef, task_from_waker, wake_task};
 use embassy_hal_internal::{Peri, PeripheralType, impl_peripheral};
 
 use crate::pac::gpio::vals::*;
@@ -462,9 +460,9 @@ impl EdgeArm {
     /// The order inside matters in one place: the unmask is last, so the waiter is reachable and the
     /// waker is stored before any edge can be reported.
     fn arm(&self, waker: &Waker) {
-        // Before the section, not inside it: with `gpio-embassy-tasks-only` this is what rejects a waker
-        // that is not an embassy task's, and it does it by panicking.
-        let parked = Waiter::parked(waker);
+        // Before the section: a `Waker`'s clone is someone else's code, and it has no business running
+        // with interrupts off.
+        let parked = waker.clone();
 
         let polarity = if DETECT_BOTH_EDGES {
             Polarity::RiseFall
@@ -490,7 +488,7 @@ impl EdgeArm {
             });
 
             // Nothing was here to displace: the node is fresh, and this is its only arming.
-            let _ = self.waiter.store_parked(parked);
+            let _ = self.waiter.waker.replace(Some(parked));
 
             // SAFETY: interrupts are off, so no reader of the list can run; and `self` is borrowed for
             // the whole wait, which `EdgeArm::drop` ends by unlinking.
@@ -534,13 +532,6 @@ impl Drop for EdgeArm {
     }
 }
 
-/// What a [`Waiter`] stores to wake with: the waker itself, or the task it belongs to.
-#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
-type Parked = Waker;
-
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
-type Parked = TaskRef;
-
 /// One task waiting on one pin, linked into its port's list of waiters.
 ///
 /// **The interrupt reads this with no lock held**, which is sound because of who writes it: the owning
@@ -569,12 +560,7 @@ struct Waiter {
     /// A `Waker` is two words, so the interrupt could read it half-written if the task ever wrote it with
     /// interrupts on. It does not: [`Waiter::store_waker`] is called from inside a critical section, and
     /// [`Waiter::register`] takes one before it writes.
-    #[cfg(not(feature = "gpio-embassy-tasks-only"))]
     waker: Cell<Option<Waker>>,
-
-    /// Whom to wake, as one word, which needs no critical section to store.
-    #[cfg(feature = "gpio-embassy-tasks-only")]
-    task: AtomicPtr<()>,
 }
 
 /// SAFETY: the pointers a `Waiter` holds only mean anything while it is linked, and linking happens after
@@ -595,10 +581,7 @@ impl Waiter {
             bit,
             edge,
             outstanding: AtomicBool::new(true),
-            #[cfg(not(feature = "gpio-embassy-tasks-only"))]
             waker: Cell::new(None),
-            #[cfg(feature = "gpio-embassy-tasks-only")]
-            task: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
@@ -654,59 +637,24 @@ impl Waiter {
         }
     }
 
-    /// Work out what to store for `waker`, before any critical section is taken.
-    ///
-    /// # Panics
-    ///
-    /// With `gpio-embassy-tasks-only`, if the waker is not an embassy task's — which is what that feature
-    /// asserts about every edge wait in the build. Kept out of the critical section on purpose: a panic
-    /// with interrupts off takes the log with it.
-    fn parked(waker: &Waker) -> Parked {
-        #[cfg(not(feature = "gpio-embassy-tasks-only"))]
-        return waker.clone();
-
-        #[cfg(feature = "gpio-embassy-tasks-only")]
-        return task_from_waker(waker);
-    }
-
-    /// Store what [`Waiter::parked`] worked out, handing back whatever it displaced.
-    ///
-    /// Every caller is inside a critical section, which is why the old value is returned rather than
-    /// dropped here: a `Waker`'s drop is someone else's code, and it has no business running with
-    /// interrupts off.
-    #[must_use = "the displaced waker has to be dropped outside the critical section"]
-    fn store_parked(&self, parked: Parked) -> Option<Parked> {
-        #[cfg(not(feature = "gpio-embassy-tasks-only"))]
-        return self.waker.replace(Some(parked));
-
-        #[cfg(feature = "gpio-embassy-tasks-only")]
-        {
-            self.task.store(parked.as_raw().as_ptr(), Ordering::Release);
-
-            None
-        }
-    }
-
     /// Store `waker` from a poll, where interrupts are on.
     ///
     /// The waker a future is polled with almost never changes, so the common path is a comparison and no
     /// write at all — which is the only reason this can afford to be on the completing poll's path.
     fn register(&self, waker: &Waker) {
-        #[cfg(not(feature = "gpio-embassy-tasks-only"))]
+        // SAFETY: this task is the only writer, so nothing can be changing it under this read.
+        if let Some(stored) = unsafe { &*self.waker.as_ptr() }
+            && stored.will_wake(waker)
         {
-            // SAFETY: this task is the only writer, so nothing can be changing it under this read.
-            if let Some(stored) = unsafe { &*self.waker.as_ptr() }
-                && stored.will_wake(waker)
-            {
-                return;
-            }
+            return;
         }
 
-        let parked = Self::parked(waker);
+        // Cloned before the section: a `Waker`'s clone is someone else's code and has no business
+        // running with interrupts off. Its drop has none either, so the displaced one is bound rather
+        // than discarded and goes out of scope out here.
+        let parked = waker.clone();
 
-        // Bound rather than discarded: this is what drops the waker it displaced, and it has to happen
-        // out here rather than inside the section.
-        let _displaced = critical_section::with(|_cs| self.store_parked(parked));
+        let _displaced = critical_section::with(|_cs| self.waker.replace(Some(parked)));
     }
 
     /// Report the edge: mark the wait done and wake whoever is on it.
@@ -716,17 +664,9 @@ impl Waiter {
     fn report(&self) {
         self.outstanding.store(false, Ordering::Relaxed);
 
-        #[cfg(not(feature = "gpio-embassy-tasks-only"))]
         // SAFETY: written only by the owning task, and only with interrupts off.
         if let Some(waker) = unsafe { &*self.waker.as_ptr() } {
             waker.wake_by_ref();
-        }
-
-        #[cfg(feature = "gpio-embassy-tasks-only")]
-        if let Some(task) = NonNull::new(self.task.load(Ordering::Acquire)) {
-            // SAFETY: written by `store_waker` from `as_raw`, and an embassy task lives for the rest of
-            // the program.
-            unsafe { wake_task(TaskRef::from_raw(task)) };
         }
     }
 }
