@@ -20,12 +20,36 @@ use crate::pac::{self};
 use crate::sysctl::WakeGuard;
 use crate::{Peri, i2c, i2c_target, interrupt};
 
+/// A second address for the target to answer on, with the bits of it to ignore.
+///
+/// 7-bit only, and only alongside a 7-bit [`Config::target_addr`]: `OAR2` is compared just while the
+/// target is in 7-bit mode, so pairing it with a 10-bit primary address is rejected with
+/// [`ConfigError::SecondAddressWith10Bit`] rather than accepted and never matched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SecondAddress {
+    /// The address to answer on, 7-bit.
+    pub addr: u8,
+
+    /// Bits set here are not compared, so the target answers a range of addresses rather than one.
+    ///
+    /// `0` matches [`Self::addr`] alone. Which address in the range a command arrived on is
+    /// [`I2cTarget::matched_address`].
+    ///
+    /// A range covering `0x00` reports its commands as [`Command::GeneralCall`], that address meaning
+    /// exactly that on the wire.
+    pub mask: u8,
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Config
 pub struct Config {
     /// Target address to answer on.
     pub target_addr: Address,
+
+    /// A second address to answer on, alongside [`Self::target_addr`].
+    pub second_addr: Option<SecondAddress>,
 
     /// Control if the target should ack to and report general calls.
     pub general_call: bool,
@@ -35,6 +59,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             target_addr: Address::SevenBit(0x48),
+            second_addr: None,
             general_call: false,
         }
     }
@@ -260,6 +285,18 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             return Err(ConfigError::InvalidTargetAddress);
         }
 
+        if let Some(second) = target_config.second_addr {
+            // Both `TOAR2` fields are seven bits wide, so anything larger would be answered on a
+            // truncated address rather than rejected.
+            if second.addr >= 0x80 || second.mask >= 0x80 {
+                return Err(ConfigError::InvalidTargetAddress);
+            }
+
+            if matches!(target_config.target_addr, Address::TenBit(_)) {
+                return Err(ConfigError::SecondAddressWith10Bit);
+            }
+        }
+
         regs.target(0).tctr().modify(|w| {
             w.set_active(false);
         });
@@ -300,6 +337,16 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             w.set_tmode(target_config.target_addr.mode());
         });
 
+        // Written whether or not a second address was asked for, so that reconfiguring without one
+        // disables the address the previous configuration answered on.
+        regs.target(0).toar2().write(|w| {
+            if let Some(second) = target_config.second_addr {
+                w.set_oar2en(true);
+                w.set_oar2(second.addr);
+                w.set_oar2_mask(second.mask);
+            }
+        });
+
         self.state.clock.store(resolved.clock_hz, Ordering::Relaxed);
 
         regs.target(0).tctr().modify(|w| {
@@ -330,6 +377,28 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             *b = regs.target(0).trxdata().read().value();
             *offset += 1;
         }
+    }
+
+    /// The address the last command was addressed to.
+    ///
+    /// Worth asking only with a masked [`SecondAddress`], where the controller's address is one of a
+    /// range rather than the one that was configured. The peripheral re-evaluates this on every address
+    /// comparison, so it answers for the last command and not for any earlier one.
+    pub fn matched_address(&self) -> Address {
+        let tsr = self.info.regs.target(0).tsr().read();
+
+        // `TOAR2` has no mode bit, so a match against the second address is 7-bit even on a target whose
+        // primary address is not.
+        if tsr.oar2sel() || matches!(self.target_config.target_addr, Address::SevenBit(_)) {
+            Address::SevenBit(tsr.addrmatch() as u8)
+        } else {
+            Address::TenBit(tsr.addrmatch())
+        }
+    }
+
+    /// Whether the last command was addressed to [`Config::second_addr`] rather than the primary address.
+    pub fn matched_second_address(&self) -> bool {
+        self.info.regs.target(0).tsr().read().oar2sel()
     }
 
     /// Blocking function to empty the tx fifo

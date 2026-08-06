@@ -149,6 +149,13 @@ pub enum ConfigError {
     /// The address does not fit the addressing mode it was given in.
     InvalidTargetAddress,
 
+    /// A second target address was asked for alongside a 10-bit primary address.
+    ///
+    /// `OAR2` is only compared while the target is in 7-bit mode, so the second address would never
+    /// match. Measured, not just implied by SLAU846's "OAR2 supports only 7-bit addressing mode": with a
+    /// 10-bit own address the target answers that and nothing else.
+    SecondAddressWith10Bit,
+
     /// [`Config::clock_low_timeout_us`] is outside what the counter can represent.
     InvalidClockLowTimeout,
 }
