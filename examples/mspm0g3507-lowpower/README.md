@@ -15,6 +15,7 @@ cargo run --release --bin min_sleep_gate
 | `wake_latency` | how long each sleep level takes to answer a pin edge, timed by the L1306 | `wake_latency_host` on an L1306 |
 | `wake_latency_irq` | the same, with the answering task on an interrupt-mode executor — an A/B against the above | `wake_latency_host` on an L1306 |
 | `wake_latency_probe` | splits a wake into silicon, GPIO handler and executor, via marker pins the HAL drives | the above, plus an analyser on `PB13`, `PB0`, `PB1` |
+| `wake_cycles` | the same split in CPU cycles, raising the interrupt from software instead of from a pin | one board, nothing wired |
 | `uart3_retention` | that a PD1 `UART3` comes back configured after deep sleep | `uart3_retention_host` on an L1306 |
 | `uart3_sleep_glitch` | that sleep entry does not corrupt a UART frame, at every level | analyser on `PB2` |
 
