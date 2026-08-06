@@ -28,6 +28,8 @@ pub mod low_power;
 pub mod mathacl;
 #[cfg(feature = "_probe")]
 pub mod probe;
+#[cfg(feature = "rt")]
+pub(crate) mod sync;
 pub mod sysctl;
 pub mod tim;
 #[cfg(trng)]

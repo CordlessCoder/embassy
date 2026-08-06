@@ -1,14 +1,8 @@
 #![macro_use]
 
-#[cfg(feature = "rt")]
-use core::cell::Cell;
 use core::convert::Infallible;
 #[cfg(feature = "rt")]
 use core::future::{Future, poll_fn};
-#[cfg(feature = "rt")]
-use core::ptr::{self, NonNull};
-#[cfg(feature = "rt")]
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 #[cfg(feature = "rt")]
 use core::task::{Poll, Waker};
 
@@ -19,6 +13,8 @@ use crate::pac::gpio::{self};
 #[cfg(all(feature = "rt", any(gpioa_interrupt, gpiob_interrupt)))]
 use crate::pac::interrupt;
 use crate::pac::{self};
+#[cfg(feature = "rt")]
+use crate::sync::linked_waiter::{Waiter, WaiterList};
 
 /// Represents a digital input or output level.
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -371,7 +367,7 @@ async fn park(arm: &EdgeArm) {
             return Poll::Pending;
         }
 
-        if !arm.waiter.outstanding.load(Ordering::Relaxed) {
+        if !arm.waiter.is_outstanding() {
             return Poll::Ready(());
         }
 
@@ -379,7 +375,7 @@ async fn park(arm: &EdgeArm) {
         // look again, in that order, so an edge landing in between is not lost.
         arm.waiter.register(cx.waker());
 
-        if !arm.waiter.outstanding.load(Ordering::Relaxed) {
+        if !arm.waiter.is_outstanding() {
             return Poll::Ready(());
         }
 
@@ -433,7 +429,7 @@ struct EdgeArm {
     block: gpio::Gpio,
     bit: usize,
     port: usize,
-    waiter: Waiter,
+    waiter: Waiter<EdgeWait>,
 }
 
 #[cfg(feature = "rt")]
@@ -447,7 +443,10 @@ impl EdgeArm {
             block,
             bit: usize::from(pin_port % 32),
             port: usize::from(pin_port / 32),
-            waiter: Waiter::new(pin_port % 32, edge),
+            waiter: Waiter::new(EdgeWait {
+                bit: pin_port % 32,
+                edge,
+            }),
         }
     }
 
@@ -467,10 +466,10 @@ impl EdgeArm {
         let polarity = if DETECT_BOTH_EDGES {
             Polarity::RiseFall
         } else {
-            self.waiter.edge.polarity()
+            self.waiter.state.edge.polarity()
         };
 
-        critical_section::with(|_cs| {
+        critical_section::with(|cs| {
             if self.bit >= 16 {
                 self.block.polarity31_16().modify(|w| {
                     w.set_dio(self.bit - 16, polarity);
@@ -488,11 +487,11 @@ impl EdgeArm {
             });
 
             // Nothing was here to displace: the node is fresh, and this is its only arming.
-            let _ = self.waiter.waker.replace(Some(parked));
+            let _ = self.waiter.store_waker(parked, cs);
 
             // SAFETY: interrupts are off, so no reader of the list can run; and `self` is borrowed for
             // the whole wait, which `EdgeArm::drop` ends by unlinking.
-            unsafe { self.waiter.link(self.port) };
+            unsafe { WAITERS[self.port].link(&self.waiter, cs) };
 
             // Without fast wake the input synchronizer is unclocked in STOP and STANDBY, which loses the
             // edge rather than delaying it.
@@ -518,181 +517,29 @@ fn _assert_edge_waits_are_send(pin: &mut Flex<'static>) {
 #[cfg(feature = "rt")]
 impl Drop for EdgeArm {
     fn drop(&mut self) {
-        critical_section::with(|_cs| {
+        critical_section::with(|cs| {
             self.block.fastwake().modify(|w| w.set_din(self.bit, false));
             self.block.cpu_int().imask().modify(|w| w.set_dio(self.bit, false));
 
             // An edge that arrived while masked left this set with nobody to consume it.
             self.block.cpu_int().iclr().write(|w| w.set_dio(self.bit, true));
 
-            // SAFETY: interrupts are off, and the pin is masked, so nothing can be walking the list or
-            // about to read this node. Unlinking last is what makes the node safe to drop.
-            unsafe { self.waiter.unlink(self.port) };
+            // The pin is masked, so nothing can be walking the list or about to read this node.
+            // Unlinking last is what makes the node safe to drop.
+            WAITERS[self.port].unlink(&self.waiter, cs);
         });
     }
 }
 
-/// One task waiting on one pin, linked into its port's list of waiters.
-///
-/// **The interrupt reads this with no lock held**, which is sound because of who writes it: the owning
-/// task, always with interrupts off, and the port's own interrupt handler, which cannot preempt itself.
-/// A second port's handler can preempt this one, but it walks a different list.
-///
-/// Only [`Waiter::outstanding`] is atomic, because it is the one field both sides write.
+/// What the port's interrupt matches a wake against: which pin, and which edges that wait accepts.
 #[cfg(feature = "rt")]
-struct Waiter {
-    /// The next waiter on this port, or `None` at the end.
-    next: Cell<Option<NonNull<Waiter>>>,
-
+struct EdgeWait {
     /// Which pin within the port. The 5 bits the interrupt and the task have to agree on.
     bit: u8,
 
     /// Which edges this wait accepts. Read by the interrupt under [`DETECT_BOTH_EDGES`], where the
     /// polarity is set to both and the direction is filtered here instead.
     edge: Edge,
-
-    /// Cleared by the interrupt when the edge arrives. This, not the status bit, is completion — the
-    /// status bit says nothing about direction and is set by edges the task did not ask for.
-    outstanding: AtomicBool,
-
-    /// Whom to wake.
-    ///
-    /// A `Waker` is two words, so the interrupt could read it half-written if the task ever wrote it with
-    /// interrupts on. It does not: [`Waiter::store_waker`] is called from inside a critical section, and
-    /// [`Waiter::register`] takes one before it writes.
-    waker: Cell<Option<Waker>>,
-}
-
-/// SAFETY: the pointers a `Waiter` holds only mean anything while it is linked, and linking happens after
-/// the node has been pinned — so any move of one has already happened by then, and a node that can still
-/// be moved is one nothing else can reach.
-#[cfg(feature = "rt")]
-unsafe impl Send for Waiter {}
-
-/// SAFETY: as above, plus every mutation is made with interrupts off, so no sharer can see a partial one.
-#[cfg(feature = "rt")]
-unsafe impl Sync for Waiter {}
-
-#[cfg(feature = "rt")]
-impl Waiter {
-    fn new(bit: u8, edge: Edge) -> Self {
-        Self {
-            next: Cell::new(None),
-            bit,
-            edge,
-            outstanding: AtomicBool::new(true),
-            waker: Cell::new(None),
-        }
-    }
-
-    /// Push this waiter onto its port's list.
-    ///
-    /// # Safety
-    ///
-    /// Interrupts must be off, and the node must stay where it is and be [`Waiter::unlink`]ed before it
-    /// is dropped.
-    unsafe fn link(&self, port: usize) {
-        let head = &WAITERS[port];
-
-        self.next.set(NonNull::new(head.load(Ordering::Relaxed)));
-        head.store(ptr::from_ref(self).cast_mut(), Ordering::Release);
-    }
-
-    /// Take this waiter back off its port's list, wherever in it the node happens to be.
-    ///
-    /// A search rather than a doubly-linked list: the length is the number of pins being awaited at once,
-    /// which is one in every case measured, and a `prev` pointer would cost every node four bytes and
-    /// every link an extra store to save nothing at that length.
-    ///
-    /// # Safety
-    ///
-    /// Interrupts must be off.
-    unsafe fn unlink(&self, port: usize) {
-        let me = NonNull::from(self);
-        let head = &WAITERS[port];
-
-        if head.load(Ordering::Relaxed) == me.as_ptr() {
-            head.store(
-                self.next.get().map_or(ptr::null_mut(), NonNull::as_ptr),
-                Ordering::Release,
-            );
-
-            return;
-        }
-
-        let mut node = NonNull::new(head.load(Ordering::Relaxed));
-
-        while let Some(current) = node {
-            // SAFETY: every node in the list is live until its owner unlinks it, which needs interrupts
-            // off, and they are off here.
-            let current = unsafe { current.as_ref() };
-
-            if current.next.get() == Some(me) {
-                current.next.set(self.next.get());
-
-                return;
-            }
-
-            node = current.next.get();
-        }
-    }
-
-    /// Store `waker` from a poll, where interrupts are on.
-    ///
-    /// The waker a future is polled with almost never changes, so the common path is a comparison and no
-    /// write at all — which is the only reason this can afford to be on the completing poll's path.
-    fn register(&self, waker: &Waker) {
-        // SAFETY: this task is the only writer, so nothing can be changing it under this read.
-        if let Some(stored) = unsafe { &*self.waker.as_ptr() }
-            && stored.will_wake(waker)
-        {
-            return;
-        }
-
-        // Cloned before the section: a `Waker`'s clone is someone else's code and has no business
-        // running with interrupts off. Its drop has none either, so the displaced one is bound rather
-        // than discarded and goes out of scope out here.
-        let parked = waker.clone();
-
-        let _displaced = critical_section::with(|_cs| self.waker.replace(Some(parked)));
-    }
-
-    /// Report the edge: mark the wait done and wake whoever is on it.
-    ///
-    /// Called from the interrupt, with no lock. Reading the waker rather than taking it is what makes
-    /// that sound — the task is then the only writer of the field.
-    fn report(&self) {
-        self.outstanding.store(false, Ordering::Relaxed);
-
-        // SAFETY: written only by the owning task, and only with interrupts off.
-        if let Some(waker) = unsafe { &*self.waker.as_ptr() } {
-            waker.wake_by_ref();
-        }
-    }
-}
-
-/// The waiter parked on `bit` of `port`, if any.
-///
-/// # Safety
-///
-/// Only the port's own interrupt handler may call this, so that no task can be editing the list.
-#[cfg(feature = "rt")]
-unsafe fn waiter_for(port: usize, bit: usize) -> Option<&'static Waiter> {
-    let mut node = NonNull::new(WAITERS[port].load(Ordering::Acquire));
-
-    while let Some(current) = node {
-        // SAFETY: nodes leave the list before they are dropped, and the caller cannot be interrupting a
-        // task that is editing it.
-        let current = unsafe { current.as_ref() };
-
-        if usize::from(current.bit) == bit {
-            return Some(current);
-        }
-
-        node = current.next.get();
-    }
-
-    None
 }
 
 #[cfg(feature = "rt")]
@@ -704,15 +551,10 @@ const PORT_COUNT: usize = if cfg!(gpio_pc) {
     1
 };
 
-/// The waiters on each port, newest first.
-///
-/// One pointer per port, not per pin: the nodes live in the futures waiting on them, so this costs RAM
-/// per port and stack per wait rather than RAM per pin.
-///
-/// Only load and store are used, both of which this core does without a compare-and-swap to emulate, so
-/// the list needs no lock of its own — see [`Waiter`] for who is allowed to touch it when.
+/// The waiters on each port. One list per port because one interrupt handler per port is what walks
+/// them, which is the rule `linked_waiter` is sound under.
 #[cfg(feature = "rt")]
-static WAITERS: [AtomicPtr<Waiter>; PORT_COUNT] = [const { AtomicPtr::new(ptr::null_mut()) }; PORT_COUNT];
+static WAITERS: [WaiterList<EdgeWait>; PORT_COUNT] = [const { WaiterList::new() }; PORT_COUNT];
 
 impl<'d> Drop for Flex<'d> {
     #[inline]
@@ -1480,15 +1322,15 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
             w.set_dio(bit, true);
         });
 
-        // SAFETY: this is the port's own interrupt handler, which is the only caller allowed.
-        let waiter = unsafe { waiter_for(port as usize, bit) };
+        // SAFETY: this is the port's own interrupt handler, which is the only walker allowed.
+        let waiter = unsafe { WAITERS[port as usize].find(|wait| usize::from(wait.bit) == bit) };
 
         // An edge the other way leaves the wait standing, so it continues without the task ever being
         // woken. Skipped where `POLARITY` did the filtering, since the level can have moved on since the
         // edge and would only be a chance to classify it wrongly.
         if let Some(waiter) = waiter
             && DETECT_BOTH_EDGES
-            && !waiter.edge.accepts(level.dio(bit))
+            && !waiter.state.edge.accepts(level.dio(bit))
         {
             continue;
         }
@@ -1499,7 +1341,7 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
         // A pin with no waiter is one whose wait was dropped between the edge and here. Nothing to
         // report, and the mask below is what stops it arriving again.
         if let Some(waiter) = waiter {
-            waiter.report();
+            waiter.complete();
         }
 
         #[cfg(feature = "_probe")]
