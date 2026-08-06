@@ -1,26 +1,20 @@
 #![macro_use]
 
+#[cfg(feature = "rt")]
+use core::cell::Cell;
 use core::convert::Infallible;
 #[cfg(feature = "rt")]
-use core::future::Future;
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
-use core::future::poll_fn;
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+use core::future::{Future, poll_fn};
+#[cfg(feature = "rt")]
 use core::ptr::{self, NonNull};
 #[cfg(feature = "rt")]
-use core::sync::atomic::Ordering;
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
-use core::task::Poll;
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+#[cfg(feature = "rt")]
+use core::task::{Poll, Waker};
 
 #[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
 use embassy_executor::raw::{TaskRef, task_from_waker, wake_task};
 use embassy_hal_internal::{Peri, PeripheralType, impl_peripheral};
-#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
-use maitake_sync::WaitMap;
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
-use portable_atomic::AtomicPtr;
-#[cfg(feature = "rt")]
-use portable_atomic::AtomicU32;
 
 use crate::pac::gpio::vals::*;
 use crate::pac::gpio::{self};
@@ -351,74 +345,49 @@ impl<'d> Flex<'d> {
 
     #[cfg(feature = "rt")]
     async fn wait_inner(&mut self, edge: Edge) {
-        let key = self.pin.pin_port();
-        let arm = EdgeArm::new(self.pin.block(), key, edge);
+        // Not armed here: `park` arms from inside its first poll, where the waker exists, so that the
+        // registration and the unmask are one critical section and no edge can land between them.
+        let arm = EdgeArm::new(self.pin.block(), self.pin.pin_port(), edge);
 
-        park(key, &arm).await;
+        park(&arm).await;
     }
 }
 
-/// Park until the interrupt reports the edge `arm` was set up for.
+/// Park until the interrupt reports the edge, arming the pin on the first poll.
 ///
-/// A withdrawn request is the interrupt reporting it, so the check below is both the completion test and,
-/// on the first poll, what arms the interrupt — arming from after the waiter is registered is what keeps an
-/// edge from being missed.
-#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
-async fn park(key: u8, arm: &EdgeArm) {
-    let result = GPIO_WAIT_MAP
-        .wait_for(key, || {
-            if !arm.request.is_outstanding() {
-                return true;
-            }
-
-            arm.unmask();
-
-            false
-        })
-        .await;
-
-    // Because of the following no error can happen:
-    // 1. The map is never closed (Closed)
-    // 2. The data cannot already be consumed because wait_for registers the key.
-    // 3. wait_for always causes wait to be added to map (NeverAdded)
-    // 4. pin singletons ensure that a wait map entry is ever owned by one entity (Duplicate)
-    debug_assert!(result.is_ok(), "GPIO wait map should never result in error");
-}
-
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
-async fn park(key: u8, arm: &EdgeArm) {
-    let slot = &PIN_TASKS[usize::from(key)];
+/// The interrupt clears `outstanding`, so that is the completion test rather than the status bit. Nothing
+/// is checked before arming because there is nothing to check: the edge that completes this wait is by
+/// definition one that arrives after the pin is unmasked.
+///
+/// The arm is taken by value and moved into the closure rather than borrowed across the await: a borrow
+/// would need `EdgeArm` to be `Sync`, which is a much larger claim than it needs to make.
+#[cfg(feature = "rt")]
+async fn park(arm: &EdgeArm) {
+    let mut armed = false;
 
     poll_fn(|cx| {
-        // Panics if the waiter is not an embassy task, which is what the feature asserts it always is.
-        let task = task_from_waker(cx.waker());
-        slot.store(task.as_raw().as_ptr(), Ordering::Release);
+        if !armed {
+            arm.arm(cx.waker());
+            armed = true;
 
-        if !arm.request.is_outstanding() {
+            return Poll::Pending;
+        }
+
+        if !arm.waiter.outstanding.load(Ordering::Relaxed) {
             return Poll::Ready(());
         }
 
-        arm.unmask();
+        // A spurious poll, or one from a different waker than the wait was armed with. Re-register and
+        // look again, in that order, so an edge landing in between is not lost.
+        arm.waiter.register(cx.waker());
+
+        if !arm.waiter.outstanding.load(Ordering::Relaxed) {
+            return Poll::Ready(());
+        }
 
         Poll::Pending
     })
     .await;
-}
-
-/// Report the edge to whoever is parked on `key`.
-#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
-fn report_edge(key: u8) {
-    let _ = GPIO_WAIT_MAP.wake(&key, ());
-}
-
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
-fn report_edge(key: u8) {
-    // Left in place rather than cleared: every poll stores it again, and waking a task that has already
-    // been woken is harmless, so there is nothing to gain from a read-modify-write here.
-    if let Some(task) = NonNull::new(PIN_TASKS[usize::from(key)].load(Ordering::Acquire)) {
-        // SAFETY: written by `park` from `as_raw`, and an embassy task lives for the rest of the program.
-        unsafe { wake_task(TaskRef::from_raw(task)) };
-    }
 }
 
 /// Whether `GPIO_ERR_01` applies, which forces both directions to be detected.
@@ -446,67 +415,106 @@ impl Edge {
             Edge::Any => Polarity::RiseFall,
         }
     }
+
+    /// Whether an edge that left the pin reading `level` is one this wait asked for.
+    fn accepts(self, level: bool) -> bool {
+        match self {
+            Edge::Rising => level,
+            Edge::Falling => !level,
+            Edge::Any => true,
+        }
+    }
 }
 
 /// Holds a pin's edge detection armed for one wait, and disarms it however the wait ends.
+///
+/// The waiter is a field rather than a separate allocation so that one `Drop` both disarms the pin and
+/// unlinks the node, and so that the node's address is the address of a local in the future that owns it.
 #[cfg(feature = "rt")]
 struct EdgeArm {
     block: gpio::Gpio,
     bit: usize,
-    request: EdgeRequest,
+    port: usize,
+    waiter: Waiter,
 }
 
 #[cfg(feature = "rt")]
 impl EdgeArm {
+    /// Describe a wait without touching the hardware. [`EdgeArm::arm`] is what starts it.
+    ///
+    /// Nothing here may be observable, because this value is returned by move: until it has come to rest
+    /// in the frame that owns it, publishing its address would publish an address about to go stale.
     fn new(block: gpio::Gpio, pin_port: u8, edge: Edge) -> Self {
-        let bit = usize::from(pin_port % 32);
+        Self {
+            block,
+            bit: usize::from(pin_port % 32),
+            port: usize::from(pin_port / 32),
+            waiter: Waiter::new(pin_port % 32, edge),
+        }
+    }
+
+    /// Start the wait: select the edge, publish the waiter, and let the interrupt through.
+    ///
+    /// One critical section for the lot. Every write is either a read-modify-write of a register shared
+    /// with the other pins, or a store the interrupt must not see half of, so each needed one anyway;
+    /// nothing here waits, so holding interrupts off across all of them costs no more than the shortest.
+    ///
+    /// The order inside matters in one place: the unmask is last, so the waiter is reachable and the
+    /// waker is stored before any edge can be reported.
+    fn arm(&self, waker: &Waker) {
+        // Before the section, not inside it: with `gpio-embassy-tasks-only` this is what rejects a waker
+        // that is not an embassy task's, and it does it by panicking.
+        let parked = Waiter::parked(waker);
 
         let polarity = if DETECT_BOTH_EDGES {
             Polarity::RiseFall
         } else {
-            edge.polarity()
+            self.waiter.edge.polarity()
         };
 
-        // A RMW operation, hence the critical section.
         critical_section::with(|_cs| {
-            if bit >= 16 {
-                block.polarity31_16().modify(|w| {
-                    w.set_dio(bit - 16, polarity);
+            if self.bit >= 16 {
+                self.block.polarity31_16().modify(|w| {
+                    w.set_dio(self.bit - 16, polarity);
                 });
             } else {
-                block.polarity15_0().modify(|w| {
-                    w.set_dio(bit, polarity);
+                self.block.polarity15_0().modify(|w| {
+                    w.set_dio(self.bit, polarity);
                 });
             };
-        });
 
-        // Drop edges from before the wait: after the polarity write, so selecting the event cannot
-        // leave a status bit behind, and before the request, so every later edge is reported.
-        block.cpu_int().iclr().write(|w| {
-            w.set_dio(bit, true);
-        });
+            // Drop edges from before the wait, after the polarity write so that selecting the event
+            // cannot leave a status bit behind.
+            self.block.cpu_int().iclr().write(|w| {
+                w.set_dio(self.bit, true);
+            });
 
-        let request = EdgeRequest::new(pin_port);
-        request.publish(edge);
+            // Nothing was here to displace: the node is fresh, and this is its only arming.
+            let _ = self.waiter.store_parked(parked);
 
-        // Without fast wake the input synchronizer is unclocked in STOP and STANDBY, which loses the
-        // edge rather than delaying it.
-        critical_section::with(|_cs| {
-            block.fastwake().modify(|w| w.set_din(bit, true));
-        });
+            // SAFETY: interrupts are off, so no reader of the list can run; and `self` is borrowed for
+            // the whole wait, which `EdgeArm::drop` ends by unlinking.
+            unsafe { self.waiter.link(self.port) };
 
-        Self { block, bit, request }
-    }
+            // Without fast wake the input synchronizer is unclocked in STOP and STANDBY, which loses the
+            // edge rather than delaying it.
+            self.block.fastwake().modify(|w| w.set_din(self.bit, true));
 
-    /// Let this pin's interrupt through.
-    fn unmask(&self) {
-        // Because pin singletons are Send, unmasking interrupts must be guarded by critical section.
-        critical_section::with(|_cs| {
             self.block.cpu_int().imask().modify(|w| {
                 w.set_dio(self.bit, true);
             });
         });
     }
+}
+
+/// The edge waits must stay usable from a task that has to be `Send`, which the interior mutability in
+/// [`Waiter`] would otherwise take away. Placed here rather than in a test because the failure it catches
+/// is a change to a private field's type.
+#[cfg(feature = "rt")]
+fn _assert_edge_waits_are_send(pin: &mut Flex<'static>) {
+    fn is_send<T: Send>(_: &T) {}
+
+    is_send(&pin.wait_for_any_edge());
 }
 
 #[cfg(feature = "rt")]
@@ -515,64 +523,236 @@ impl Drop for EdgeArm {
         critical_section::with(|_cs| {
             self.block.fastwake().modify(|w| w.set_din(self.bit, false));
             self.block.cpu_int().imask().modify(|w| w.set_dio(self.bit, false));
+
+            // An edge that arrived while masked left this set with nobody to consume it.
+            self.block.cpu_int().iclr().write(|w| w.set_dio(self.bit, true));
+
+            // SAFETY: interrupts are off, and the pin is masked, so nothing can be walking the list or
+            // about to read this node. Unlinking last is what makes the node safe to drop.
+            unsafe { self.waiter.unlink(self.port) };
         });
-
-        // An edge that arrived while masked left this set with nobody to consume it.
-        self.block.cpu_int().iclr().write(|w| w.set_dio(self.bit, true));
-
-        self.request.withdraw();
     }
 }
 
-/// One pin's standing request for an edge, which [`irq_handler`] answers by withdrawing it.
+/// What a [`Waiter`] stores to wake with: the waker itself, or the task it belongs to.
+#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
+type Parked = Waker;
+
+#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
+type Parked = TaskRef;
+
+/// One task waiting on one pin, linked into its port's list of waiters.
 ///
-/// Withdrawal is deliberately the completion signal rather than the status bit, which says nothing
-/// about direction and, under [`DETECT_BOTH_EDGES`], is set by edges the task did not ask for.
+/// **The interrupt reads this with no lock held**, which is sound because of who writes it: the owning
+/// task, always with interrupts off, and the port's own interrupt handler, which cannot preempt itself.
+/// A second port's handler can preempt this one, but it walks a different list.
+///
+/// Only [`Waiter::outstanding`] is atomic, because it is the one field both sides write.
 #[cfg(feature = "rt")]
-struct EdgeRequest {
-    rise: &'static AtomicU32,
-    fall: &'static AtomicU32,
-    mask: u32,
+struct Waiter {
+    /// The next waiter on this port, or `None` at the end.
+    next: Cell<Option<NonNull<Waiter>>>,
+
+    /// Which pin within the port. The 5 bits the interrupt and the task have to agree on.
+    bit: u8,
+
+    /// Which edges this wait accepts. Read by the interrupt under [`DETECT_BOTH_EDGES`], where the
+    /// polarity is set to both and the direction is filtered here instead.
+    edge: Edge,
+
+    /// Cleared by the interrupt when the edge arrives. This, not the status bit, is completion — the
+    /// status bit says nothing about direction and is set by edges the task did not ask for.
+    outstanding: AtomicBool,
+
+    /// Whom to wake.
+    ///
+    /// A `Waker` is two words, so the interrupt could read it half-written if the task ever wrote it with
+    /// interrupts on. It does not: [`Waiter::store_waker`] is called from inside a critical section, and
+    /// [`Waiter::register`] takes one before it writes.
+    #[cfg(not(feature = "gpio-embassy-tasks-only"))]
+    waker: Cell<Option<Waker>>,
+
+    /// Whom to wake, as one word, which needs no critical section to store.
+    #[cfg(feature = "gpio-embassy-tasks-only")]
+    task: AtomicPtr<()>,
 }
 
+/// SAFETY: the pointers a `Waiter` holds only mean anything while it is linked, and linking happens after
+/// the node has been pinned — so any move of one has already happened by then, and a node that can still
+/// be moved is one nothing else can reach.
 #[cfg(feature = "rt")]
-impl EdgeRequest {
-    fn new(pin_port: u8) -> Self {
-        let port = usize::from(pin_port / 32);
+unsafe impl Send for Waiter {}
 
+/// SAFETY: as above, plus every mutation is made with interrupts off, so no sharer can see a partial one.
+#[cfg(feature = "rt")]
+unsafe impl Sync for Waiter {}
+
+#[cfg(feature = "rt")]
+impl Waiter {
+    fn new(bit: u8, edge: Edge) -> Self {
         Self {
-            rise: &WANT_RISE[port],
-            fall: &WANT_FALL[port],
-            mask: 1 << (pin_port % 32),
+            next: Cell::new(None),
+            bit,
+            edge,
+            outstanding: AtomicBool::new(true),
+            #[cfg(not(feature = "gpio-embassy-tasks-only"))]
+            waker: Cell::new(None),
+            #[cfg(feature = "gpio-embassy-tasks-only")]
+            task: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
-    fn publish(&self, edge: Edge) {
-        if matches!(edge, Edge::Rising | Edge::Any) {
-            self.rise.fetch_or(self.mask, Ordering::Relaxed);
+    /// Push this waiter onto its port's list.
+    ///
+    /// # Safety
+    ///
+    /// Interrupts must be off, and the node must stay where it is and be [`Waiter::unlink`]ed before it
+    /// is dropped.
+    unsafe fn link(&self, port: usize) {
+        let head = &WAITERS[port];
+
+        self.next.set(NonNull::new(head.load(Ordering::Relaxed)));
+        head.store(ptr::from_ref(self).cast_mut(), Ordering::Release);
+    }
+
+    /// Take this waiter back off its port's list, wherever in it the node happens to be.
+    ///
+    /// A search rather than a doubly-linked list: the length is the number of pins being awaited at once,
+    /// which is one in every case measured, and a `prev` pointer would cost every node four bytes and
+    /// every link an extra store to save nothing at that length.
+    ///
+    /// # Safety
+    ///
+    /// Interrupts must be off.
+    unsafe fn unlink(&self, port: usize) {
+        let me = NonNull::from(self);
+        let head = &WAITERS[port];
+
+        if head.load(Ordering::Relaxed) == me.as_ptr() {
+            head.store(
+                self.next.get().map_or(ptr::null_mut(), NonNull::as_ptr),
+                Ordering::Release,
+            );
+
+            return;
         }
 
-        if matches!(edge, Edge::Falling | Edge::Any) {
-            self.fall.fetch_or(self.mask, Ordering::Relaxed);
+        let mut node = NonNull::new(head.load(Ordering::Relaxed));
+
+        while let Some(current) = node {
+            // SAFETY: every node in the list is live until its owner unlinks it, which needs interrupts
+            // off, and they are off here.
+            let current = unsafe { current.as_ref() };
+
+            if current.next.get() == Some(me) {
+                current.next.set(self.next.get());
+
+                return;
+            }
+
+            node = current.next.get();
         }
     }
 
-    fn withdraw(&self) {
-        self.rise.fetch_and(!self.mask, Ordering::Relaxed);
-        self.fall.fetch_and(!self.mask, Ordering::Relaxed);
+    /// Work out what to store for `waker`, before any critical section is taken.
+    ///
+    /// # Panics
+    ///
+    /// With `gpio-embassy-tasks-only`, if the waker is not an embassy task's — which is what that feature
+    /// asserts about every edge wait in the build. Kept out of the critical section on purpose: a panic
+    /// with interrupts off takes the log with it.
+    fn parked(waker: &Waker) -> Parked {
+        #[cfg(not(feature = "gpio-embassy-tasks-only"))]
+        return waker.clone();
+
+        #[cfg(feature = "gpio-embassy-tasks-only")]
+        return task_from_waker(waker);
     }
 
-    fn is_outstanding(&self) -> bool {
-        (self.rise.load(Ordering::Relaxed) | self.fall.load(Ordering::Relaxed)) & self.mask != 0
+    /// Store what [`Waiter::parked`] worked out, handing back whatever it displaced.
+    ///
+    /// Every caller is inside a critical section, which is why the old value is returned rather than
+    /// dropped here: a `Waker`'s drop is someone else's code, and it has no business running with
+    /// interrupts off.
+    #[must_use = "the displaced waker has to be dropped outside the critical section"]
+    fn store_parked(&self, parked: Parked) -> Option<Parked> {
+        #[cfg(not(feature = "gpio-embassy-tasks-only"))]
+        return self.waker.replace(Some(parked));
+
+        #[cfg(feature = "gpio-embassy-tasks-only")]
+        {
+            self.task.store(parked.as_raw().as_ptr(), Ordering::Release);
+
+            None
+        }
     }
 
-    /// Whether an edge that left the pin reading `level` is one this request asked for.
-    #[cfg(feature = "rt")]
-    fn accepts(&self, level: bool) -> bool {
-        let wanted = if level { self.rise } else { self.fall };
+    /// Store `waker` from a poll, where interrupts are on.
+    ///
+    /// The waker a future is polled with almost never changes, so the common path is a comparison and no
+    /// write at all — which is the only reason this can afford to be on the completing poll's path.
+    fn register(&self, waker: &Waker) {
+        #[cfg(not(feature = "gpio-embassy-tasks-only"))]
+        {
+            // SAFETY: this task is the only writer, so nothing can be changing it under this read.
+            if let Some(stored) = unsafe { &*self.waker.as_ptr() }
+                && stored.will_wake(waker)
+            {
+                return;
+            }
+        }
 
-        wanted.load(Ordering::Relaxed) & self.mask != 0
+        let parked = Self::parked(waker);
+
+        // Bound rather than discarded: this is what drops the waker it displaced, and it has to happen
+        // out here rather than inside the section.
+        let _displaced = critical_section::with(|_cs| self.store_parked(parked));
     }
+
+    /// Report the edge: mark the wait done and wake whoever is on it.
+    ///
+    /// Called from the interrupt, with no lock. Reading the waker rather than taking it is what makes
+    /// that sound — the task is then the only writer of the field.
+    fn report(&self) {
+        self.outstanding.store(false, Ordering::Relaxed);
+
+        #[cfg(not(feature = "gpio-embassy-tasks-only"))]
+        // SAFETY: written only by the owning task, and only with interrupts off.
+        if let Some(waker) = unsafe { &*self.waker.as_ptr() } {
+            waker.wake_by_ref();
+        }
+
+        #[cfg(feature = "gpio-embassy-tasks-only")]
+        if let Some(task) = NonNull::new(self.task.load(Ordering::Acquire)) {
+            // SAFETY: written by `store_waker` from `as_raw`, and an embassy task lives for the rest of
+            // the program.
+            unsafe { wake_task(TaskRef::from_raw(task)) };
+        }
+    }
+}
+
+/// The waiter parked on `bit` of `port`, if any.
+///
+/// # Safety
+///
+/// Only the port's own interrupt handler may call this, so that no task can be editing the list.
+#[cfg(feature = "rt")]
+unsafe fn waiter_for(port: usize, bit: usize) -> Option<&'static Waiter> {
+    let mut node = NonNull::new(WAITERS[port].load(Ordering::Acquire));
+
+    while let Some(current) = node {
+        // SAFETY: nodes leave the list before they are dropped, and the caller cannot be interrupting a
+        // task that is editing it.
+        let current = unsafe { current.as_ref() };
+
+        if usize::from(current.bit) == bit {
+            return Some(current);
+        }
+
+        node = current.next.get();
+    }
+
+    None
 }
 
 #[cfg(feature = "rt")]
@@ -584,25 +764,15 @@ const PORT_COUNT: usize = if cfg!(gpio_pc) {
     1
 };
 
-#[cfg(feature = "rt")]
-static WANT_RISE: [AtomicU32; PORT_COUNT] = [const { AtomicU32::new(0) }; PORT_COUNT];
-
-#[cfg(feature = "rt")]
-static WANT_FALL: [AtomicU32; PORT_COUNT] = [const { AtomicU32::new(0) }; PORT_COUNT];
-
-/// Wait map for GPIO wakers
+/// The waiters on each port, newest first.
 ///
-/// This map must **never** be closed because gpio wakers may be used forever.
-#[cfg(all(feature = "rt", not(feature = "gpio-embassy-tasks-only")))]
-static GPIO_WAIT_MAP: WaitMap<u8, ()> = WaitMap::new();
-
-/// The task parked on each pin, as a bare pointer.
+/// One pointer per port, not per pin: the nodes live in the futures waiting on them, so this costs RAM
+/// per port and stack per wait rather than RAM per pin.
 ///
-/// One word where a `Waker` is two, so this is half a waker array. It also needs no lock: only load and
-/// store are used, and those are atomic on this core without a compare-and-swap to emulate, where a
-/// `Waker` or a `Cell` would have to be guarded by a critical section on both paths.
-#[cfg(all(feature = "rt", feature = "gpio-embassy-tasks-only"))]
-static PIN_TASKS: [AtomicPtr<()>; 32 * PORT_COUNT] = [const { AtomicPtr::new(ptr::null_mut()) }; 32 * PORT_COUNT];
+/// Only load and store are used, both of which this core does without a compare-and-swap to emulate, so
+/// the list needs no lock of its own — see [`Waiter`] for who is allowed to touch it when.
+#[cfg(feature = "rt")]
+static WAITERS: [AtomicPtr<Waiter>; PORT_COUNT] = [const { AtomicPtr::new(ptr::null_mut()) }; PORT_COUNT];
 
 impl<'d> Drop for Flex<'d> {
     #[inline]
@@ -1366,26 +1536,31 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
     let level = gpio.din31_0().read();
 
     for bit in BitIter(pending).map(|bit| bit as usize) {
-        let key = (port as u8) * 32 + bit as u8;
-        let request = EdgeRequest::new(key);
-
         gpio.cpu_int().iclr().write(|w| {
             w.set_dio(bit, true);
         });
 
-        // An edge the other way leaves the request standing, so the wait continues without the task
-        // ever being woken. Skipped where `POLARITY` did the filtering, since the level can have moved
-        // on since the edge and would only be a chance to classify it wrongly.
-        if DETECT_BOTH_EDGES && !request.accepts(level.dio(bit)) {
+        // SAFETY: this is the port's own interrupt handler, which is the only caller allowed.
+        let waiter = unsafe { waiter_for(port as usize, bit) };
+
+        // An edge the other way leaves the wait standing, so it continues without the task ever being
+        // woken. Skipped where `POLARITY` did the filtering, since the level can have moved on since the
+        // edge and would only be a chance to classify it wrongly.
+        if let Some(waiter) = waiter
+            && DETECT_BOTH_EDGES
+            && !waiter.edge.accepts(level.dio(bit))
+        {
             continue;
         }
-
-        request.withdraw();
 
         #[cfg(feature = "_probe")]
         crate::probe::set(waker_marker);
 
-        report_edge(key);
+        // A pin with no waiter is one whose wait was dropped between the edge and here. Nothing to
+        // report, and the mask below is what stops it arriving again.
+        if let Some(waiter) = waiter {
+            waiter.report();
+        }
 
         #[cfg(feature = "_probe")]
         crate::probe::clear(waker_marker);
