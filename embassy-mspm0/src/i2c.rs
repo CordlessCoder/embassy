@@ -426,6 +426,13 @@ fn solve_clock_low_timeout(timeout_us: Option<u32>, clock_hz: u32) -> Result<Opt
 }
 
 /// A [`Config`] with everything the driver needs derived from it.
+/// SCL half-periods to give the controller to go idle before a FIFO flush.
+///
+/// A stop condition and the bus turnaround after it are why it is not idle the instant `master_stop`
+/// returns. Four half-periods is twice what that needs, and short enough that an error path which hits the
+/// bound is still an error path rather than a hang.
+const IDLE_HALF_PERIODS: u32 = 4;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Resolved {
     pub clock_source: ClockSel,
@@ -671,6 +678,28 @@ impl<'d, M: Mode> I2c<'d, M> {
         Ok(())
     }
 
+    /// Wait for the controller to report itself idle, for a few SCL half-periods and no longer.
+    ///
+    /// Bounded rather than spun on, because `CSR` is not trustworthy in this window: after a timeout it
+    /// reads `IDLE` and `BUSBSY` at once, permanently, which SLAU846 says cannot happen. A poll that can
+    /// exit early on a wrong answer is a poll that can also never exit at all, and the second is worse.
+    ///
+    /// The answer is returned for callers that have something better to do with it than flush anyway.
+    fn wait_for_idle(&self) -> bool {
+        let ctrl = self.info.regs.controller(0);
+        let half_period = self.bus_half_period_cycles();
+
+        for _ in 0..IDLE_HALF_PERIODS {
+            if ctrl.csr().read().idle() {
+                return true;
+            }
+
+            cortex_m::asm::delay(half_period);
+        }
+
+        ctrl.csr().read().idle()
+    }
+
     /// Discard whatever an abandoned transfer left queued, driverlib's `DL_I2C_flushController*FIFO`.
     ///
     /// A cancelled write leaves its unsent bytes in the TX FIFO and a cancelled read leaves what it
@@ -678,20 +707,53 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// back the previous one's data — an error reported against a transfer that succeeded, one
     /// transaction later.
     ///
-    /// Only safe once the burst has ended; flushing under a running one takes bytes out from under it.
+    /// SLAU846 §25.2.3.13 asks for three things around a flush and this does all of them: the controller
+    /// must be idle, the FIFO interrupts must be masked first, and their flags must be dealt with after —
+    /// emptying the TX FIFO raises exactly the events a finished transfer would, and left latched they
+    /// would be answered by the next transfer.
     fn flush_fifos(&mut self) {
+        // Flushing under a live burst takes bytes out from under it, so idleness is worth asking for even
+        // though the answer cannot be relied on.
+        self.wait_for_idle();
+
         let ctrl = self.info.regs.controller(0);
+        let int = self.info.regs.cpu_int(0);
+
+        // Read back and restored one field at a time rather than saved and rewritten whole, so a change
+        // to any other bit between here and the end of the flush survives it.
+        let armed = int.imask().read();
+        int.imask().modify(|w| {
+            w.set_ctxfifotrg(false);
+            w.set_crxfifotrg(false);
+            w.set_ctxempty(false);
+            w.set_crxfifofull(false);
+        });
 
         ctrl.cfifoctl().modify(|w| {
             w.set_txflush(true);
             w.set_rxflush(true);
         });
+        // Unbounded, unlike the idle poll above, and deliberately: this waits on the FIFO emptying itself
+        // with the flush bits held, which is the peripheral's own doing and does not depend on the bus.
         while ctrl.cfifosr().read().txfifocnt() as usize != self.info.fifo_size
             || ctrl.cfifosr().read().rxfifocnt() != 0
         {}
         ctrl.cfifoctl().modify(|w| {
             w.set_txflush(false);
             w.set_rxflush(false);
+        });
+
+        int.iclr().write(|w| {
+            w.set_ctxfifotrg(true);
+            w.set_crxfifotrg(true);
+            w.set_ctxempty(true);
+            w.set_crxfifofull(true);
+        });
+        int.imask().modify(|w| {
+            w.set_ctxfifotrg(armed.ctxfifotrg());
+            w.set_crxfifotrg(armed.crxfifotrg());
+            w.set_ctxempty(armed.ctxempty());
+            w.set_crxfifofull(armed.crxfifofull());
         });
     }
 
