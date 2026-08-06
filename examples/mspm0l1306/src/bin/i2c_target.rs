@@ -8,7 +8,7 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::i2c::{ClockDiv, ClockSel, Config, Timing};
+use embassy_mspm0::i2c::{Address, ClockDiv, ClockSel, Config, Timing};
 use embassy_mspm0::i2c_target::{Command, Config as TargetConfig, I2cTarget, ReadStatus};
 use embassy_mspm0::peripherals::I2C0;
 use embassy_mspm0::sysctl::clock;
@@ -39,7 +39,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let config = Config::default().with_timing(TIMING);
     let mut target_config = TargetConfig::default();
-    target_config.target_addr = 0x48;
+    target_config.target_addr = Address::SevenBit(0x48);
     target_config.general_call = true;
     let mut i2c = I2cTarget::new(instance, scl, sda, Irqs, config, target_config).unwrap();
 

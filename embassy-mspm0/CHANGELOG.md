@@ -76,3 +76,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/i2c: honour SLAU846's conditions for a FIFO flush — wait for the controller to go idle, and mask the FIFO interrupts across it
 - **breaking** mspm0/i2c: addresses are now `Address`, taken as `impl Into<Address>`; a `u8` is 7-bit and a `u16` 10-bit, so an untyped integer literal needs a `u8` suffix
 - feat: mspm0/i2c: support 10-bit addressing in the controller, including `embedded_hal::i2c::I2c<TenBitAddress>` for the blocking and async drivers
+- **breaking** mspm0/i2c-target: `Config::target_addr` is an `Address`, and may be 10-bit

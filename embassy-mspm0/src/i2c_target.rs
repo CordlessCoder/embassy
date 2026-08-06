@@ -12,7 +12,7 @@ use embassy_embedded_hal::SetConfig;
 use mspm0_metapac::i2c::vals::CpuIntIidxStat;
 
 use crate::gpio::{AnyPin, SealedPin};
-use crate::i2c::{ClockSel, ConfigError, Info, Instance, InterruptHandler, SclPin, SdaPin, State};
+use crate::i2c::{Address, ClockSel, ConfigError, Info, Instance, InterruptHandler, SclPin, SdaPin, State};
 use crate::interrupt::InterruptExt;
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::i2c::vals;
@@ -24,8 +24,8 @@ use crate::{Peri, i2c, i2c_target, interrupt};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Config
 pub struct Config {
-    /// 7-bit Target Address
-    pub target_addr: u8,
+    /// Target address to answer on.
+    pub target_addr: Address,
 
     /// Control if the target should ack to and report general calls.
     pub general_call: bool,
@@ -34,7 +34,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            target_addr: 0x48,
+            target_addr: Address::SevenBit(0x48),
             general_call: false,
         }
     }
@@ -256,8 +256,7 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
         let target_config = self.target_config;
         let regs = self.info.regs;
 
-        // Target address must be 7-bit
-        if !(target_config.target_addr < 0x80) {
+        if !target_config.target_addr.fits() {
             return Err(ConfigError::InvalidTargetAddress);
         }
 
@@ -295,11 +294,10 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
         });
         regs.clkdiv().write(|w| w.set_ratio(resolved.clock_div.into()));
 
-        // Configure at least one target address by writing the 7-bit address to I2Cx.SOAR register. The additional
-        // target address can be enabled and configured by using I2Cx.TOAR2 register.
         regs.target(0).toar().modify(|w| {
             w.set_oaren(true);
-            w.set_oar(target_config.target_addr as u16);
+            w.set_oar(target_config.target_addr.addr());
+            w.set_tmode(target_config.target_addr.mode());
         });
 
         self.state.clock.store(resolved.clock_hz, Ordering::Relaxed);
