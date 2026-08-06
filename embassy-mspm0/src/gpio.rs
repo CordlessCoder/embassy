@@ -3,15 +3,17 @@
 use core::convert::Infallible;
 #[cfg(feature = "rt")]
 use core::future::{Future, poll_fn};
+use core::marker::PhantomData;
 #[cfg(feature = "rt")]
 use core::task::{Poll, Waker};
 
 use embassy_hal_internal::{Peri, PeripheralType, impl_peripheral};
 
+#[cfg(feature = "rt")]
+use crate::mode::Async;
+use crate::mode::{Blocking, Mode};
 use crate::pac::gpio::vals::*;
 use crate::pac::gpio::{self};
-#[cfg(all(feature = "rt", any(gpioa_interrupt, gpiob_interrupt)))]
-use crate::pac::interrupt;
 use crate::pac::{self};
 #[cfg(feature = "rt")]
 use crate::sync::linked_waiter::{Waiter, WaiterList};
@@ -75,11 +77,16 @@ pub enum Port {
 /// This pin can either be a disconnected, input, or output pin, or both. The level register bit will remain
 /// set while not in output mode, so the pin's level will be 'remembered' when it is not in output
 /// mode.
-pub struct Flex<'d> {
+///
+/// [`Flex::new`] gives a pin whose level can be read and driven. Waiting for an edge needs an
+/// interrupt handler behind it, so it lives on [`Flex<Async>`] and [`Flex::new_async`], which asks
+/// for the binding that installs one.
+pub struct Flex<'d, M: Mode = Blocking> {
     pin: Peri<'d, AnyPin>,
+    _mode: PhantomData<M>,
 }
 
-impl<'d> Flex<'d> {
+impl<'d> Flex<'d, Blocking> {
     /// Wrap the pin in a `Flex`.
     ///
     /// The pin remains disconnected. The initial output level is unspecified, but can be changed
@@ -87,9 +94,29 @@ impl<'d> Flex<'d> {
     #[inline]
     pub fn new(pin: Peri<'d, impl Pin>) -> Self {
         // Pin will be in disconnected state.
-        Self { pin: pin.into() }
+        Self {
+            pin: pin.into(),
+            _mode: PhantomData,
+        }
     }
+}
 
+#[cfg(feature = "rt")]
+impl<'d> Flex<'d, Async> {
+    /// Wrap the pin in a `Flex` that can wait for an edge.
+    ///
+    /// The pin remains disconnected. The initial output level is unspecified, but can be changed
+    /// before the pin is put into output mode.
+    #[inline]
+    pub fn new_async(pin: Peri<'d, impl Pin>, _irqs: impl PortInterrupts + 'd) -> Self {
+        Self {
+            pin: pin.into(),
+            _mode: PhantomData,
+        }
+    }
+}
+
+impl<'d, M: Mode> Flex<'d, M> {
     /// Set the pin's pull.
     #[inline]
     pub fn set_pull(&mut self, pull: Pull) {
@@ -293,9 +320,11 @@ impl<'d> Flex<'d> {
     pub fn is_set_low(&self) -> bool {
         !self.is_set_high()
     }
+}
 
+#[cfg(feature = "rt")]
+impl<'d> Flex<'d, Async> {
     /// Wait until the pin is high. If it is already high, return immediately.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_high(&mut self) {
         if self.is_high() {
@@ -306,7 +335,6 @@ impl<'d> Flex<'d> {
     }
 
     /// Wait until the pin is low. If it is already low, return immediately.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_low(&mut self) {
         if self.is_low() {
@@ -317,27 +345,23 @@ impl<'d> Flex<'d> {
     }
 
     /// Wait for the pin to undergo a transition from low to high.
-    #[cfg(feature = "rt")]
     #[inline]
     pub fn wait_for_rising_edge(&mut self) -> impl Future<Output = ()> {
         self.wait_inner(Edge::Rising)
     }
 
     /// Wait for the pin to undergo a transition from high to low.
-    #[cfg(feature = "rt")]
     #[inline]
     pub fn wait_for_falling_edge(&mut self) -> impl Future<Output = ()> {
         self.wait_inner(Edge::Falling)
     }
 
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
-    #[cfg(feature = "rt")]
     #[inline]
     pub fn wait_for_any_edge(&mut self) -> impl Future<Output = ()> {
         self.wait_inner(Edge::Any)
     }
 
-    #[cfg(feature = "rt")]
     async fn wait_inner(&mut self, edge: Edge) {
         // Not armed here: `park` arms from inside its first poll, where the waker exists, so that the
         // registration and the unmask are one critical section and no edge can land between them.
@@ -508,7 +532,7 @@ impl EdgeArm {
 /// [`Waiter`] would otherwise take away. Placed here rather than in a test because the failure it catches
 /// is a change to a private field's type.
 #[cfg(feature = "rt")]
-fn _assert_edge_waits_are_send(pin: &mut Flex<'static>) {
+fn _assert_edge_waits_are_send(pin: &mut Flex<'static, Async>) {
     fn is_send<T: Send>(_: &T) {}
 
     is_send(&pin.wait_for_any_edge());
@@ -556,7 +580,7 @@ const PORT_COUNT: usize = if cfg!(gpio_pc) {
 #[cfg(feature = "rt")]
 static WAITERS: [WaiterList<EdgeWait>; PORT_COUNT] = [const { WaiterList::new() }; PORT_COUNT];
 
-impl<'d> Drop for Flex<'d> {
+impl<'d, M: Mode> Drop for Flex<'d, M> {
     #[inline]
     fn drop(&mut self) {
         self.set_as_disconnected();
@@ -564,18 +588,41 @@ impl<'d> Drop for Flex<'d> {
 }
 
 /// GPIO input driver.
-pub struct Input<'d> {
-    pin: Flex<'d>,
+///
+/// [`Input::new`] gives a pin whose level can be read. Waiting for an edge needs an interrupt
+/// handler behind it, so it lives on [`Input<Async>`] and [`Input::new_async`], which asks for the
+/// binding that installs one.
+pub struct Input<'d, M: Mode = Blocking> {
+    pin: Flex<'d, M>,
 }
 
-impl<'d> Input<'d> {
+impl<'d> Input<'d, Blocking> {
     /// Create GPIO input driver for a [Pin] with the provided [Pull] configuration.
     #[inline]
     pub fn new(pin: Peri<'d, impl Pin>, pull: Pull) -> Self {
-        let mut pin = Flex::new(pin);
+        Self {
+            pin: Self::configure(Flex::new(pin), pull),
+        }
+    }
+}
+
+#[cfg(feature = "rt")]
+impl<'d> Input<'d, Async> {
+    /// Create a GPIO input driver that can wait for an edge.
+    #[inline]
+    pub fn new_async(pin: Peri<'d, impl Pin>, pull: Pull, irqs: impl PortInterrupts + 'd) -> Self {
+        Self {
+            pin: Self::configure(Flex::new_async(pin, irqs), pull),
+        }
+    }
+}
+
+impl<'d, M: Mode> Input<'d, M> {
+    #[inline]
+    fn configure(mut pin: Flex<'d, M>, pull: Pull) -> Flex<'d, M> {
         pin.set_as_input();
         pin.set_pull(pull);
-        Self { pin }
+        pin
     }
 
     /// Get whether the pin input level is high.
@@ -603,37 +650,35 @@ impl<'d> Input<'d> {
     pub fn set_inversion(&mut self, invert: bool) {
         self.pin.set_inversion(invert)
     }
+}
 
+#[cfg(feature = "rt")]
+impl<'d> Input<'d, Async> {
     /// Wait until the pin is high. If it is already high, return immediately.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_high(&mut self) {
         self.pin.wait_for_high().await
     }
 
     /// Wait until the pin is low. If it is already low, return immediately.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_low(&mut self) {
         self.pin.wait_for_low().await
     }
 
     /// Wait for the pin to undergo a transition from low to high.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_rising_edge(&mut self) {
         self.pin.wait_for_rising_edge().await
     }
 
     /// Wait for the pin to undergo a transition from high to low.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_falling_edge(&mut self) {
         self.pin.wait_for_falling_edge().await
     }
 
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_any_edge(&mut self) {
         self.pin.wait_for_any_edge().await
@@ -715,18 +760,41 @@ impl<'d> Output<'d> {
 /// Note that pins will **return to their floating state** when `OutputOpenDrain` is dropped.
 /// If pins should retain their state indefinitely, either keep ownership of the
 /// `OutputOpenDrain`, or pass it to [`core::mem::forget`].
-pub struct OutputOpenDrain<'d> {
-    pin: Flex<'d>,
+///
+/// [`OutputOpenDrain::new`] gives a pin whose level can be read and driven. Waiting for an edge
+/// needs an interrupt handler behind it, so it lives on [`OutputOpenDrain<Async>`] and
+/// [`OutputOpenDrain::new_async`], which asks for the binding that installs one.
+pub struct OutputOpenDrain<'d, M: Mode = Blocking> {
+    pin: Flex<'d, M>,
 }
 
-impl<'d> OutputOpenDrain<'d> {
+impl<'d> OutputOpenDrain<'d, Blocking> {
     /// Create a new GPIO open drain output driver for a [Pin] with the provided [Level].
     #[inline]
     pub fn new(pin: Peri<'d, impl Pin>, initial_output: Level) -> Self {
-        let mut pin = Flex::new(pin);
+        Self {
+            pin: Self::configure(Flex::new(pin), initial_output),
+        }
+    }
+}
+
+#[cfg(feature = "rt")]
+impl<'d> OutputOpenDrain<'d, Async> {
+    /// Create a new GPIO open drain output driver that can wait for an edge.
+    #[inline]
+    pub fn new_async(pin: Peri<'d, impl Pin>, initial_output: Level, irqs: impl PortInterrupts + 'd) -> Self {
+        Self {
+            pin: Self::configure(Flex::new_async(pin, irqs), initial_output),
+        }
+    }
+}
+
+impl<'d, M: Mode> OutputOpenDrain<'d, M> {
+    #[inline]
+    fn configure(mut pin: Flex<'d, M>, initial_output: Level) -> Flex<'d, M> {
         pin.set_level(initial_output);
         pin.set_as_input_output();
-        Self { pin }
+        pin
     }
 
     /// Get whether the pin input level is high.
@@ -796,37 +864,35 @@ impl<'d> OutputOpenDrain<'d> {
     pub fn set_inversion(&mut self, invert: bool) {
         self.pin.set_inversion(invert)
     }
+}
 
+#[cfg(feature = "rt")]
+impl<'d> OutputOpenDrain<'d, Async> {
     /// Wait until the pin is high. If it is already high, return immediately.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_high(&mut self) {
         self.pin.wait_for_high().await
     }
 
     /// Wait until the pin is low. If it is already low, return immediately.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_low(&mut self) {
         self.pin.wait_for_low().await
     }
 
     /// Wait for the pin to undergo a transition from low to high.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_rising_edge(&mut self) {
         self.pin.wait_for_rising_edge().await
     }
 
     /// Wait for the pin to undergo a transition from high to low.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_falling_edge(&mut self) {
         self.pin.wait_for_falling_edge().await
     }
 
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
-    #[cfg(feature = "rt")]
     #[inline]
     pub async fn wait_for_any_edge(&mut self) {
         self.pin.wait_for_any_edge().await
@@ -869,11 +935,11 @@ pub trait Pin: PeripheralType + Into<AnyPin> + SealedPin + Sized + 'static {
     }
 }
 
-impl<'d> embedded_hal::digital::ErrorType for Flex<'d> {
+impl<'d, M: Mode> embedded_hal::digital::ErrorType for Flex<'d, M> {
     type Error = Infallible;
 }
 
-impl<'d> embedded_hal::digital::InputPin for Flex<'d> {
+impl<'d, M: Mode> embedded_hal::digital::InputPin for Flex<'d, M> {
     #[inline]
     fn is_high(&mut self) -> Result<bool, Self::Error> {
         Ok((*self).is_high())
@@ -885,7 +951,7 @@ impl<'d> embedded_hal::digital::InputPin for Flex<'d> {
     }
 }
 
-impl<'d> embedded_hal::digital::OutputPin for Flex<'d> {
+impl<'d, M: Mode> embedded_hal::digital::OutputPin for Flex<'d, M> {
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
         Ok(self.set_low())
@@ -897,7 +963,7 @@ impl<'d> embedded_hal::digital::OutputPin for Flex<'d> {
     }
 }
 
-impl<'d> embedded_hal::digital::StatefulOutputPin for Flex<'d> {
+impl<'d, M: Mode> embedded_hal::digital::StatefulOutputPin for Flex<'d, M> {
     #[inline]
     fn is_set_high(&mut self) -> Result<bool, Self::Error> {
         Ok((*self).is_set_high())
@@ -910,7 +976,7 @@ impl<'d> embedded_hal::digital::StatefulOutputPin for Flex<'d> {
 }
 
 #[cfg(feature = "rt")]
-impl<'d> embedded_hal_async::digital::Wait for Flex<'d> {
+impl<'d> embedded_hal_async::digital::Wait for Flex<'d, Async> {
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
         self.wait_for_high().await;
         Ok(())
@@ -937,11 +1003,11 @@ impl<'d> embedded_hal_async::digital::Wait for Flex<'d> {
     }
 }
 
-impl<'d> embedded_hal::digital::ErrorType for Input<'d> {
+impl<'d, M: Mode> embedded_hal::digital::ErrorType for Input<'d, M> {
     type Error = Infallible;
 }
 
-impl<'d> embedded_hal::digital::InputPin for Input<'d> {
+impl<'d, M: Mode> embedded_hal::digital::InputPin for Input<'d, M> {
     #[inline]
     fn is_high(&mut self) -> Result<bool, Self::Error> {
         Ok((*self).is_high())
@@ -954,7 +1020,7 @@ impl<'d> embedded_hal::digital::InputPin for Input<'d> {
 }
 
 #[cfg(feature = "rt")]
-impl<'d> embedded_hal_async::digital::Wait for Input<'d> {
+impl<'d> embedded_hal_async::digital::Wait for Input<'d, Async> {
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
         self.wait_for_high().await;
         Ok(())
@@ -1009,11 +1075,11 @@ impl<'d> embedded_hal::digital::StatefulOutputPin for Output<'d> {
     }
 }
 
-impl<'d> embedded_hal::digital::ErrorType for OutputOpenDrain<'d> {
+impl<'d, M: Mode> embedded_hal::digital::ErrorType for OutputOpenDrain<'d, M> {
     type Error = Infallible;
 }
 
-impl<'d> embedded_hal::digital::InputPin for OutputOpenDrain<'d> {
+impl<'d, M: Mode> embedded_hal::digital::InputPin for OutputOpenDrain<'d, M> {
     #[inline]
     fn is_high(&mut self) -> Result<bool, Self::Error> {
         Ok((*self).is_high())
@@ -1025,7 +1091,7 @@ impl<'d> embedded_hal::digital::InputPin for OutputOpenDrain<'d> {
     }
 }
 
-impl<'d> embedded_hal::digital::OutputPin for OutputOpenDrain<'d> {
+impl<'d, M: Mode> embedded_hal::digital::OutputPin for OutputOpenDrain<'d, M> {
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
         Ok(self.set_low())
@@ -1037,7 +1103,7 @@ impl<'d> embedded_hal::digital::OutputPin for OutputOpenDrain<'d> {
     }
 }
 
-impl<'d> embedded_hal::digital::StatefulOutputPin for OutputOpenDrain<'d> {
+impl<'d, M: Mode> embedded_hal::digital::StatefulOutputPin for OutputOpenDrain<'d, M> {
     #[inline]
     fn is_set_high(&mut self) -> Result<bool, Self::Error> {
         Ok((*self).is_set_high())
@@ -1050,7 +1116,7 @@ impl<'d> embedded_hal::digital::StatefulOutputPin for OutputOpenDrain<'d> {
 }
 
 #[cfg(feature = "rt")]
-impl<'d> embedded_hal_async::digital::Wait for OutputOpenDrain<'d> {
+impl<'d> embedded_hal_async::digital::Wait for OutputOpenDrain<'d, Async> {
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
         self.wait_for_high().await;
         Ok(())
@@ -1360,47 +1426,71 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
     crate::probe::clear(handler_marker);
 }
 
+/// Interrupt handler for a GPIO port.
+///
+/// One type serves every port: which port a call is for follows from the interrupt it was bound to.
+///
+/// Bind it with [`bind_group_interrupts!`](crate::bind_group_interrupts) on the chips where the
+/// ports share an interrupt group, and with [`bind_interrupts!`](crate::bind_interrupts) on the
+/// ones where a port owns an NVIC line — which is which is fixed per chip, and a binding written
+/// for the wrong one will not name a type that exists.
+pub struct InterruptHandler {
+    _private: (),
+}
+
+/// Proof that every GPIO port on the chip is bound to [`InterruptHandler`].
+///
+/// Required by [`Flex::new_async`] and the other `new_async` constructors, and is what keeps the
+/// handler out of a binary that never waits on an edge.
+///
+/// All of them, rather than the pin's own, because a pin's port is not in its type — it is a
+/// run-time read. A wait armed on a port whose handler was never installed would never complete.
+///
+/// # Safety
+///
+/// The blanket implementation over the interrupt bindings is the only one, so this cannot be
+/// implemented by hand.
+pub unsafe trait PortInterrupts {}
+
 #[cfg(all(gpioa_interrupt, gpioa_group))]
 compile_error!("gpioa_interrupt and gpioa_group are mutually exclusive cfgs");
 #[cfg(all(gpiob_interrupt, gpiob_group))]
 compile_error!("gpiob_interrupt and gpiob_group are mutually exclusive cfgs");
 
-// C110x and L110x have a dedicated interrupts just for GPIOA.
-//
-// These chips do not have a GROUP1 interrupt.
+// C110x and L110x have a dedicated interrupt just for GPIOA, and no GROUP1 at all. Everywhere else a
+// port is one source of an interrupt group, which is a different trait to implement even though the
+// symbol the binding defines has the same name.
 #[cfg(all(feature = "rt", gpioa_interrupt))]
-#[interrupt]
-fn GPIOA() {
-    irq_handler(pac::GPIOA, Port::PortA);
+impl crate::interrupt::typelevel::Handler<crate::interrupt::typelevel::GPIOA> for InterruptHandler {
+    unsafe fn on_interrupt() {
+        irq_handler(pac::GPIOA, Port::PortA);
+    }
 }
 
 #[cfg(all(feature = "rt", gpiob_interrupt))]
-#[interrupt]
-fn GPIOB() {
-    irq_handler(pac::GPIOB, Port::PortB);
+impl crate::interrupt::typelevel::Handler<crate::interrupt::typelevel::GPIOB> for InterruptHandler {
+    unsafe fn on_interrupt() {
+        irq_handler(pac::GPIOB, Port::PortB);
+    }
 }
 
-// These symbols are weakly defined as DefaultHandler and are called by the interrupt group implementation.
-//
-// Defining these as no_mangle is required so that the linker will pick these over the default handler.
-
 #[cfg(all(feature = "rt", gpioa_group))]
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-fn GPIOA() {
-    irq_handler(pac::GPIOA, Port::PortA);
+impl crate::interrupt_group::Handler<crate::interrupt_group::GPIOA> for InterruptHandler {
+    unsafe fn on_interrupt() {
+        irq_handler(pac::GPIOA, Port::PortA);
+    }
 }
 
 #[cfg(all(feature = "rt", gpiob_group))]
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-fn GPIOB() {
-    irq_handler(pac::GPIOB, Port::PortB);
+impl crate::interrupt_group::Handler<crate::interrupt_group::GPIOB> for InterruptHandler {
+    unsafe fn on_interrupt() {
+        irq_handler(pac::GPIOB, Port::PortB);
+    }
 }
 
 #[cfg(all(feature = "rt", gpioc_group))]
-#[allow(non_snake_case)]
-#[unsafe(no_mangle)]
-fn GPIOC() {
-    irq_handler(pac::GPIOC, Port::PortC);
+impl crate::interrupt_group::Handler<crate::interrupt_group::GPIOC> for InterruptHandler {
+    unsafe fn on_interrupt() {
+        irq_handler(pac::GPIOC, Port::PortC);
+    }
 }

@@ -48,7 +48,8 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::gpio::{Input, Level, Output, Port, Pull};
+use embassy_mspm0::bind_group_interrupts;
+use embassy_mspm0::gpio::{self, Input, Level, Output, Port, Pull};
 use embassy_mspm0::low_power::{DEFAULT_MIN_SLEEP, MAX_WAKE_NS};
 use embassy_mspm0::probe::{self, Marker};
 use embassy_mspm0::sysctl::{SleepLevel, WakeGuard};
@@ -70,6 +71,11 @@ const WAKES_PER_CASE: u32 = 8;
 
 const ACK_HOLD_MS: u64 = 1;
 
+// The one port shares an interrupt group, so it binds with `bind_group_interrupts!`.
+bind_group_interrupts!(struct Irqs {
+    GPIOA => gpio::InterruptHandler;
+});
+
 #[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -83,7 +89,7 @@ async fn main(_spawner: Spawner) -> ! {
         DEFAULT_MIN_SLEEP.as_ticks(),
     );
 
-    let mut wake = Input::new(p.PA10, Pull::Down);
+    let mut wake = Input::new_async(p.PA10, Pull::Down, Irqs);
     let mut ack = Output::new(p.PA1, Level::Low);
 
     // Claimed so nothing else can drive them, then handed to the HAL by port and pin — `probe` writes the

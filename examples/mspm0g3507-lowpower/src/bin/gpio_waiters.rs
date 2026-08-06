@@ -54,8 +54,9 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_mspm0::gpio::{Flex, Input, Pull};
-use embassy_mspm0::pac;
+use embassy_mspm0::mode::Async;
 use embassy_mspm0::pac::gpio;
+use embassy_mspm0::{bind_group_interrupts, pac};
 use embassy_time::{Duration, with_timeout};
 use panic_halt as _;
 
@@ -123,7 +124,7 @@ async fn poll_once(mut future: Pin<&mut impl Future<Output = ()>>) -> Poll<()> {
 ///
 /// `behind` is armed first and dropped last, so the other wait is always further down the list than it —
 /// which is what makes the interrupt's search and the drop's removal walk past a node that is not theirs.
-async fn two_waiters(driven: &mut Flex<'static>, other: &mut Input<'static>) {
+async fn two_waiters(driven: &mut Flex<'static, Async>, other: &mut Input<'static, Async>) {
     let mut behind = pin!(other.wait_for_any_edge());
 
     {
@@ -171,7 +172,7 @@ async fn two_waiters(driven: &mut Flex<'static>, other: &mut Input<'static>) {
 /// pin settled at, so a falling wait on a pin sitting high is an interrupt the handler must decline. The
 /// wait then has to still be armed: the second half drives the pin low and injects again, and that one
 /// has to complete.
-async fn wrong_direction(driven: &mut Flex<'static>) {
+async fn wrong_direction(driven: &mut Flex<'static, Async>) {
     if !drive(DRIVEN_BIT, true) {
         error!("wrong direction: the pin did not come up with its pull-up; is something driving it?");
         return;
@@ -220,7 +221,7 @@ async fn wrong_direction(driven: &mut Flex<'static>) {
 /// The interrupt is raised inside a critical section and the wait is dropped before that section ends, so
 /// the handler cannot run until the node is already unlinked — the ordering a cancellation races for and
 /// almost never loses. `other` stays armed across it, so a list that lost its head takes that wait with it.
-async fn dropped_in_flight(driven: &mut Flex<'static>, other: &mut Input<'static>) {
+async fn dropped_in_flight(driven: &mut Flex<'static, Async>, other: &mut Input<'static, Async>) {
     let mut bystander = pin!(other.wait_for_any_edge());
 
     if poll_once(bystander.as_mut()).await.is_ready() {
@@ -283,7 +284,7 @@ async fn dropped_in_flight(driven: &mut Flex<'static>, other: &mut Input<'static
 /// sit out everything port B does — and then still wake when its own port is injected. With one list for
 /// the whole chip, or an index computed from the wrong thing, the first half of this passes and the
 /// second half wakes the wrong task.
-async fn across_ports(driven: &mut Flex<'static>, across: &mut Input<'static>) {
+async fn across_ports(driven: &mut Flex<'static, Async>, across: &mut Input<'static, Async>) {
     let mut far = pin!(across.wait_for_any_edge());
 
     if poll_once(far.as_mut()).await.is_ready() {
@@ -321,19 +322,25 @@ async fn across_ports(driven: &mut Flex<'static>, across: &mut Input<'static>) {
     info!("across ports: ok");
 }
 
+// Every port has to be bound, because which one a pin belongs to is not known until run time.
+bind_group_interrupts!(struct Irqs {
+    GPIOA => embassy_mspm0::gpio::InterruptHandler;
+    GPIOB => embassy_mspm0::gpio::InterruptHandler;
+});
+
 #[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
     // Open drain with the pull-up, so this example can put the pin low and let it back up without
     // fighting anything that might be on the far end of an analyser lead.
-    let mut driven = Flex::new(p.PB17);
+    let mut driven = Flex::new_async(p.PB17, Irqs);
     driven.set_as_input_output();
     driven.set_pull(Pull::Up);
     driven.set_high();
 
-    let mut other = Input::new(p.PB0, Pull::Up);
-    let mut across = Input::new(p.PA17, Pull::Up);
+    let mut other = Input::new_async(p.PB0, Pull::Up, Irqs);
+    let mut across = Input::new_async(p.PA17, Pull::Up, Irqs);
 
     if driven.is_low() || other.is_low() || across.is_low() {
         error!("PB17/PB0/PA17 are not idling high; something is driving them. Halting.");

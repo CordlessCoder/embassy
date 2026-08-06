@@ -4,9 +4,14 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::Config;
-use embassy_mspm0::gpio::{Input, Level, Output, Pull};
+use embassy_mspm0::gpio::{self, Input, Level, Output, Pull};
+use embassy_mspm0::{Config, bind_interrupts};
 use panic_halt as _;
+
+// This part's only port owns an NVIC line, so it binds with `bind_interrupts!`.
+bind_interrupts!(struct Irqs {
+    GPIOA => gpio::InterruptHandler;
+});
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
@@ -19,7 +24,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let mut led1 = Output::new(led1, Level::Low);
 
-    let mut s2 = Input::new(s2, Pull::Up);
+    let mut s2 = Input::new_async(s2, Pull::Up, Irqs);
 
     // led1 is active low
     led1.set_high();

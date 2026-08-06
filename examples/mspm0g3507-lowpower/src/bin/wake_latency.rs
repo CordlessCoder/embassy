@@ -40,7 +40,8 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::gpio::{Input, Level, Output, Pull};
+use embassy_mspm0::bind_group_interrupts;
+use embassy_mspm0::gpio::{self, Input, Level, Output, Pull};
 use embassy_mspm0::low_power::{DEFAULT_MIN_SLEEP, MAX_WAKE_NS};
 use embassy_mspm0::sysctl::{SleepLevel, WakeGuard};
 use embassy_time::Timer;
@@ -65,6 +66,12 @@ const WAKES_PER_CASE: u32 = 8;
 /// without ambiguity; the measurement is of the edge, so the width does not enter it.
 const ACK_HOLD_MS: u64 = 1;
 
+// Every port has to be bound, because which one a pin belongs to is not known until run time.
+bind_group_interrupts!(struct Irqs {
+    GPIOA => gpio::InterruptHandler;
+    GPIOB => gpio::InterruptHandler;
+});
+
 #[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -79,7 +86,7 @@ async fn main(_spawner: Spawner) -> ! {
         DEFAULT_MIN_SLEEP.as_ticks(),
     );
 
-    let mut wake = Input::new(p.PB7, Pull::Down);
+    let mut wake = Input::new_async(p.PB7, Pull::Down, Irqs);
     let mut ack = Output::new(p.PB2, Level::Low);
     let mut led = Output::new(p.PA0, Level::High);
     led.set_inversion(true);

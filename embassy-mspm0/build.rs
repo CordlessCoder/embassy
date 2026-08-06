@@ -78,6 +78,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_low_power(&singletons));
     g.extend(generate_pin_trait_impls());
     g.extend(generate_groups());
+    g.extend(generate_gpio_port_interrupts());
     g.extend(generate_dma_channel_count());
     g.extend(generate_adc_constants(cfgs));
     g.extend(generate_trng_constants());
@@ -495,6 +496,42 @@ fn generate_groups() -> TokenStream {
         pub mod group_source {
             #(#sources)*
         }
+    }
+}
+
+/// One binding per GPIO port, naming whichever kind of interrupt dispatches that port: a group
+/// source on most chips, an NVIC line of its own on the ones with a single port.
+///
+/// Every port is required rather than the pin's own, because a pin's port is not in its type — only
+/// [`SealedPin::pin_port`] knows it, and that is a run-time read.
+fn generate_gpio_port_interrupts() -> TokenStream {
+    let bounds: Vec<_> = METADATA
+        .peripherals
+        .iter()
+        .filter(|p| p.kind == "gpio")
+        .flat_map(|p| p.interrupts.iter().map(move |interrupt| (p, interrupt)))
+        .map(|(peripheral, interrupt)| {
+            if interrupt.group_iidx.is_some() {
+                // `interrupt.name` is the group's NVIC line, shared with the other sources on it.
+                // The source is named after the port.
+                let name = Ident::new(peripheral.name, Span::call_site());
+
+                quote! {
+                    crate::interrupt_group::Binding<crate::interrupt_group::#name, crate::gpio::InterruptHandler>
+                }
+            } else {
+                let name = Ident::new(interrupt.name, Span::call_site());
+
+                quote! {
+                    crate::interrupt::typelevel::Binding<crate::interrupt::typelevel::#name, crate::gpio::InterruptHandler>
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        #[cfg(feature = "rt")]
+        unsafe impl<T> crate::gpio::PortInterrupts for T where T: #(#bounds)+* {}
     }
 }
 

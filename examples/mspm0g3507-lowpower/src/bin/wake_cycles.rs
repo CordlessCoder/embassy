@@ -53,8 +53,9 @@ use cortex_m::peripheral::syst::SystClkSource;
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::gpio::{Input, Pull};
-use embassy_mspm0::pac;
+use embassy_mspm0::gpio::{self, Input, Pull};
+use embassy_mspm0::mode::Async;
+use embassy_mspm0::{bind_group_interrupts, pac};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use panic_halt as _;
@@ -144,6 +145,12 @@ async fn injector() {
     }
 }
 
+// Every port has to be bound, because which one a pin belongs to is not known until run time.
+bind_group_interrupts!(struct Irqs {
+    GPIOA => gpio::InterruptHandler;
+    GPIOB => gpio::InterruptHandler;
+});
+
 #[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -156,7 +163,7 @@ async fn main(spawner: Spawner) -> ! {
     syst.clear_current();
     syst.enable_counter();
 
-    let mut input = Input::new(p.PB7, Pull::Up);
+    let mut input = Input::new_async(p.PB7, Pull::Up, Irqs);
 
     if input.is_low() {
         error!("PB7 is being driven low; nothing should be connected to it. Halting.");
@@ -226,7 +233,7 @@ async fn main(spawner: Spawner) -> ! {
     let executor = dispatch.min.saturating_sub(entry.min + poll.min);
     info!("of which the executor hand-off is {} cycles", executor);
 
-    two_waiters(input, Input::new(p.PB2, Pull::Up)).await;
+    two_waiters(input, Input::new_async(p.PB2, Pull::Up, Irqs)).await;
 
     loop {
         embassy_time::Timer::after_secs(60).await;
@@ -241,7 +248,7 @@ async fn main(spawner: Spawner) -> ! {
 ///
 /// `second` is armed after `first` but dropped after it, so `first` is behind it in the list either way.
 /// That ordering is the point — declaring it first and arming it second is what puts it there.
-async fn two_waiters(mut first: Input<'static>, mut second: Input<'static>) {
+async fn two_waiters(mut first: Input<'static, Async>, mut second: Input<'static, Async>) {
     let mut behind = pin!(second.wait_for_any_edge());
 
     {
