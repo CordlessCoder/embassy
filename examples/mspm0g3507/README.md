@@ -33,6 +33,8 @@ Embassy Chat: https://matrix.to/#/#embassy-rs:matrix.org
 | `i2c_crosscheck` | `i2c_target` on a NUCLEO-U575ZI-Q, in `examples/stm32u575` |
 | `uart_crosscheck` | `usart_echo` on a NUCLEO-U575ZI-Q |
 | `i2c_target` | `i2c_controller` on a NUCLEO-U575ZI-Q |
+| `i2c_10bit` | `i2c_target_10bit` on a NUCLEO-U575ZI-Q |
+| `i2c_target_10bit` | `i2c_controller_10bit` on a NUCLEO-U575ZI-Q |
 
 `clock_syspll` runs MCLK at 80 MHz from the SYSPLL and measures it against LFCLK; it needs no second
 board, but `CLK_OUT` only moves after a reset or power cycle, since `probe-rs` does not issue SYSRST.

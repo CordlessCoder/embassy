@@ -15,6 +15,8 @@ cargo run --release --bin i2c_controller
 | `i2c_controller` | MSPM0 `i2c_target` | our I2C **target**: command decoding, `respond_and_fill`, general call, recovery from an over-long read |
 | `i2c_target` | MSPM0 `i2c_crosscheck` | our I2C **controller**: solved `Timing`, the restart in a write-read |
 | `i2c_slow_target` | MSPM0 `i2c_faults` | the same, with a multi-millisecond clock stretch on one transaction in four — the condition [#6633](https://github.com/embassy-rs/embassy/pull/6633) reports as wedging the controller |
+| `i2c_controller_10bit` | MSPM0 `i2c_target_10bit` | our I2C **target** on a 10-bit own address |
+| `i2c_target_10bit` | MSPM0 `i2c_10bit` | our I2C **controller** in 10-bit mode, with a 7-bit address live at the same time so one binary can switch between them |
 | `usart_echo` | MSPM0 `uart_crosscheck` | our UART: the solved baud divider, against a clock that is not ours |
 
 Board: NUCLEO-U575ZI-Q. Every example runs the same 160 MHz PLL off HSI so the clock setup is never the
