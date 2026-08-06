@@ -17,6 +17,8 @@ embassy-sync = { version = "0.8.0", path = "../../embassy-sync", features = ["de
 embassy-time = { version = "0.5.1", path = "../../embassy-time", features = ["defmt"] }
 panic-halt = "1.0.0"
 cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
+# `gpio_waiters` drops a wait inside a section it holds across a scope end, which `with` cannot express.
+critical-section = "1.2.0"
 cortex-m-rt = { version = "0.7.0"}
 defmt = "1.0.1"
 # Non-blocking: probe-rs puts RTT into blocking mode, and a full buffer then stalls inside a critical
