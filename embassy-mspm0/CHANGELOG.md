@@ -74,3 +74,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/i2c: report `Error::BusStuck` when a target is holding SDA low, and add `I2c::recover_stuck_bus` to clock it off the bus plus `I2c::bus_is_stuck` to ask
 - feat: mspm0/gpio: replace the `maitake-sync` wait map with a per-port list of waiters, which halves the cost of a GPIO wake and removes the dependency
 - fix: mspm0/i2c: honour SLAU846's conditions for a FIFO flush — wait for the controller to go idle, and mask the FIFO interrupts across it
+- **breaking** mspm0/i2c: addresses are now `Address`, taken as `impl Into<Address>`; a `u8` is 7-bit and a `u16` 10-bit, so an untyped integer literal needs a `u8` suffix
+- feat: mspm0/i2c: support 10-bit addressing in the controller, including `embedded_hal::i2c::I2c<TenBitAddress>` for the blocking and async drivers
