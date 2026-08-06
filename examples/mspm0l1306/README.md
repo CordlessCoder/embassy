@@ -35,3 +35,6 @@ Embassy Chat: https://matrix.to/#/#embassy-rs:matrix.org
 | `i2c_target` | `i2c_controller` on a NUCLEO-U575ZI-Q, in `examples/stm32u575` |
 
 `clock_tree` measures the programmed clock tree against LFCLK and needs no second board.
+
+`i2c_rejects` checks the addresses and configurations the I2C driver refuses, all of which are settled
+before the peripheral touches the bus, so it needs no wiring and no target.
