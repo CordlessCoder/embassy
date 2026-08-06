@@ -9,7 +9,7 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_mspm0::i2c::{Address, ClockDiv, ClockSel, Config, Timing};
-use embassy_mspm0::i2c_target::{Command, Config as TargetConfig, I2cTarget, ReadStatus};
+use embassy_mspm0::i2c_target::{Command, Config as TargetConfig, I2cTarget, ReadStatus, SecondAddress};
 use embassy_mspm0::peripherals::I2C1;
 use embassy_mspm0::sysctl::clock;
 use embassy_mspm0::{bind_interrupts, i2c};
@@ -28,6 +28,13 @@ const TIMING: Timing = match Timing::solve(&clock::RESET_SETUP.clocks(), ClockSe
     None => core::panic!("100 kHz is not reachable from MFCLK"),
 };
 
+/// A second address to answer on, with the low two bits masked off.
+///
+/// Answers `0x50` through `0x53`, so `0x54` is the nearest address that must not match. A read on any of
+/// them is answered with the address itself rather than the usual bytes, which is how the controller can
+/// check `matched_address()` without reading this end's log.
+const SECOND: SecondAddress = SecondAddress { addr: 0x50, mask: 0x03 };
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -39,6 +46,7 @@ async fn main(_spawner: Spawner) -> ! {
     let config = Config::default().with_timing(TIMING);
     let mut target_config = TargetConfig::default();
     target_config.target_addr = Address::SevenBit(0x48);
+    target_config.second_addr = Some(SECOND);
     target_config.general_call = true;
     let mut i2c = I2cTarget::new(instance, scl, sda, Irqs, config, target_config).unwrap();
 
@@ -47,11 +55,23 @@ async fn main(_spawner: Spawner) -> ! {
     let data_wr = [9u8; 2];
 
     loop {
-        match i2c.listen(&mut read).await {
+        let command = i2c.listen(&mut read).await;
+
+        // Read before answering: the peripheral re-evaluates the match on every address comparison, so
+        // responding first would report whatever the next command matched.
+        let on = i2c.matched_address();
+        let second = i2c.matched_second_address();
+
+        match command {
             Ok(Command::GeneralCall(_)) => info!("General call received"),
             Ok(Command::Read) => {
-                info!("Read command received");
-                match i2c.respond_to_read(&data).await.unwrap() {
+                info!("Read command received on {}", on);
+
+                // The second address covers a range, so answering with the matched address is the only
+                // way the far end can tell which of them it reached.
+                let answer = if second { [on.addr() as u8; 2] } else { data };
+
+                match i2c.respond_to_read(&answer).await.unwrap() {
                     ReadStatus::Done => info!("Finished reading"),
                     ReadStatus::NeedMoreBytes => {
                         info!("Read needs more bytes - will reset");
@@ -63,7 +83,7 @@ async fn main(_spawner: Spawner) -> ! {
                     }
                 }
             }
-            Ok(Command::Write(_)) => info!("Write command received"),
+            Ok(Command::Write(_)) => info!("Write command received on {}", on),
             Ok(Command::WriteRead(_)) => {
                 info!("Write-Read command received");
                 i2c.respond_and_fill(&data_wr, 0xFE).await.unwrap();

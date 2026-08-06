@@ -12,7 +12,7 @@ cargo run --release --bin i2c_controller
 
 | Example | Pairs with | Tests |
 |---|---|---|
-| `i2c_controller` | MSPM0 `i2c_target` | our I2C **target**: command decoding, `respond_and_fill`, general call, recovery from an over-long read |
+| `i2c_controller` | MSPM0 `i2c_target` | our I2C **target**: command decoding, `respond_and_fill`, general call, the masked second address, recovery from an over-long read |
 | `i2c_target` | MSPM0 `i2c_crosscheck` | our I2C **controller**: solved `Timing`, the restart in a write-read |
 | `i2c_slow_target` | MSPM0 `i2c_faults` | the same, with a multi-millisecond clock stretch on one transaction in four — the condition [#6633](https://github.com/embassy-rs/embassy/pull/6633) reports as wedging the controller |
 | `i2c_controller_10bit` | MSPM0 `i2c_target_10bit` | our I2C **target** on a 10-bit own address |
