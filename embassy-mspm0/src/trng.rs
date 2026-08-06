@@ -150,27 +150,19 @@ impl core::error::Error for Error {}
 /// The TRNG can be configured with different decimation rates. See [`DecimRate`], [`FastDecimRate`], and [`CryptoDecimRate`].
 /// The TRNG can be instantiated with [`Trng::new`], [`Trng::new_fast`], or [`Trng::new_secure`].
 ///
-/// Usage example:
+/// Usage example, taking the peripheral from `embassy_mspm0::init`:
 /// ```no_run
-/// #![no_std]
-/// #![no_main]
-///
-/// use embassy_executor::Spawner;
-/// use embassy_mspm0::Config;
+/// use embassy_mspm0::Peri;
+/// use embassy_mspm0::peripherals::TRNG;
 /// use embassy_mspm0::trng::Trng;
 /// use rand_core::TryRng;
-/// use {defmt_rtt as _, panic_halt as _};
 ///
-/// #[embassy_executor::main]
-/// async fn main(_spawner: Spawner) -> ! {
-///     let p = embassy_mspm0::init(Config::default());
-///     let mut trng = Trng::new(p.TRNG).expect("Failed to initialize TRNG");
+/// fn fill(peripheral: Peri<'static, TRNG>) {
+///     let mut trng = Trng::new(peripheral).expect("Failed to initialize TRNG");
 ///     let mut randomness = [0u8; 16];
 ///
-///     loop {
-///         trng.fill_bytes(&mut randomness).unwrap();
-///         assert_ne!(randomness, [0u8; 16]);
-///     }
+///     trng.try_fill_bytes(&mut randomness).unwrap();
+///     assert_ne!(randomness, [0u8; 16]);
 /// }
 /// ```
 pub struct Trng<'d, L: SecurityMarker> {
