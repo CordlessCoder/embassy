@@ -1121,12 +1121,13 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
             state.rx_waker.wake();
         }
 
-        // Disable any further RX interrupts when the buffer becomes full or
-        // errors have occurred. This lets us buffer additional errors in the
-        // fifo without needing more error storage locations, and most applications
-        // will want to do a full reset of their uart state anyway once an error
-        // has happened.
-        if state.rx_buf.is_full() || errs != 0 {
+        // Disable any further RX interrupts when the buffer becomes full, which is real backpressure:
+        // there is nowhere to put what arrives until the caller reads.
+        //
+        // An error is not that. Masking on one stalls the receiver until the caller next reads, which
+        // under a sustained overrun feeds itself: 16,000 maskings a second at 1 Mbaud, and the delivered
+        // rate *falling* as more was offered — 64,000 B/s against 76,000 with an error left alone.
+        if state.rx_buf.is_full() {
             #[cfg(feature = "_probe")]
             crate::probe::set(mask_marker);
 
