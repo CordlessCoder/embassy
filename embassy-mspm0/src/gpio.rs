@@ -474,6 +474,21 @@ impl EdgeArm {
         }
     }
 
+    /// The list this pin's port waits on.
+    ///
+    /// `port` comes from a run-time pin number, so nothing proves it indexes the array, and both
+    /// callers below would otherwise carry a bounds check and a panic site. Masking the index instead
+    /// is worse than the check it removes: `PORT_COUNT` is 3 on the widest parts, and at `opt-level`
+    /// `"z"` a modulo by 3 is lowered to `__aeabi_uidivmod`, which drags in 400 bytes of divider.
+    ///
+    /// # Safety
+    ///
+    /// `port` is `pin_port / 32` for a pin this chip has, and `PORT_COUNT` counts this chip's ports;
+    /// both come from the same generated pin metadata, so the index is in range.
+    fn waiters(&self) -> &'static WaiterList<EdgeWait> {
+        unsafe { WAITERS.get_unchecked(self.port) }
+    }
+
     /// Start the wait: select the edge, publish the waiter, and let the interrupt through.
     ///
     /// One critical section for the lot. Every write is either a read-modify-write of a register shared
@@ -494,15 +509,22 @@ impl EdgeArm {
         };
 
         critical_section::with(|cs| {
-            if self.bit >= 16 {
-                self.block.polarity31_16().modify(|w| {
-                    w.set_dio(self.bit - 16, polarity);
-                });
+            // Both halves hold sixteen two-bit fields in a `u32`, and the metapac gives them separate
+            // types, so writing through those would emit this read-modify-write twice. Choosing the
+            // register first and editing the field by hand emits it once.
+            let polarity_reg = if self.bit >= 16 {
+                self.block.polarity31_16().as_ptr() as *mut u32
             } else {
-                self.block.polarity15_0().modify(|w| {
-                    w.set_dio(self.bit, polarity);
-                });
+                self.block.polarity15_0().as_ptr() as *mut u32
             };
+            let shift = (self.bit % 16) * 2;
+
+            // SAFETY: the pointer is one of this block's own polarity registers, and the critical
+            // section this runs in keeps the read-modify-write whole against the port's interrupt.
+            unsafe {
+                let polarity_bits = polarity_reg.read_volatile() & !(0b11 << shift);
+                polarity_reg.write_volatile(polarity_bits | ((polarity as u32) << shift));
+            }
 
             // Drop edges from before the wait, after the polarity write so that selecting the event
             // cannot leave a status bit behind.
@@ -515,7 +537,7 @@ impl EdgeArm {
 
             // SAFETY: interrupts are off, so no reader of the list can run; and `self` is borrowed for
             // the whole wait, which `EdgeArm::drop` ends by unlinking.
-            unsafe { WAITERS[self.port].link(&self.waiter, cs) };
+            unsafe { self.waiters().link(&self.waiter, cs) };
 
             // Without fast wake the input synchronizer is unclocked in STOP and STANDBY, which loses the
             // edge rather than delaying it.
@@ -550,7 +572,7 @@ impl Drop for EdgeArm {
 
             // The pin is masked, so nothing can be walking the list or about to read this node.
             // Unlinking last is what makes the node safe to drop.
-            WAITERS[self.port].unlink(&self.waiter, cs);
+            self.waiters().unlink(&self.waiter, cs);
         });
     }
 }

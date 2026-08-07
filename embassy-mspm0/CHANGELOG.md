@@ -89,3 +89,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/tim: index the per-channel interrupt bits by channel rather than selecting between four arms
 - docs: mspm0/uart: say where a `BufferedUart`'s buffers belong — a task-local array costs 188 bytes of flash over a static one
 - fix: mspm0/low-power: ask the time driver whether the sleep is long enough rather than how long it is, sparing the idle path a saturating subtraction and a minimum
+- fix: mspm0/gpio: arm an edge wait without a bounds check or a duplicated polarity write, 44 bytes off a binary that waits on a pin
