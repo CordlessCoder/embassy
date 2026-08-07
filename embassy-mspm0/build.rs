@@ -424,7 +424,7 @@ fn generate_groups() -> TokenStream {
     });
 
     let groups = METADATA.interrupt_groups.iter().map(|group| {
-        let interrupt_group_name = Ident::new(group.name, Span::call_site());
+        let demux_name = Ident::new(&group.name.to_lowercase(), Span::call_site());
         let group_enum = Ident::new(&format!("Group{}", &group.name[5..]), Span::call_site());
         let group_number = Literal::u32_unsuffixed(group.number);
 
@@ -432,14 +432,16 @@ fn generate_groups() -> TokenStream {
             let variant = Ident::new(&interrupt.name, Span::call_site());
 
             quote! {
-                #group_enum::#variant => unsafe { group_vectors::#variant() },
+                #group_enum::#variant => unsafe { super::group_vectors::#variant() },
             }
         });
 
+        // The body, as an ordinary function. The vector-table symbol that calls it is emitted by
+        // `bind_group_interrupts!` instead, so a binary that binds no source on any group links neither
+        // — 60 bytes per group, which every binary used to carry whether or not it had a handler behind
+        // it. Nothing is lost when it is absent: an unbound source already resolved to `DefaultHandler`.
         quote! {
-            #[cfg(feature = "rt")]
-            #[crate::pac::interrupt]
-            fn #interrupt_group_name() {
+            pub fn #demux_name() {
                 use crate::pac::#group_enum;
 
                 let group = crate::pac::CPUSS.int_group(#group_number);
@@ -483,8 +485,38 @@ fn generate_groups() -> TokenStream {
             }
         });
 
+    // The vector-table symbols, emitted into the user's crate by `bind_group_interrupts!` rather than
+    // here. Each is a call away from its body, so a binary that never invokes the macro links no demux at
+    // all, and one that does pays what it did before.
+    //
+    // Gated at build time rather than with a `cfg`, because a `cfg` inside the macro would be read
+    // against the *user's* features, not this crate's.
+    let has_rt = env::var_os("CARGO_FEATURE_RT").is_some();
+
+    let vector_symbols = METADATA
+        .interrupt_groups
+        .iter()
+        .filter(|_| has_rt)
+        .map(|group| {
+            let symbol = Ident::new(group.name, Span::call_site());
+            let demux_name = Ident::new(&group.name.to_lowercase(), Span::call_site());
+
+            quote! {
+                #[allow(non_snake_case)]
+                #[unsafe(no_mangle)]
+                unsafe extern "C" fn #symbol() {
+                    $crate::_group_demux::#demux_name();
+                }
+            }
+        });
+
     quote! {
-        #(#groups)*
+        /// One demultiplexer per interrupt group, called by the vector-table symbol
+        /// `bind_group_interrupts!` emits for it.
+        #[cfg(feature = "rt")]
+        pub mod group_demux {
+            #(#groups)*
+        }
 
         #[cfg(feature = "rt")]
         mod group_vectors {
@@ -495,6 +527,17 @@ fn generate_groups() -> TokenStream {
 
         pub mod group_source {
             #(#sources)*
+        }
+
+        /// The group handlers' vector-table entries, emitted by `bind_group_interrupts!`.
+        ///
+        /// Expands to nothing on a chip that groups nothing, and without `rt`.
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! __mspm0_group_vectors {
+            () => {
+                #(#vector_symbols)*
+            };
         }
     }
 }

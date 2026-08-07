@@ -85,3 +85,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/tim: add `low_level::solve_load` and `simple_pwm::Config::load`, a `const` period that spares the device the divisions `Config::frequency` needs
 - fix: mspm0/low-power: narrow the wake-distance check to 32 bits, which is all the time driver ever returns
 - fix: mspm0/executor: drop the redundant memory barriers from the low-power idle path
+- **breaking** mspm0: `bind_group_interrupts!` emits the interrupt groups' vector-table entries, so it may appear only once in a binary; in exchange a binary that binds no group source no longer carries their demultiplexers

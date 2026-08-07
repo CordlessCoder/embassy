@@ -86,6 +86,11 @@ pub use mspm0_metapac as pac;
 #[cfg(not(feature = "unstable-pac"))]
 pub(crate) use mspm0_metapac as pac;
 
+/// The interrupt groups' demultiplexers, called by the vector-table symbols
+/// [`bind_group_interrupts!`] emits. Public only so that macro can name them from the user's crate.
+#[cfg(feature = "rt")]
+#[doc(hidden)]
+pub use crate::_generated::group_demux as _group_demux;
 pub use crate::_generated::interrupt;
 
 /// Interrupt sources dispatched by an interrupt group rather than by an NVIC line of their own.
@@ -140,6 +145,14 @@ pub mod interrupt_group {
 ///     TRNG => trng::InterruptHandler;
 /// });
 /// ```
+///
+/// # At most once per binary
+///
+/// This also emits the groups' vector-table entries, which is what keeps a demultiplexer out of a
+/// binary that binds nothing. They can only be defined once, so bind every source a binary needs in a
+/// single invocation — a second one fails to link, naming the duplicated group. Sources sharing a
+/// group is the normal case rather than the exception: on most chips `GPIOA`, `GPIOB`, `TRNG` and the
+/// comparators are all on the same one.
 #[macro_export]
 macro_rules! bind_group_interrupts {
     ($(#[$attr:meta])* $vis:vis struct $name:ident {
@@ -151,6 +164,12 @@ macro_rules! bind_group_interrupts {
             ),*;
         )*
     }) => {
+        // The groups' vector-table entries, which nothing else emits now: a binary that binds no
+        // source links no demultiplexer at all. Emitted once here rather than per source, several
+        // sources sharing one group — so **this macro may appear at most once in a binary**, and a
+        // second invocation is a duplicate-symbol error naming the group.
+        $crate::__mspm0_group_vectors!();
+
         #[derive(Copy, Clone)]
         $(#[$attr])*
         $vis struct $name;
