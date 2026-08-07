@@ -365,6 +365,13 @@ pub(crate) fn init(cs: CriticalSection) {
 /// Asked as a predicate rather than as a distance: the caller only ever compares the answer against
 /// its minimum, and neither the saturating subtraction nor the minimum of the two wakes has to be
 /// evaluated to decide that.
+///
+/// **A `ticks` of zero answers `false` while an alarm is overdue, and that is deliberate.** Asking the
+/// distance instead would have called an overdue alarm zero ticks away and let the sleep through, which
+/// is the one case where the two phrasings disagree. Declining is what is wanted: an alarm already due is
+/// work the core should be doing rather than sleeping on. Nothing reaches it by default —
+/// [`Config::min_sleep`](crate::Config::min_sleep) is non-zero — so it is not worth an early return, but
+/// it is not an off-by-one either.
 #[cfg(feature = "low-power")]
 pub(crate) fn wake_at_least(cs: CriticalSection, ticks: u32) -> bool {
     let now = DRIVER.now();
