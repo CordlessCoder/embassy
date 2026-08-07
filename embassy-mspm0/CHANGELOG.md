@@ -101,3 +101,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: pend the buffered UART's interrupt by hand only when the transmit buffer was empty, as the blocking path already did, instead of on every write
 - fix: mspm0/uart: keep draining the receive FIFO past a faulty byte instead of abandoning the rest, which left the receiver further behind and turned one overrun into a run of them
 - fix: mspm0/uart: mask the buffered receive interrupt only when the buffer is full, not when a byte arrives in error — masking on an error stalled the receiver until the caller next read, and cost 20% of the delivered rate at 1 Mbaud
+- mspm0/uart: `BufferedUartRx::take_dropped` counts the bytes the receiver dropped, which `Error::Overrun` could not say and only reported at all when a read found the buffer empty — which a receiver that cannot keep up never does

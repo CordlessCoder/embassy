@@ -76,7 +76,10 @@
 //!
 //! # Reading the output
 //!
-//! One line a second. `lost` is derived from the sequence and is the measurement; `overruns` is what the
+//! One line a second. `lost` is derived from the sequence and is the measurement; `reported dropped` is
+//! the driver's own count of bytes it knows it lost, which should agree with `lost` once the driver is
+//! honest about it — the two disagreeing by orders of magnitude is what an under-reporting flag looks
+//! like. It is what the
 //! driver reported. A rate is clean when both stay zero across several lines — the first line always
 //! shows a partial block and a gap, since this end starts mid-stream.
 //!
@@ -217,7 +220,7 @@ async fn measure(rx: &mut BufferedUartRx<'_>, tick: &mut Output<'_>) -> ! {
     let mut received = 0u32;
     let mut lost = 0u32;
     let mut gaps = 0u32;
-    let mut overruns = 0u32;
+    let mut dropped = 0u32;
     let mut other = 0u32;
     let mut since = Instant::now();
 
@@ -238,7 +241,9 @@ async fn measure(rx: &mut BufferedUartRx<'_>, tick: &mut Output<'_>) -> ! {
                 }
                 received += n as u32;
             }
-            Ok(Err(Error::Overrun)) => overruns += 1,
+            // Says only that it happened, and not reachable at all under a sustained overrun: the error
+            // surfaces solely on a read that finds the buffer empty. `take_dropped` below is the figure.
+            Ok(Err(Error::Overrun)) => {}
             Ok(Err(e)) => {
                 other += 1;
                 error!("read failed: {:?}", e);
@@ -252,17 +257,21 @@ async fn measure(rx: &mut BufferedUartRx<'_>, tick: &mut Output<'_>) -> ! {
         if elapsed >= REPORT {
             tick.toggle();
 
+            // Once per line, not once per read: it takes a critical section, and calling it on the read
+            // path costs about 2.5% of the delivered rate at 1 Mbaud — the example measuring itself.
+            dropped += rx.take_dropped() as u32;
+
             let rate = (received as u64 * 1000 / elapsed.as_millis().max(1)) as u32;
             info!(
-                "{} B/s ({} nominal): {} received, {} lost in {} gaps, {} overruns, {} other{}",
+                "{} B/s ({} nominal): {} received, {} lost in {} gaps, {} reported dropped, {} other{}",
                 rate,
                 BAUD_RATE / 10,
                 received,
                 lost,
                 gaps,
-                overruns,
+                dropped,
                 other,
-                if lost == 0 && overruns == 0 && other == 0 {
+                if lost == 0 && dropped == 0 && other == 0 {
                     " -- clean"
                 } else {
                     ""
@@ -272,7 +281,7 @@ async fn measure(rx: &mut BufferedUartRx<'_>, tick: &mut Output<'_>) -> ! {
             received = 0;
             lost = 0;
             gaps = 0;
-            overruns = 0;
+            dropped = 0;
             other = 0;
             since = Instant::now();
         }

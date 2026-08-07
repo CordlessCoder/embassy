@@ -1,7 +1,7 @@
 use core::future::{Future, poll_fn};
 use core::marker::PhantomData;
 use core::slice;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
 use core::task::Poll;
 
 use embassy_embedded_hal::SetConfig;
@@ -130,6 +130,12 @@ impl<'d> BufferedUart<'d> {
     /// Read from UART RX buffer, blocking execution until done.
     pub fn blocking_read(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
         self.rx.blocking_read(buffer)
+    }
+
+    /// Bytes the receiver knows it dropped since this was last called. See
+    /// [`BufferedUartRx::take_dropped`].
+    pub fn take_dropped(&self) -> u16 {
+        self.rx.take_dropped()
     }
 
     /// Send break character.
@@ -606,6 +612,11 @@ pub(crate) struct BufferedState {
     tx_waker: AtomicWaker,
     tx_buf: RingBuffer,
     rx_error: AtomicU8,
+    /// Bytes the receiver is known to have dropped since the last report, saturating.
+    ///
+    /// `rx_error` is a set of flags, so on its own it cannot say whether one byte was lost or a hundred
+    /// thousand — which is exactly how a sustained overrun once read as a handful of them.
+    rx_dropped: AtomicU16,
 }
 
 // these must match bits 8..12 in RXDATA, but shifted by 8 to the right
@@ -624,6 +635,7 @@ impl BufferedState {
             tx_waker: AtomicWaker::new(),
             tx_buf: RingBuffer::new(),
             rx_error: AtomicU8::new(0),
+            rx_dropped: AtomicU16::new(0),
         }
     }
 }
@@ -846,8 +858,25 @@ impl<'d> BufferedUartRx<'d> {
         Poll::Ready(result)
     }
 
+    /// Bytes the receiver knows it dropped since this was last called, clearing the count.
+    ///
+    /// [`Error::Overrun`] says only that it happened, and reaches a caller solely when a read finds the
+    /// buffer empty — which a receiver losing bytes because it cannot keep up never does. This is the
+    /// figure, without that condition attached, and it is cleared independently of the error. Saturates
+    /// rather than wrapping, so a large value means "at least this many".
+    pub fn take_dropped(&self) -> u16 {
+        critical_section::with(|_cs| {
+            let dropped = self.state.rx_dropped.load(Ordering::Relaxed);
+            self.state.rx_dropped.store(0, Ordering::Relaxed);
+
+            dropped
+        })
+    }
+
     fn get_rx_error(state: &BufferedState) -> Option<Error> {
         // Cortex-M0 has does not support atomic swap, so we must do two operations.
+        // `rx_dropped` is deliberately left alone: it is read by `take_dropped` and reporting an error
+        // here must not consume a count the caller has not seen.
         let errs = critical_section::with(|_cs| {
             let errs = state.rx_error.load(Ordering::Relaxed);
             state.rx_error.store(0, Ordering::Relaxed);
@@ -1074,9 +1103,10 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         let mut rx_writer = unsafe { state.rx_buf.writer() };
         let rx_buf = rx_writer.push_slice();
         let mut n_read = 0;
-        // Accumulated here and published once below. The store needs a critical section on M0, and
+        // Accumulated here and published once below. Both stores need a critical section on M0, and
         // taking one per faulty byte would cost the most exactly when the receiver can least afford it.
         let mut errs = 0u8;
+        let mut dropped = 0u16;
 
         while n_read < rx_buf.len() {
             let stat = r.stat().read();
@@ -1090,6 +1120,12 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
 
             if flags != 0 {
                 errs |= flags;
+
+                // An overrun says bytes were lost before this one, so one counted per faulty byte is a
+                // lower bound rather than the true figure.
+                if flags & RXE_OVERRUN != 0 {
+                    dropped = dropped.saturating_add(1);
+                }
 
                 // Only fill the buffer with valid characters. The current character is fine if the error
                 // is an overrun, but adding it would report the overrun one character too late; drop it
@@ -1111,6 +1147,11 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
                 state
                     .rx_error
                     .store(state.rx_error.load(Ordering::Relaxed) | errs, Ordering::Relaxed);
+
+                if dropped != 0 {
+                    let total = state.rx_dropped.load(Ordering::Relaxed).saturating_add(dropped);
+                    state.rx_dropped.store(total, Ordering::Relaxed);
+                }
             });
         }
 

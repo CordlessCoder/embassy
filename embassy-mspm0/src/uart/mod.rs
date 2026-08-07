@@ -365,6 +365,10 @@ pub enum Error {
 
     Noise,
 
+    /// The receiver dropped at least one byte.
+    ///
+    /// How many is not in here: a flag cannot say, and the buffered driver reports the figure through
+    /// [`BufferedUartRx::take_dropped`] instead.
     Overrun,
 
     Parity,
