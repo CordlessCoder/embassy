@@ -68,7 +68,7 @@ pub(crate) fn set_min_sleep(min_sleep: Duration) {
 /// Whether the next wake is far enough out for a deep-sleep mode to be worth entering.
 fn min_sleep_met(cs: CriticalSection) -> bool {
     let until_wake = ticks_until_wake(cs);
-    let min_sleep = MIN_SLEEP_TICKS.load(Ordering::Relaxed) as u64;
+    let min_sleep = MIN_SLEEP_TICKS.load(Ordering::Relaxed);
 
     if until_wake < min_sleep {
         trace!("Waking in {} ticks, under the {} tick minimum", until_wake, min_sleep);
@@ -80,14 +80,14 @@ fn min_sleep_met(cs: CriticalSection) -> bool {
 
 /// Ticks until something wakes the core again.
 #[cfg(feature = "_time-driver")]
-fn ticks_until_wake(cs: CriticalSection) -> u64 {
+fn ticks_until_wake(cs: CriticalSection) -> u32 {
     crate::time_driver::ticks_until_wake(cs)
 }
 
 /// Without a time driver nothing schedules a wake, so the sleep is unbounded and always long enough.
 #[cfg(not(feature = "_time-driver"))]
-fn ticks_until_wake(_cs: CriticalSection) -> u64 {
-    u64::MAX
+fn ticks_until_wake(_cs: CriticalSection) -> u32 {
+    u32::MAX
 }
 
 /// Block sleep at `level` and every deeper mode. Paired with [`unblock`] by

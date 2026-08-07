@@ -351,8 +351,12 @@ pub(crate) fn init(cs: CriticalSection) {
 /// it, so its interrupt is never masked and it cuts short any sleep entered just before one.
 ///
 /// Zero if the alarm is already due, and never more than one `period` away.
+///
+/// A `u32` because of that bound: the answer cannot exceed `1 << HALF_BITS`, which is at most `1 << 31`
+/// even on the 32-bit driver. Its only caller compares it against a `u32`, and a `u64` there would cost
+/// 64-bit compares on the idle path for range that cannot occur.
 #[cfg(feature = "low-power")]
-pub(crate) fn ticks_until_wake(cs: CriticalSection) -> u64 {
+pub(crate) fn ticks_until_wake(cs: CriticalSection) -> u32 {
     let now = DRIVER.now();
 
     // The low `HALF_BITS` of `now` are the position within the current period, so what is left of it
@@ -361,7 +365,8 @@ pub(crate) fn ticks_until_wake(cs: CriticalSection) -> u64 {
 
     let alarm = DRIVER.alarm.borrow(cs).get().saturating_sub(now);
 
-    alarm.min(period_end)
+    // `period_end <= 1 << HALF_BITS`, so the minimum of the two is always inside `u32`.
+    alarm.min(period_end) as u32
 }
 
 #[cfg(all(time_driver_timg0, feature = "rt"))]
