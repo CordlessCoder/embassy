@@ -86,3 +86,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/low-power: narrow the wake-distance check to 32 bits, which is all the time driver ever returns
 - fix: mspm0/executor: drop the redundant memory barriers from the low-power idle path
 - **breaking** mspm0: `bind_group_interrupts!` emits the interrupt groups' vector-table entries, so it may appear only once in a binary; in exchange a binary that binds no group source no longer carries their demultiplexers
+- fix: mspm0/tim: index the per-channel interrupt bits by channel rather than selecting between four arms

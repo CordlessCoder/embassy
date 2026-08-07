@@ -109,23 +109,60 @@ impl Event {
             Event::Load => mask.set_l(true),
             Event::RepeatCount => mask.set_repc(true),
             Event::DirectionChange => mask.set_dc(true),
-            Event::CaptureOrCompareUp(channel) => match channel {
-                Channel::Ch0 => mask.set_ccu0(true),
-                Channel::Ch1 => mask.set_ccu1(true),
-                Channel::Ch2 => mask.set_ccu2(true),
-                Channel::Ch3 => mask.set_ccu3(true),
-            },
-            Event::CaptureOrCompareDown(channel) => match channel {
-                Channel::Ch0 => mask.set_ccd0(true),
-                Channel::Ch1 => mask.set_ccd1(true),
-                Channel::Ch2 => mask.set_ccd2(true),
-                Channel::Ch3 => mask.set_ccd3(true),
-            },
+            // The four per-channel bits are contiguous, so the channel indexes one rather than
+            // selecting between four arms — which the compiler cannot see through the generated
+            // setters. Free where the event is a constant, and a table instead of a branch chain
+            // where the channel is not.
+            Event::CaptureOrCompareUp(channel) => return regs::CpuInt(1 << (CCU0_BIT + channel.index())),
+            Event::CaptureOrCompareDown(channel) => return regs::CpuInt(1 << (CCD0_BIT + channel.index())),
         }
 
         mask
     }
 }
+
+/// Bit of `CCU0` in `IMASK` and the registers sharing its layout. `CCU1`..`CCU3` follow it.
+const CCU0_BIT: usize = 8;
+
+/// Bit of `CCD0` in the same registers, with `CCD1`..`CCD3` following.
+const CCD0_BIT: usize = 4;
+
+// [`Event::mask`] indexes those two runs by channel instead of asking the generated setters, so the
+// runs have to be contiguous and in channel order. Checked one bit at a time against the setters
+// themselves: a metapac that moved or reordered them fails to build rather than quietly masking the
+// wrong channel's interrupt.
+const _: () = {
+    let mut channel = 0;
+
+    while channel < Channel::ALL.len() {
+        let mut up = regs::CpuInt(0);
+        let mut down = regs::CpuInt(0);
+
+        match channel {
+            0 => {
+                up.set_ccu0(true);
+                down.set_ccd0(true);
+            }
+            1 => {
+                up.set_ccu1(true);
+                down.set_ccd1(true);
+            }
+            2 => {
+                up.set_ccu2(true);
+                down.set_ccd2(true);
+            }
+            _ => {
+                up.set_ccu3(true);
+                down.set_ccd3(true);
+            }
+        }
+
+        core::assert!(up.0 == 1 << (CCU0_BIT + channel));
+        core::assert!(down.0 == 1 << (CCD0_BIT + channel));
+
+        channel += 1;
+    }
+};
 
 /// Low-level timer driver.
 pub struct Timer<'d, T: Instance> {
