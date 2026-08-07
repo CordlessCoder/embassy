@@ -451,8 +451,11 @@ impl Edge {
 #[cfg(feature = "rt")]
 struct EdgeArm {
     block: gpio::Gpio,
-    bit: usize,
-    port: usize,
+    /// Bytes rather than indices: this lives in the task frame for as long as the wait does, and on
+    /// this core a byte load zero-extends for free, so the widening at each use costs four bytes of
+    /// flash against eight of RAM per waiting task.
+    bit: u8,
+    port: u8,
     waiter: Waiter<EdgeWait>,
 }
 
@@ -469,8 +472,8 @@ impl EdgeArm {
     fn new(block: gpio::Gpio, pin_port: u8, edge: Edge) -> Self {
         Self {
             block,
-            bit: usize::from(pin_port % 32),
-            port: usize::from(pin_port / 32),
+            bit: pin_port % 32,
+            port: pin_port / 32,
             waiter: Waiter::new(EdgeWait {
                 bit: pin_port % 32,
                 edge,
@@ -494,7 +497,7 @@ impl EdgeArm {
     #[inline(always)]
     fn bit(&self) -> usize {
         unsafe { core::hint::assert_unchecked(self.bit < 32) };
-        self.bit
+        usize::from(self.bit)
     }
 
     /// The list this pin's port waits on.
@@ -509,7 +512,7 @@ impl EdgeArm {
     /// `port` is `pin_port / 32` for a pin this chip has, and `PORT_COUNT` counts this chip's ports;
     /// both come from the same generated pin metadata, so the index is in range.
     fn waiters(&self) -> &'static WaiterList<EdgeWait> {
-        unsafe { WAITERS.get_unchecked(self.port) }
+        unsafe { WAITERS.get_unchecked(usize::from(self.port)) }
     }
 
     /// Start the wait: select the edge, publish the waiter, and let the interrupt through.

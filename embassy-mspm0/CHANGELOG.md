@@ -90,3 +90,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: mspm0/uart: say where a `BufferedUart`'s buffers belong — a task-local array costs 188 bytes of flash over a static one
 - fix: mspm0/low-power: ask the time driver whether the sleep is long enough rather than how long it is, sparing the idle path a saturating subtraction and a minimum
 - fix: mspm0/gpio: arm and disarm an edge wait without bounds checks or a duplicated polarity write, 92 bytes off a binary that waits on a pin and a third fewer instructions with interrupts off
+- fix: mspm0/gpio: hold an edge wait's pin and port as bytes, eight bytes of RAM per waiting task
