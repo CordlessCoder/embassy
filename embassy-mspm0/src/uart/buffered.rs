@@ -889,11 +889,34 @@ impl<'d> BufferedUartTx<'d> {
     }
 
     async fn write_inner(&self, buf: &[u8]) -> Result<usize, Error> {
+        // Whether this call has already let the rest of the task run. Local to the call, so a transfer
+        // that starts on an idle transmitter is not delayed by it.
+        let mut yielded = false;
+
         poll_fn(move |cx| {
             let state = self.state;
 
             if buf.is_empty() {
                 return Poll::Ready(Ok(0));
+            }
+
+            // Sampled before the push, so it says whether the handler already has work queued.
+            let was_empty = state.tx_buf.is_empty();
+
+            // A write only pends when the buffer is full, and under load it may never be: the interrupt
+            // can starve this task enough that the buffer has always drained by the time it runs again.
+            // A `write_all` loop then never yields, and anything joined or selected with it is never
+            // polled — a receiver sharing the task goes deaf for the whole transfer.
+            //
+            // So yield once per call, unconditionally. Both cheaper-looking conditions were measured and
+            // both are wrong: at the instant the starved task runs, the buffer is empty *and* the
+            // hardware reads idle, because the wire has run dry waiting for it. There is no state that
+            // is true when this is needed. The cost is one extra poll per call, taken immediately —
+            // against a byte time of 21 µs at 460800, it does not show.
+            if !yielded {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
 
             let mut tx_writer = unsafe { state.tx_buf.writer() };
@@ -908,11 +931,17 @@ impl<'d> BufferedUartTx<'d> {
                 return Poll::Pending;
             }
 
-            // The TX interrupt only triggers when the there was data in the
-            // FIFO and the number of bytes drops below a threshold. When the
-            // FIFO was empty we have to manually pend the interrupt to shovel
-            // TX data from the buffer into the FIFO.
-            self.info.interrupt.pend();
+            // The TX interrupt only triggers when there was data in the FIFO and the number of bytes
+            // drops below a threshold. When the buffer was empty there may be no interrupt on its way,
+            // so pend one by hand to shovel this into the FIFO; when it was not, the handler that is
+            // already coming will pick these up too. Pending unconditionally forces an interrupt per
+            // write, which is a large share of them under a saturated transmitter, and starves thread
+            // mode enough that this never has to return `Pending` at all — see `blocking_write_inner`,
+            // which has always had this condition.
+            if was_empty {
+                self.info.interrupt.pend();
+            }
+
             Poll::Ready(Ok(n))
         })
         .await
