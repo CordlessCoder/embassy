@@ -94,3 +94,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/i2c: hold the two delay counts as `u16`, which is all either ever needs, taking four bytes off every `I2c`
 - fix: mspm0: emit a vector-table entry only for the interrupt groups the bound sources land on, 60 bytes off a binary that binds one group
 - fix: mspm0/time-driver: hold the alarm timestamp inverted so the driver's state is zero-initialised and its 24-byte image leaves flash
+- fix: mspm0/gpio: dispatch an edge from the port's interrupt-index register instead of scanning the status bits, 44 bytes off a binary that waits on a pin

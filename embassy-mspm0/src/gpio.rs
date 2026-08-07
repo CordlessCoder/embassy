@@ -1410,8 +1410,6 @@ pub(crate) fn init(gpio: gpio::Gpio) {
 /// Classify the edges that have arrived and answer the requests they satisfy.
 #[cfg(feature = "rt")]
 fn irq_handler(gpio: gpio::Gpio, port: Port) {
-    use crate::BitIter;
-
     // Opened as the handler's first action, so the rising edge timestamps the silicon wake plus the
     // interrupt entry and group dispatch, with none of this handler in it. Both markers are resolved
     // here so that neither bracket pays for a lookup.
@@ -1424,17 +1422,27 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
         markers
     };
 
-    // Only pins with the interrupt unmasked, which is only pins with a wait armed.
-    let pending = gpio.cpu_int().mis().read().0;
-
     // One snapshot for all of them: the status bit carries no direction, so the level a pin settled
-    // at is the only thing an edge can be classified by.
+    // at is the only thing an edge can be classified by. Taken before the loop, so every pin in this
+    // handler is classified against the same instant.
     let level = gpio.din31_0().read();
 
-    for bit in BitIter(pending).map(|bit| bit as usize) {
-        gpio.cpu_int().iclr().write(|w| {
-            w.set_dio(bit, true);
-        });
+    // `IIDX` answers "which pin, and clear it" in one read, which is what the hardware is for: SLAU846
+    // 9.3.10 has it return the lowest set *enabled* status bit, clear that bit in `RIS` and `MIS`, and
+    // present the next one, reading zero when none are left. That is this loop's condition, its index
+    // and its `ICLR` write all at once, and it costs no bit scan — `u32::trailing_zeros` has no
+    // instruction behind it on ARMv6-M and lowers to a multiply and a 32-byte table.
+    loop {
+        // Taken as bits rather than through the generated enum: the index is what is wanted, the enum
+        // has a variant per pin, and zero-means-none is the register's own definition.
+        let stat = gpio.cpu_int().iidx().read().stat().to_bits();
+
+        if stat == 0 {
+            break;
+        }
+
+        // Indices are one-based, zero having been spent on "nothing pending".
+        let bit = stat as usize - 1;
 
         // SAFETY: this is the port's own interrupt handler, which is the only walker allowed.
         let waiter = unsafe { WAITERS[port as usize].find(|wait| usize::from(wait.bit) == bit) };
