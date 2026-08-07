@@ -345,28 +345,25 @@ pub(crate) fn init(cs: CriticalSection) {
     DRIVER.init(cs);
 }
 
-/// Ticks until this driver next wakes the core.
+/// Whether this driver leaves the core asleep for at least `ticks`.
 ///
 /// Both the queued alarm and the `period` tick count. Nobody asks for the tick, but `now()` depends on
 /// it, so its interrupt is never masked and it cuts short any sleep entered just before one.
 ///
-/// Zero if the alarm is already due, and never more than one `period` away.
-///
-/// A `u32` because of that bound: the answer cannot exceed `1 << HALF_BITS`, which is at most `1 << 31`
-/// even on the 32-bit driver. Its only caller compares it against a `u32`, and a `u64` there would cost
-/// 64-bit compares on the idle path for range that cannot occur.
+/// Asked as a predicate rather than as a distance: the caller only ever compares the answer against
+/// its minimum, and neither the saturating subtraction nor the minimum of the two wakes has to be
+/// evaluated to decide that.
 #[cfg(feature = "low-power")]
-pub(crate) fn ticks_until_wake(cs: CriticalSection) -> u32 {
+pub(crate) fn wake_at_least(cs: CriticalSection, ticks: u32) -> bool {
     let now = DRIVER.now();
 
     // The low `HALF_BITS` of `now` are the position within the current period, so what is left of it
     // is the distance to the next tick, whether that comes from the overflow or the half-range compare.
     let period_end = (1 << HALF_BITS) - (now & ((1 << HALF_BITS) - 1));
+    let ticks = ticks as u64;
 
-    let alarm = DRIVER.alarm.borrow(cs).get().saturating_sub(now);
-
-    // `period_end <= 1 << HALF_BITS`, so the minimum of the two is always inside `u32`.
-    alarm.min(period_end) as u32
+    // A disarmed alarm reads `u64::MAX`, which is further off than any `ticks`.
+    period_end >= ticks && DRIVER.alarm.borrow(cs).get() >= now.saturating_add(ticks)
 }
 
 #[cfg(all(time_driver_timg0, feature = "rt"))]
