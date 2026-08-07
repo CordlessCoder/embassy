@@ -246,6 +246,8 @@ pub struct Timing {
     clock_div: ClockDiv,
     tpr: u8,
     clock_hz: u32,
+    half_period_cycles: u32,
+    settle_cycles: u32,
 }
 
 impl Timing {
@@ -253,7 +255,10 @@ impl Timing {
     ///
     /// Takes the tree rather than reading it, so this stays a `const fn`: pass
     /// [`clock::ClockSetup::clocks`](crate::sysctl::clock::ClockSetup::clocks) for the tree
-    /// [`crate::init`] is being given, which is the one the peripheral will run on.
+    /// [`crate::init`] is being given, which is the one the peripheral will run on. A timing solved
+    /// against a tree the device does not end up running puts the bus at the wrong speed, and the delays
+    /// the driver paces bus recovery with — which come from MCLK, not from the I2C's own source — out by
+    /// the same ratio.
     ///
     /// Returns [`None`] if the resulting `TPR` is outside the 1..=127 the register holds, or if the
     /// source is not at least 20x the bus speed, which is the same headroom the runtime path checks.
@@ -285,11 +290,18 @@ impl Timing {
             return None;
         }
 
+        let tpr = (ticks - 1) as u8;
+
         Some(Self {
             clock_source,
             clock_div,
-            tpr: (ticks - 1) as u8,
+            tpr,
             clock_hz: i2c_clk,
+            // Solved here rather than on the device for the same reason `tpr` is: these are the only
+            // other divisions the setup path does, and leaving one of them behind links the software
+            // divider anyway.
+            half_period_cycles: half_period_cycles(clocks.mclk, i2c_clk, tpr),
+            settle_cycles: settle_cycles(clocks.mclk, i2c_clk),
         })
     }
 
@@ -333,8 +345,11 @@ impl Config {
     /// instruction, so each division site that survives optimization drags in a ~400 byte software
     /// divider; funnelling them here means a pre-solved [`Timing`] removes every one of them.
     pub(crate) fn resolve(&self) -> Result<Resolved, ConfigError> {
-        let clocks = crate::sysctl::clocks();
+        crate::sysctl::with_clocks(|clocks| self.resolve_on(clocks))
+    }
 
+    /// [`Self::resolve`] against a tree already in hand.
+    fn resolve_on(&self, clocks: &crate::sysctl::Clocks) -> Result<Resolved, ConfigError> {
         // A pre-solved timing already carries its clock source, the divider, the resulting rate and the
         // timer period, so nothing below needs computing.
         if let Some(timing) = self.timing {
@@ -342,9 +357,11 @@ impl Config {
                 clock_source: timing.clock_source(),
                 clock_div: timing.clock_div,
                 clock_hz: timing.clock_hz(),
-                source_hz: timing.clock_source().frequency(&clocks),
+                source_hz: timing.clock_source().frequency(clocks),
                 tpr: timing.tpr(),
                 clock_low_timeout: solve_clock_low_timeout(self.clock_low_timeout_us, timing.clock_hz())?,
+                half_period_cycles: timing.half_period_cycles,
+                settle_cycles: timing.settle_cycles,
             });
         }
 
@@ -364,7 +381,7 @@ impl Config {
             ClockSel::MfClk
         };
 
-        let source_hz = clock_source.frequency(&clocks);
+        let source_hz = clock_source.frequency(clocks);
         let clock_hz = source_hz / divider;
 
         // The source must be ~20x the bus speed.
@@ -384,13 +401,17 @@ impl Config {
             return Err(ConfigError::InvalidClockRate);
         }
 
+        let tpr = (ticks - 1) as u8;
+
         Ok(Resolved {
             clock_source,
             clock_div: self.clock_div,
             clock_hz,
             source_hz,
-            tpr: (ticks - 1) as u8,
+            tpr,
             clock_low_timeout: solve_clock_low_timeout(self.clock_low_timeout_us, clock_hz)?,
+            half_period_cycles: half_period_cycles(clocks.mclk, clock_hz, tpr),
+            settle_cycles: settle_cycles(clocks.mclk, clock_hz),
         })
     }
 
@@ -432,7 +453,33 @@ fn solve_clock_low_timeout(timeout_us: Option<u32>, clock_hz: u32) -> Result<Opt
     Ok(Some(steps as u8))
 }
 
-/// A [`Config`] with everything the driver needs derived from it.
+/// CPU cycles in half an SCL period, which is what the bus-recovery delays are paced by.
+///
+/// `const` so [`Timing::solve`] can settle it at compile time; `Ord::max` is not, hence the long way
+/// round on the two guards.
+const fn half_period_cycles(mclk: u32, clock_hz: u32, tpr: u8) -> u32 {
+    // `TPR` is solved as `clock_hz / (bus_speed * 10) - 1`, so this runs it backwards.
+    let bus_speed = clock_hz / (10 * (tpr as u32 + 1));
+    let bus_speed = if bus_speed == 0 { 1 } else { bus_speed };
+
+    let cycles = mclk / (2 * bus_speed);
+    if cycles == 0 { 1 } else { cycles }
+}
+
+/// CPU cycles a freshly started transfer needs before `CSR` is valid. See [`I2c::settle_after_start`].
+///
+/// `I2C_ERR_13` makes it three functional clock cycles. Rounded up, and at least one cycle so a functional
+/// clock faster than the CPU still waits.
+///
+/// Scaling with the clock is what makes this bite on MFCLK and not on the bus clock: at 4 MHz against a
+/// 32 MHz CPU it is 24 cycles, where at 32 MHz it is 3 and the register read alone covers it.
+const fn settle_cycles(mclk: u32, clock_hz: u32) -> u32 {
+    let clock_hz = if clock_hz == 0 { 1 } else { clock_hz };
+
+    let cycles = (3 * mclk).div_ceil(clock_hz);
+    if cycles == 0 { 1 } else { cycles }
+}
+
 /// SCL half-periods to give the controller to go idle before a FIFO flush.
 ///
 /// A stop condition and the bus turnaround after it are why it is not idle the instant `master_stop`
@@ -440,6 +487,10 @@ fn solve_clock_low_timeout(timeout_us: Option<u32>, clock_hz: u32) -> Result<Opt
 /// bound is still an error path rather than a hang.
 const IDLE_HALF_PERIODS: u32 = 4;
 
+/// A [`Config`] with everything the driver needs derived from it.
+///
+/// The two cycle counts are here rather than recomputed where they are used because deriving either one
+/// costs a division, and both are wanted on the transfer path.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Resolved {
     pub clock_source: ClockSel,
@@ -456,6 +507,12 @@ pub(crate) struct Resolved {
 
     /// Load value for the SCL-low timeout counter, or `None` to leave the counter off.
     pub clock_low_timeout: Option<u8>,
+
+    /// CPU cycles in half an SCL period, the unit the bus-recovery delays are counted in.
+    pub half_period_cycles: u32,
+
+    /// CPU cycles to let a freshly started transfer settle. See [`I2c::settle_after_start`].
+    pub settle_cycles: u32,
 }
 
 impl Resolved {
@@ -616,8 +673,6 @@ pub struct I2c<'d, M: Mode> {
     wake_floor: Option<SleepLevel>,
     /// What the peripheral is configured to, kept so [`I2c::reset_peripheral`] can restore it.
     resolved: Resolved,
-    /// CPU cycles to let a freshly started transfer settle. See [`I2c::settle_after_start`].
-    settle_cycles: u32,
     _phantom: PhantomData<M>,
 }
 
@@ -686,7 +741,7 @@ impl<'d, M: Mode> I2c<'d, M> {
             scl.update_pf(config.scl_pf());
         }
 
-        let configured = self.init(&resolved);
+        let configured = self.init();
 
         if was_enabled {
             self.info.interrupt.unpend();
@@ -697,7 +752,9 @@ impl<'d, M: Mode> I2c<'d, M> {
         configured
     }
 
-    fn init(&mut self, resolved: &Resolved) -> Result<(), ConfigError> {
+    fn init(&mut self) -> Result<(), ConfigError> {
+        let resolved = self.resolved;
+
         self.info.regs.clksel().write(|w| match resolved.clock_source {
             ClockSel::BusClk => {
                 w.set_mfclk_sel(false);
@@ -733,16 +790,6 @@ impl<'d, M: Mode> I2c<'d, M> {
         self.state.clock.store(resolved.clock_hz, Ordering::Relaxed);
 
         self.wake_floor = resolved.wake_floor(&self.info.sleep);
-
-        // `I2C_ERR_13`: `CSR` is not valid for three functional clock cycles after a transfer is started,
-        // so the status has to be left alone for that long. Rounded up, and at least one cycle so a
-        // functional clock faster than the CPU still waits.
-        //
-        // Scaling with the clock is what makes this bite on MFCLK and not on the bus clock: at 4 MHz
-        // against a 32 MHz CPU it is 24 cycles, where at 32 MHz it is 3 and the register read alone
-        // covers it.
-        let cpu_hz = crate::sysctl::clocks().mclk;
-        self.settle_cycles = (3 * cpu_hz).div_ceil(resolved.clock_hz.max(1)).max(1);
 
         self.info.regs.controller(0).ctpr().write(|w| w.set_tpr(resolved.tpr));
 
@@ -784,7 +831,7 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// The answer is returned for callers that have something better to do with it than flush anyway.
     fn wait_for_idle(&self) -> bool {
         let ctrl = self.info.regs.controller(0);
-        let half_period = self.bus_half_period_cycles();
+        let half_period = self.resolved.half_period_cycles;
 
         for _ in 0..IDLE_HALF_PERIODS {
             if ctrl.csr().read().idle() {
@@ -875,17 +922,9 @@ impl<'d, M: Mode> I2c<'d, M> {
         });
         cortex_m::asm::delay(16);
 
-        // Re-derives `wake_floor` and `settle_cycles` too. Infallible: the config was resolved once
-        // already, and nothing about the clock tree can have changed since.
-        let resolved = self.resolved;
-        let _ = self.init(&resolved);
-    }
-
-    /// CPU cycles in half an SCL period, for driving the lines by hand.
-    fn bus_half_period_cycles(&self) -> u32 {
-        // `TPR` is solved as `clock_hz / (bus_speed * 10) - 1`, so this runs it backwards.
-        let bus_speed = self.resolved.clock_hz / (10 * (self.resolved.tpr as u32 + 1));
-        (crate::sysctl::clocks().mclk / (2 * bus_speed.max(1))).max(1)
+        // Re-derives `wake_floor` too. Infallible: the config was resolved once already, and nothing about
+        // the clock tree can have changed since.
+        let _ = self.init();
     }
 
     /// Is the bus stuck with a target holding SDA low?
@@ -905,7 +944,7 @@ impl<'d, M: Mode> I2c<'d, M> {
         // SDA low, SCL high — for up to a bit period after every NACK. Twenty half-periods is ten bit
         // times, and both questions are re-asked each pass, so the common case costs a bit period rather
         // than the whole window.
-        let half = self.bus_half_period_cycles();
+        let half = self.resolved.half_period_cycles;
         for _ in 0..20 {
             cortex_m::asm::delay(half);
 
@@ -934,7 +973,7 @@ impl<'d, M: Mode> I2c<'d, M> {
         if !self.bus_is_stuck() {
             return Ok(());
         }
-        let half = self.bus_half_period_cycles();
+        let half = self.resolved.half_period_cycles;
 
         let (Some(scl), Some(sda)) = (self.scl.as_ref(), self.sda.as_ref()) else {
             return Err(Error::Bus);
@@ -1087,7 +1126,7 @@ impl<'d, M: Mode> I2c<'d, M> {
     /// through and the caller checks for errors against a transfer that has not happened yet. A NACK then
     /// goes unnoticed and the transfer is reported as a success.
     fn settle_after_start(&self) {
-        cortex_m::asm::delay(self.settle_cycles);
+        cortex_m::asm::delay(self.resolved.settle_cycles);
     }
 
     /// Wait for whoever holds the bus to release it, giving up on the SCL-low timeout.
@@ -1894,10 +1933,9 @@ impl<'d, M: Mode> I2c<'d, M> {
             sda: sda_inner,
             wake_floor: None,
             resolved,
-            settle_cycles: 0,
             _phantom: PhantomData,
         };
-        this.init(&resolved)?;
+        this.init()?;
 
         Ok(this)
     }
