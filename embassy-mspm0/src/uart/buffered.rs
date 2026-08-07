@@ -15,7 +15,7 @@ use crate::interrupt::typelevel::Binding;
 use crate::pac::uart::Uart as Regs;
 use crate::sysctl::{SleepLevel, WakeGuard};
 use crate::uart::{Config, ConfigError, CtsPin, Error, Info, Instance, RtsPin, RxPin, State, TxPin};
-use crate::{Peri, interrupt};
+use crate::{Peri, interrupt, pac};
 
 /// Interrupt handler.
 pub struct BufferedInterruptHandler<T: Instance> {
@@ -1198,7 +1198,10 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
     }
 
     // TX
-    if state.tx_buf.is_available() {
+    //
+    // `is_empty` before `reader`, because `pop_slice` is an out-of-line call that computes a contiguous
+    // span and then finds nothing in it. A receive-only application would pay for that on every entry.
+    if state.tx_buf.is_available() && !state.tx_buf.is_empty() {
         // SAFETY: TX must have been initialized if TXE is set.
         let mut tx_reader = unsafe { state.tx_buf.reader() };
         let buf = tx_reader.pop_slice();
@@ -1246,7 +1249,29 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         w.set_ovrerr(mis.ovrerr());
     });
 
-    // Errors
+    // Errors. Gated on the lot of them together: five separate bit tests run on every entry that has no
+    // error to report, which is every entry on a healthy line.
+    if mis.0 & ERROR_INTERRUPTS != 0 {
+        report_errors(mis);
+    }
+
+    #[cfg(feature = "_probe")]
+    crate::probe::clear(handler_marker);
+}
+
+/// The error bits of `CPU_INT`, built from the setters so it cannot drift from the register.
+const ERROR_INTERRUPTS: u32 = {
+    let mut w = pac::uart::regs::CpuInt(0);
+    w.set_nerr(true);
+    w.set_frmerr(true);
+    w.set_parerr(true);
+    w.set_brkerr(true);
+    w.set_ovrerr(true);
+    w.0
+};
+
+#[cold]
+fn report_errors(mis: pac::uart::regs::CpuInt) {
     if mis.nerr() {
         warn!("Noise error");
     }
@@ -1262,7 +1287,4 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
     if mis.ovrerr() {
         warn!("Overrun error");
     }
-
-    #[cfg(feature = "_probe")]
-    crate::probe::clear(handler_marker);
 }

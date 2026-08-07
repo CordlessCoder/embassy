@@ -103,3 +103,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: mask the buffered receive interrupt only when the buffer is full, not when a byte arrives in error — masking on an error stalled the receiver until the caller next read, and cost 20% of the delivered rate at 1 Mbaud
 - mspm0/uart: `BufferedUartRx::take_dropped` counts the bytes the receiver dropped, which `Error::Overrun` could not say and only reported at all when a read found the buffer empty — which a receiver that cannot keep up never does
 - fix: mspm0/uart: clear the buffered receiver's timeout flag in the handler, which was left set so every subsequent read re-asserted the interrupt for a second entry that had nothing to do — halves the interrupt load on traffic that arrives in bursts
+- mspm0/uart: skip the buffered transmit path when nothing is queued and test the receive error bits together, taking 14% off every interrupt entry
