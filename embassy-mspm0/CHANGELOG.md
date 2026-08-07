@@ -80,3 +80,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/i2c-target: add `Config::second_addr`, a second address to answer on with a mask covering a range of them, plus `I2cTarget::matched_address` to ask which one a command arrived on. Pairing it with a 10-bit primary address is rejected, `OAR2` being compared only in 7-bit mode
 - **breaking** mspm0/trng: `Trng::new`, `new_fast` and `new_secure` take an interrupt binding, made with the new `bind_group_interrupts!`; without one the handler is no longer linked into every binary
 - **breaking** mspm0/gpio: `Flex`, `Input` and `OutputOpenDrain` take a mode, and the edge waits move to the `Async` one, built with `new_async` and an interrupt binding. Without one the port handlers are no longer linked into every binary
+- fix: mspm0: build on the C1105, C1106 and H3216 families, whose empty interrupt-group source list made the re-export an unused import

@@ -98,6 +98,10 @@ pub use crate::_generated::interrupt;
 /// [`interrupt::typelevel`] cannot describe these: it is keyed on NVIC numbers, and a group source
 /// has none. Bind them with [`bind_group_interrupts!`] instead.
 pub mod interrupt_group {
+    // Empty on the 19 chips that group nothing and give every source an NVIC line of its own — the
+    // C1105, C1106 and H3216 families — where a glob over an empty module is an unused import, which
+    // `-D warnings` turns into a build failure.
+    #[allow(unused_imports)]
     pub use crate::_generated::group_source::*;
 
     /// A source an interrupt group dispatches.
