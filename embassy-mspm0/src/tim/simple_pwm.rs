@@ -58,9 +58,9 @@ pub struct Config {
 
     /// A load value solved ahead of time, skipping the divisions [`Self::frequency`] needs.
     ///
-    /// Build one with [`low_level::solve_load`](crate::tim::low_level::solve_load) in a `const`, from
-    /// the same dividers and counting mode as this config. Solving it there rather than here is worth
-    /// ~600 bytes of flash, the core having no divide instruction.
+    /// Build one with [`low_level::solve_load`] in a `const`, from the same dividers and counting mode
+    /// as this config. Solving it there rather than here is worth ~600 bytes of flash, the core having
+    /// no divide instruction.
     pub load: Option<u32>,
 
     /// Keep the waveform running while the debugger holds the core halted.

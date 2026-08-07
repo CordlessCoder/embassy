@@ -122,7 +122,7 @@ pub mod interrupt_group {
         unsafe fn on_interrupt();
     }
 
-    /// Proof that `H` is bound to `S`, produced by [`bind_group_interrupts!`].
+    /// Proof that `H` is bound to `S`, produced by [`bind_group_interrupts!`](crate::bind_group_interrupts).
     ///
     /// # Safety
     ///

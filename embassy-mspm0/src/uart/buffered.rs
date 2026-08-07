@@ -45,6 +45,14 @@ impl SetConfig for BufferedUart<'_> {
 
 impl<'d> BufferedUart<'d> {
     /// Create a new bidirectional buffered UART.
+    ///
+    /// # Where to put the buffers
+    ///
+    /// Give it buffers with a `'static` home — a `StaticCell`, or a `static mut` — rather than arrays
+    /// declared in the calling task. An array declared in an `async fn` lives in that task's frame and
+    /// is zeroed there every time the task starts, which links the software `memset`; the same buffers
+    /// as statics are zeroed once by the startup code instead. Measured at **188 bytes of flash for two
+    /// 32-byte buffers, with no change in RAM** — they were already in the task arena either way.
     pub fn new<T: Instance>(
         uart: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
