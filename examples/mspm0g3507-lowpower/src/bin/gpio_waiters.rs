@@ -40,7 +40,7 @@
 //!
 //! # What a pass looks like
 //!
-//! Five `ok` lines and nothing else. Every failure prints what it expected and stops that case — a hang
+//! Four `ok` lines and nothing else. Every failure prints what it expected and stops that case — a hang
 //! is also a failure, and means a wake that never arrived.
 
 #![no_std]

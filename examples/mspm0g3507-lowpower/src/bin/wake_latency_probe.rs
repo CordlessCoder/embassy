@@ -1,8 +1,8 @@
 //! `wake_latency` with a marker pin across the GPIO interrupt handler, to find where a wake's time goes.
 //!
-//! B3 measured 60-75 µs from wake edge to the task's answer, of which only 11-14 µs is the sleep mode
-//! itself: the `wfi` case, which never leaves RUN, still costs ~60 µs. B3b ruled out the executor hand-off
-//! by moving the task to an interrupt-mode executor and getting 0.3 µs *worse*. This splits what is left.
+//! B3 measured 35-49 µs from wake edge to the task's answer, of which only 11-14 µs is the sleep mode
+//! itself: the `wfi` case, which never leaves RUN, still costs ~29 µs. B3b ruled out the executor hand-off
+//! by moving the task to an interrupt-mode executor and getting nothing back. This splits what is left.
 //!
 //! # What the markers give
 //!

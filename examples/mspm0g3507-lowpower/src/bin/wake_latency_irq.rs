@@ -20,10 +20,10 @@
 //!
 //! # What to expect
 //!
-//! Read this before reading a result as a win. `wake_latency` measured a **53.8 µs pedestal on its `wfi`
-//! case** — the case that never leaves RUN, so that figure is pure software, not silicon. Whatever it is,
-//! it is *also* in every deep-sleep case, and the thread-mode return this example removes is only one part
-//! of it. So the honest prediction is a modest saving, not 53 µs.
+//! Read this before reading a result as a win. `wake_latency`'s `wfi` case — the one that never leaves
+//! RUN, so its figure is pure software — costs **28.8 µs**. Whatever that is, it is *also* in every
+//! deep-sleep case, and the thread-mode return this example removes is only one part of it. So the honest
+//! prediction is a modest saving, not the whole pedestal.
 //!
 //! What makes the comparison worth running anyway is that it splits the pedestal in two: the part that is
 //! the executor hand-off, and the part that is the GPIO interrupt path and `low_power::sleep`'s own
