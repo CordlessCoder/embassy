@@ -15,6 +15,20 @@
 //! | `PB8` | `PB2`               | SCL    |
 //! | `PB9` | `PB3`               | SDA    |
 //!
+//! # What a read answers
+//!
+//! A write selects a register: [`REG_WRITE_READ`] answers [`WRITE_READ_ANSWER`], anything else —
+//! including a read with no write before it — answers [`READ_ANSWER`]. A read the controller actually
+//! takes spends the selection.
+//!
+//! Answering from a selection rather than from where this loop has got to is what survives a controller
+//! that abandons transfers part-way. A truncated transaction leaves the loop one command out of phase,
+//! and without the selection the write-read after it is answered `[8, 8]`.
+//!
+//! One case is left: a transfer truncated between the write and its read leaves the register selected,
+//! so a *plain* read immediately after gets `[9, 9]`. The next write reselects, so only a read arriving
+//! in that gap sees it.
+//!
 //! # What it reports
 //!
 //! Every command it matched, so the log is a transcript of what the controller actually put on the bus:
@@ -27,7 +41,7 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::i2c::{Address, I2c, OwnAddresses, SlaveAddrConfig, SlaveCommand, SlaveCommandKind};
+use embassy_stm32::i2c::{Address, I2c, OwnAddresses, SendStatus, SlaveAddrConfig, SlaveCommand, SlaveCommandKind};
 use embassy_stm32::mode::Async;
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllPreDiv, PllSource, Sysclk, VoltageScale};
 use embassy_stm32::time::Hertz;
@@ -44,10 +58,16 @@ bind_interrupts!(struct Irqs {
 /// Same address the MSPM0 target example answers on, so one controller can drive either.
 const TARGET_ADDR: u8 = 0x48;
 
-/// Answer to a plain read.
+/// The register a write-read selects, which is the byte every controller example writes.
+const REG_WRITE_READ: u8 = 0x01;
+
+/// What is selected when nothing has selected anything.
+const REG_DEFAULT: u8 = 0x00;
+
+/// Answer to a read of [`REG_DEFAULT`], which is what a plain read gets.
 const READ_ANSWER: [u8; 2] = [8, 8];
 
-/// Answer to a write-read.
+/// Answer to a read of [`REG_WRITE_READ`].
 const WRITE_READ_ANSWER: [u8; 2] = [9, 9];
 
 /// 100 kHz, which is what the MSPM0 examples solve their timing for.
@@ -89,23 +109,53 @@ async fn main(_spawner: Spawner) -> ! {
     info!("listening on {:#x}", TARGET_ADDR);
 
     let mut buf = [0u8; 64];
+    let mut selected = REG_DEFAULT;
 
     loop {
         match i2c.listen().await {
             Ok(SlaveCommand { kind, address }) => match kind {
-                SlaveCommandKind::Read => match i2c.respond_to_read(&READ_ANSWER).await {
-                    Ok(status) => debug!("read from {}: answered {:?}, {}", address, READ_ANSWER, status),
-                    Err(e) => error!("responding to read failed: {}", e),
-                },
+                // A read the loop was not already inside a write for. It still answers from the
+                // selection, which is what makes a write-read come out right even when the read half
+                // arrives here instead of below.
+                SlaveCommandKind::Read => {
+                    let answer = answer_for(selected);
+                    selected = REG_DEFAULT;
+
+                    match i2c.respond_to_read(&answer).await {
+                        Ok(status) => debug!("read from {}: answered {:?}, {}", address, answer, status),
+                        Err(e) => error!("responding to read failed: {}", e),
+                    }
+                }
                 SlaveCommandKind::Write => match i2c.respond_to_write(&mut buf).await {
                     Ok(len) => {
                         info!("write from {}: {:?}", address, buf[..len]);
 
+                        // Every controller here writes one byte, so a longer write is a truncated
+                        // transfer's leftovers with the byte that was meant on the end: after a
+                        // cancellation the address byte arrives as payload, `[0x90, 0x01]`. Taking the
+                        // last byte reads that as the `0x01` it was. A write whose payload did not
+                        // survive at all still selects, because every write here is a write-read's
+                        // first half.
+                        selected = if len > 0 { buf[len - 1] } else { REG_WRITE_READ };
+
                         // A write-read arrives as a write followed by a read on the same transaction.
                         // Answering unconditionally is how the STM32 driver distinguishes them: a plain
-                        // write times out here, which is not an error.
+                        // write times out here, which is not an error. Two things this must not become:
+                        // gating this read on the selection answers `[8, 8]` whenever the driver drops
+                        // the write's payload, and taking it from `listen` instead leaves the target
+                        // stretching SCL for good.
                         match i2c.respond_to_read(&WRITE_READ_ANSWER).await {
-                            Ok(status) => debug!("...and the read half: {}", status),
+                            // Taken, so the write-read is served and the selection is spent.
+                            Ok(SendStatus::Done) => {
+                                selected = REG_DEFAULT;
+                                debug!("...and the read half: taken");
+                            }
+                            // Offered and not taken, which is not the read half arriving: the
+                            // controller is still on the transfer before it. Holding the selection is
+                            // what lets the real read half answer correctly when it lands at the
+                            // `Read` arm above instead of here.
+                            Ok(SendStatus::LeftoverBytes(n)) => debug!("...and the read half: {} untaken", n),
+                            // No read followed. The selection stands for the same reason.
                             Err(i2c::Error::Timeout) => debug!("...write only, no read followed"),
                             Err(e) => error!("responding to the read half failed: {}", e),
                         }
@@ -115,5 +165,13 @@ async fn main(_spawner: Spawner) -> ! {
             },
             Err(e) => error!("listen failed: {}", e),
         }
+    }
+}
+
+/// What a read of `selected` answers.
+fn answer_for(selected: u8) -> [u8; 2] {
+    match selected {
+        REG_WRITE_READ => WRITE_READ_ANSWER,
+        _ => READ_ANSWER,
     }
 }
