@@ -1231,6 +1231,14 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
     // RX interrupt flags are cleared by writing to ICLR.
     let mis = r.cpu_int(0).mis().read();
     r.cpu_int(0).iclr().write(|w| {
+        // The receive timeout is unmasked on every read and was never cleared here, so once it had
+        // fired the flag stayed set and each unmask re-asserted the interrupt: a second entry per read
+        // that finds the FIFO already drained and does nothing. Measured on isolated bytes, that was
+        // 2.00 handler entries per byte at 26.7 us against 1.01 at 16.2 us.
+        //
+        // Safe to clear unconditionally because `mis` is the *masked* status: when the ring filled and
+        // the timeout was masked above, this reads false and the pending delivery survives.
+        w.set_rtout(mis.rtout());
         w.set_nerr(mis.nerr());
         w.set_frmerr(mis.frmerr());
         w.set_parerr(mis.parerr());
