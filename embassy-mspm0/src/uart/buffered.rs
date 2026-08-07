@@ -1074,9 +1074,11 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         let mut rx_writer = unsafe { state.rx_buf.writer() };
         let rx_buf = rx_writer.push_slice();
         let mut n_read = 0;
-        let mut error = false;
+        // Accumulated here and published once below. The store needs a critical section on M0, and
+        // taking one per faulty byte would cost the most exactly when the receiver can least afford it.
+        let mut errs = 0u8;
 
-        for rx_byte in rx_buf {
+        while n_read < rx_buf.len() {
             let stat = r.stat().read();
 
             if stat.rxfe() {
@@ -1084,32 +1086,38 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
             }
 
             let data = r.rxdata().read();
+            let flags = (data.0 >> 8) as u8;
 
-            if (data.0 >> 8) != 0 {
-                // Cortex-M0 does not support atomic fetch_or, must do 2 operations.
-                critical_section::with(|_cs| {
-                    let mut value = state.rx_error.load(Ordering::Relaxed);
-                    value |= (data.0 >> 8) as u8;
-                    state.rx_error.store(value, Ordering::Relaxed);
-                });
-                error = true;
+            if flags != 0 {
+                errs |= flags;
 
-                // only fill the buffer with valid characters. the current character is fine
-                // if the error is an overrun, but if we add it to the buffer we'll report
-                // the overrun one character too late. drop it instead and pretend we were
-                // a bit slower at draining the rx fifo than we actually were.
-                // this is consistent with blocking uart error reporting.
-                break;
+                // Only fill the buffer with valid characters. The current character is fine if the error
+                // is an overrun, but adding it would report the overrun one character too late; drop it
+                // and pretend we were a little slower at draining than we were, which is what the
+                // blocking path reports too.
+                //
+                // Keep draining, though. The rest of the FIFO is good, and abandoning it leaves the
+                // receiver further behind than it already is, which is how one overrun becomes a run.
+                continue;
             }
 
-            *rx_byte = data.data();
+            rx_buf[n_read] = data.data();
             n_read += 1;
+        }
+
+        if errs != 0 {
+            // Cortex-M0 does not support atomic fetch_or, must do 2 operations.
+            critical_section::with(|_cs| {
+                state
+                    .rx_error
+                    .store(state.rx_error.load(Ordering::Relaxed) | errs, Ordering::Relaxed);
+            });
         }
 
         if n_read > 0 {
             rx_writer.push_done(n_read);
             state.rx_waker.wake();
-        } else if error {
+        } else if errs != 0 {
             state.rx_waker.wake();
         }
 
@@ -1118,7 +1126,7 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         // fifo without needing more error storage locations, and most applications
         // will want to do a full reset of their uart state anyway once an error
         // has happened.
-        if state.rx_buf.is_full() || error {
+        if state.rx_buf.is_full() || errs != 0 {
             #[cfg(feature = "_probe")]
             crate::probe::set(mask_marker);
 

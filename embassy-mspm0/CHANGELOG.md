@@ -99,3 +99,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking** mspm0/uart: `Config::fifo_enable` is replaced by `Config::fifo`, an `Option<FifoThreshold>` naming how full a FIFO must be before it interrupts. It now defaults to on at half-full, which raises the rate the receiver can sustain from roughly 230400 to 921600
 - fix: mspm0/uart: a buffered async write yields once per call, so a receiver joined or selected with a long transmission is still polled during it rather than going deaf until it ends
 - fix: mspm0/uart: pend the buffered UART's interrupt by hand only when the transmit buffer was empty, as the blocking path already did, instead of on every write
+- fix: mspm0/uart: keep draining the receive FIFO past a faulty byte instead of abandoning the rest, which left the receiver further behind and turned one overrun into a run of them
