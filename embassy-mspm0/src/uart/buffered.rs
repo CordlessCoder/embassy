@@ -693,6 +693,9 @@ impl<'d> BufferedUart<'d> {
 
         info.regs.cpu_int(0).imask().modify(|w| {
             w.set_rxint(true);
+            // Unmasked here rather than only after the first read: with a receive level above one entry,
+            // a first message shorter than that level is delivered by the timeout alone.
+            w.set_rtout(true);
         });
 
         info.interrupt.unpend();
@@ -735,6 +738,7 @@ impl<'d> BufferedUartRx<'d> {
 
         info.regs.cpu_int(0).imask().modify(|w| {
             w.set_rxint(true);
+            w.set_rtout(true);
         });
 
         info.interrupt.unpend();

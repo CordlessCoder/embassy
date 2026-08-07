@@ -30,7 +30,7 @@ async fn main(_spawner: Spawner) {
 
         let mut config = Config::default();
         config.loop_back_enable = true;
-        config.fifo_enable = false;
+        config.fifo = None;
 
         let tx_buf = &mut [0u8; 16];
         let rx_buf = &mut [0u8; 16];
@@ -73,7 +73,7 @@ async fn main(_spawner: Spawner) {
 
         let mut config = Config::default();
         config.loop_back_enable = true;
-        config.fifo_enable = false;
+        config.fifo = None;
 
         let tx_buf = &mut [0u8; 16];
         let rx_buf = &mut [0u8; 16];

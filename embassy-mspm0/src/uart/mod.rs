@@ -24,7 +24,15 @@ use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Blocking, Mode};
 use crate::pac::uart::{Uart as Regs, vals};
-use crate::sysctl::{SleepInfo, WakeGuard};
+use crate::sysctl::{PowerDomain, SleepInfo, WakeGuard};
+
+/// Bit times of silence after which the receiver reports a FIFO that has not reached its level.
+///
+/// Must exceed 1: `UART_ERR_11` starts the counter in the middle of the STOP bit, so 1 fires early. The
+/// resulting timeout is `(RX_TIMEOUT_BITS - 0.5) / baud`, so this is a little under one character —
+/// short enough that a trailing byte is not held up, long enough that a back-to-back stream never
+/// reaches it.
+const RX_TIMEOUT_BITS: u8 = 8;
 
 /// The clock source for the UART.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -142,6 +150,71 @@ pub enum ConfigError {
     NoDeepSleepWake,
 }
 
+/// How full a FIFO must be before it raises an interrupt.
+///
+/// The FIFOs are four entries deep, and the level decides how much of the handler's fixed cost is
+/// amortised: at [`AtLeastOne`](Self::AtLeastOne) it runs once per byte, at [`Half`](Self::Half) once
+/// per two. A level above one entry needs the receive timeout, which the driver arms alongside it, or a
+/// FIFO that never reaches the level is never delivered.
+///
+/// Receive and transmit read the same encoding from opposite ends — a receive level is how many entries
+/// have arrived, a transmit level how many are free — so one setting configures both sensibly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum FifoThreshold {
+    /// A single entry: interrupt as soon as one byte can move.
+    ///
+    /// Lowest latency and highest cost. This was the driver's only behaviour before the level was
+    /// configurable, and it is what limits the receive rate to roughly 230400 baud.
+    AtLeastOne,
+
+    /// One of four.
+    Quarter,
+
+    /// Two of four. The default, and the fastest of these that measured clean to 921600.
+    Half,
+
+    /// Three of four.
+    ThreeQuarter,
+
+    /// All four. Most batching, and the longest a byte can wait for the timeout to deliver it.
+    Full,
+}
+
+impl FifoThreshold {
+    /// The receive level, as the register encodes it for an instance in `domain`.
+    ///
+    /// **A PD0 instance has only two levels**, one entry and full, encoded differently from every other
+    /// instance's; SLAU846 Table 24-44 says anything else falls back to the reset value. Rather than
+    /// leave that silent, everything from half up takes the full level.
+    ///
+    /// Rounding *up* is measured, not a guess. On a G3507, whose `UART1` is PD0, half-mapped-to-full
+    /// receives a 921600 baud stream with 0.27% loss where half-mapped-to-one-entry loses 19%. The finer
+    /// levels a non-PD0 instance has are the untested path here.
+    const fn rx(self, domain: PowerDomain) -> vals::Iflssel {
+        match (domain, self) {
+            (PowerDomain::Pd0, Self::AtLeastOne | Self::Quarter) => vals::Iflssel::OneFourthUlp,
+            (PowerDomain::Pd0, Self::Half | Self::ThreeQuarter | Self::Full) => vals::Iflssel::FullUlp,
+            (_, Self::AtLeastOne) => vals::Iflssel::AtLeastOne,
+            (_, Self::Quarter) => vals::Iflssel::OneFourth,
+            (_, Self::Half) => vals::Iflssel::Half,
+            (_, Self::ThreeQuarter) => vals::Iflssel::ThreeFourth,
+            (_, Self::Full) => vals::Iflssel::Full,
+        }
+    }
+
+    /// The transmit level, which has no per-domain restriction.
+    const fn tx(self) -> vals::Iflssel {
+        match self {
+            Self::AtLeastOne => vals::Iflssel::AtLeastOne,
+            Self::Quarter => vals::Iflssel::OneFourth,
+            Self::Half => vals::Iflssel::Half,
+            Self::ThreeQuarter => vals::Iflssel::ThreeFourth,
+            Self::Full => vals::Iflssel::Full,
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Config
@@ -182,8 +255,14 @@ pub struct Config {
     // pub manchester: bool,
 
     // TODO: majority voting
-    /// If true: the built-in FIFO is enabled.
-    pub fifo_enable: bool,
+    /// How full a FIFO must be before it raises an interrupt, or `None` to run without the FIFOs.
+    ///
+    /// One enable bit covers both directions, so this is one setting rather than two. Without the FIFOs
+    /// each direction is a single byte deep and the handler runs once per byte, which is what bounds the
+    /// receive rate: measured on a G3507, the receiver loses 2.9% of a 460800 baud stream at
+    /// [`AtLeastOne`](FifoThreshold::AtLeastOne) and everything above it, against 0.03% at
+    /// [`Half`](FifoThreshold::Half) up to 921600.
+    pub fifo: Option<FifoThreshold>,
 
     // TODO: glitch suppression
     /// If true: invert TX pin signal values (V<sub>DD</sub> = 0/mark, Gnd = 1/idle).
@@ -240,7 +319,9 @@ impl Default for Config {
             msb_order: BitOrder::LsbFirst,
             loop_back_enable: false,
             // manchester: false,
-            fifo_enable: false,
+            // Measured rather than assumed: the level is what decides whether the handler amortises
+            // across the FIFO, and half-full is clean where one entry is not.
+            fifo: Some(FifoThreshold::Half),
             invert_tx: false,
             invert_rx: false,
             invert_rts: false,
@@ -913,21 +994,31 @@ fn configure(
         w.set_rtsen(enable_rts);
         w.set_ctsen(enable_cts);
         // oversampling is set later
-        w.set_fen(config.fifo_enable);
+        w.set_fen(config.fifo.is_some());
         // TODO: config
         w.set_majvote(false);
         w.set_msbfirst(matches!(config.msb_order, BitOrder::MsbFirst));
     });
 
+    // A FIFO is only worth having if the interrupt batches across it. At one entry the handler runs once
+    // per byte and its fixed cost is never amortised, which is what bounds the receive rate rather than
+    // any buffer size. Half-full halves the entries; the FIFOs are four deep.
+    //
+    // With the FIFOs off there is one byte of depth and no level to reach, so the choice only applies
+    // when they are on.
+    let (rx_level, tx_level) = if let Some(threshold) = config.fifo {
+        (threshold.rx(info.sleep.power_domain), threshold.tx())
+    } else {
+        (vals::Iflssel::AtLeastOne, vals::Iflssel::AtLeastOne)
+    };
+
     info.regs.ifls().modify(|w| {
-        // TODO: Need power domain info for other options.
-        w.set_txiflsel(vals::Iflssel::AtLeastOne);
-        w.set_rxiflsel(vals::Iflssel::AtLeastOne);
-        // `RXTOSEL` is left at its reset value of 0, which disables the receive timeout entirely, so the
-        // `RTOUT` interrupt the buffered driver unmasks can never fire.
-        //
-        // TODO: Implement a blocking receive timeout, which is what `RXTOSEL` and `RTOUT` are for. The
-        // value has to be above 1: `UART_ERR_11` starts the counter mid-STOP-bit, so 1 fires early.
+        w.set_txiflsel(tx_level);
+        w.set_rxiflsel(rx_level);
+        // A receive level above one entry needs the timeout armed, or a partial FIFO waits for bytes
+        // that never come and the last few of a message are never delivered. Zero, the reset value,
+        // disables it entirely and is what makes `RTOUT` unable to fire.
+        w.set_rxtosel(if config.fifo.is_some() { RX_TIMEOUT_BITS } else { 0 });
     });
 
     info.regs.lcrh().modify(|w| {
