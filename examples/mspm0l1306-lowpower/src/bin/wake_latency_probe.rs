@@ -36,9 +36,9 @@
 //! |---|---|---|---|
 //! | D2 | L1306 `PA10` | J4.36 | wake in |
 //! | D3 | L1306 `PA1` | J1.9 | ack out |
-//! | D4 | L1306 `PA16` | J2.24 | `Marker::Handler` |
-//! | D5 | L1306 `PA17` | J2.25 | `Marker::Waker` |
-//! | D6 | L1306 `PA18` | J2.26 | `Marker::Poll` |
+//! | D4 | L1306 `PA16` | J2.24 | `Marker::GpioHandler` |
+//! | D5 | L1306 `PA17` | J2.25 | `Marker::GpioWaker` |
+//! | D6 | L1306 `PA18` | J2.26 | `Marker::ExecutorPoll` |
 //!
 //! Wiring to the G3507 is unchanged, and `wake_latency_host` runs there as before.
 
@@ -98,9 +98,9 @@ async fn main(_spawner: Spawner) -> ! {
     let _waker = Output::new(p.PA17, Level::Low);
     let _poll = Output::new(p.PA18, Level::Low);
 
-    probe::arm(Marker::Handler, Port::PortA, 16);
-    probe::arm(Marker::Waker, Port::PortA, 17);
-    probe::arm(Marker::Poll, Port::PortA, 18);
+    probe::arm(Marker::GpioHandler, Port::PortA, 16);
+    probe::arm(Marker::GpioWaker, Port::PortA, 17);
+    probe::arm(Marker::ExecutorPoll, Port::PortA, 18);
 
     loop {
         for (guard, name) in CASES {

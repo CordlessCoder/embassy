@@ -109,7 +109,7 @@ mod thread {
                     // A woken task's own pin moves inside this bracket, which is what separates "getting
                     // back to the executor" from "the executor running the task".
                     #[cfg(feature = "_probe")]
-                    let poll_marker = crate::probe::target(crate::probe::Marker::Poll);
+                    let poll_marker = crate::probe::target(crate::probe::Marker::ExecutorPoll);
                     #[cfg(feature = "_probe")]
                     crate::probe::set(poll_marker);
 

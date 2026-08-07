@@ -1417,7 +1417,7 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
     let (handler_marker, waker_marker) = {
         use crate::probe::{Marker, target};
 
-        let markers = (target(Marker::Handler), target(Marker::Waker));
+        let markers = (target(Marker::GpioHandler), target(Marker::GpioWaker));
         crate::probe::set(markers.0);
         markers
     };

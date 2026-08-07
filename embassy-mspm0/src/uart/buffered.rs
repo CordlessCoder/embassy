@@ -809,6 +809,11 @@ impl<'d> BufferedUartRx<'d> {
     }
 
     fn try_read(&self, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
+        // A pulse rather than a bracket: this has several exits, and the question is only whether it runs
+        // at all.
+        #[cfg(feature = "_probe")]
+        crate::probe::count(crate::probe::target(crate::probe::Marker::UartReadPoll));
+
         let state = self.state;
 
         if buf.is_empty() {
@@ -894,6 +899,9 @@ impl<'d> BufferedUartTx<'d> {
         let mut yielded = false;
 
         poll_fn(move |cx| {
+            #[cfg(feature = "_probe")]
+            crate::probe::count(crate::probe::target(crate::probe::Marker::UartWritePoll));
+
             let state = self.state;
 
             if buf.is_empty() {
@@ -1039,10 +1047,24 @@ fn init_buffers<'d>(
 }
 
 fn on_interrupt(r: Regs, state: &'static BufferedState) {
+    // Opened before anything is read, so the bracket counts an entry that finds nothing to do the same
+    // as one that moves a byte. Which of those is happening is the question the marker exists for.
+    #[cfg(feature = "_probe")]
+    let (handler_marker, mask_marker) = {
+        use crate::probe::{Marker, target};
+
+        let markers = (target(Marker::UartHandler), target(Marker::UartRxMask));
+        crate::probe::set(markers.0);
+        markers
+    };
+
     let int = r.cpu_int(0).mis().read();
 
     // Per https://github.com/embassy-rs/embassy/pull/1458, both buffered and unbuffered handlers may be bound.
     if super::dma_enabled(r) {
+        #[cfg(feature = "_probe")]
+        crate::probe::clear(handler_marker);
+
         return;
     }
 
@@ -1097,10 +1119,16 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         // will want to do a full reset of their uart state anyway once an error
         // has happened.
         if state.rx_buf.is_full() || error {
+            #[cfg(feature = "_probe")]
+            crate::probe::set(mask_marker);
+
             r.cpu_int(0).imask().modify(|w| {
                 w.set_rxint(false);
                 w.set_rtout(false);
             });
+
+            #[cfg(feature = "_probe")]
+            crate::probe::clear(mask_marker);
         }
     }
 
@@ -1112,6 +1140,9 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         r.cpu_int(0).iclr().write(|w| {
             w.set_eot(true);
         });
+
+        #[cfg(feature = "_probe")]
+        crate::probe::count(crate::probe::target(crate::probe::Marker::UartTxWake));
 
         state.tx_waker.wake();
     }
@@ -1173,4 +1204,7 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
     if mis.ovrerr() {
         warn!("Overrun error");
     }
+
+    #[cfg(feature = "_probe")]
+    crate::probe::clear(handler_marker);
 }

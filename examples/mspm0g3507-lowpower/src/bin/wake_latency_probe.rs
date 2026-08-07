@@ -37,9 +37,9 @@
 //! |---|---|---|---|
 //! | D0 | G3507 `PB7` | J2.14 | wake in |
 //! | D1 | G3507 `PB2` | J1.9 | ack out |
-//! | D4 | G3507 `PB13` | J4.35 | `Marker::Handler` |
-//! | D5 | G3507 `PB0` | J2.12 | `Marker::Waker` |
-//! | D6 | G3507 `PB1` | J4.39 | `Marker::Poll` |
+//! | D4 | G3507 `PB13` | J4.35 | `Marker::GpioHandler` |
+//! | D5 | G3507 `PB0` | J2.12 | `Marker::GpioWaker` |
+//! | D6 | G3507 `PB1` | J4.39 | `Marker::ExecutorPoll` |
 //!
 //! Wiring to the L1306 is unchanged, and `wake_latency_host` runs there as before.
 
@@ -100,9 +100,9 @@ async fn main(_spawner: Spawner) -> ! {
     let _waker = Output::new(p.PB0, Level::Low);
     let _poll = Output::new(p.PB1, Level::Low);
 
-    probe::arm(Marker::Handler, Port::PortB, 13);
-    probe::arm(Marker::Waker, Port::PortB, 0);
-    probe::arm(Marker::Poll, Port::PortB, 1);
+    probe::arm(Marker::GpioHandler, Port::PortB, 13);
+    probe::arm(Marker::GpioWaker, Port::PortB, 0);
+    probe::arm(Marker::ExecutorPoll, Port::PortB, 1);
 
     let mut wake = Input::new_async(p.PB7, Pull::Down, Irqs);
     let mut ack = Output::new(p.PB2, Level::Low);
