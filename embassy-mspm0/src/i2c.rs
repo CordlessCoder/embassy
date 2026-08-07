@@ -359,7 +359,10 @@ impl Config {
                 clock_hz: timing.clock_hz(),
                 source_hz: timing.clock_source().frequency(clocks),
                 tpr: timing.tpr(),
-                clock_low_timeout: solve_clock_low_timeout(self.clock_low_timeout_us, timing.clock_hz())?,
+                clock_low_timeout: match self.clock_low_timeout_us {
+                    Some(us) => Some(solve_clock_low_timeout(us, timing.clock_hz())?),
+                    None => None,
+                },
                 half_period_cycles: timing.half_period_cycles,
                 settle_cycles: timing.settle_cycles,
             });
@@ -409,7 +412,10 @@ impl Config {
             clock_hz,
             source_hz,
             tpr,
-            clock_low_timeout: solve_clock_low_timeout(self.clock_low_timeout_us, clock_hz)?,
+            clock_low_timeout: match self.clock_low_timeout_us {
+                Some(us) => Some(solve_clock_low_timeout(us, clock_hz)?),
+                None => None,
+            },
             half_period_cycles: half_period_cycles(clocks.mclk, clock_hz, tpr),
             settle_cycles: settle_cycles(clocks.mclk, clock_hz),
         })
@@ -436,21 +442,54 @@ impl Config {
 /// the body's 12.
 ///
 /// Rounded up, so the timeout is never shorter than what was asked for.
-fn solve_clock_low_timeout(timeout_us: Option<u32>, clock_hz: u32) -> Result<Option<u8>, ConfigError> {
-    let Some(timeout_us) = timeout_us else {
-        return Ok(None);
-    };
+///
+/// The divisor is split into a power of two and an odd factor so that no 64-bit division is ever
+/// emitted: `ceil(n / (a * b)) == ceil(ceil(n / a) / b)`, and once the product has been shifted down by
+/// `a` a result inside the register's range is small enough that the second step is 32-bit. A 64-bit
+/// divide would link the software divider, ~900 bytes, into every binary that constructs an [`I2c`]
+/// whether or not it asks for a timeout.
+fn solve_clock_low_timeout(timeout_us: u32, clock_hz: u32) -> Result<u8, ConfigError> {
+    /// Functional clocks in one step of `TCNTLA`, times the microseconds in a second: `8320 * 1e6`,
+    /// factored as `SHIFT`'s power of two times `ODD`.
+    const SHIFT: u32 = 13;
+    const ODD: u32 = 1_015_625;
 
-    /// Functional clocks in one step of `TCNTLA`, times the microseconds in a second.
-    const STEP_CLOCKS_PER_US: u64 = 8320 * 1_000_000;
+    const _: () = core::assert!((1u64 << SHIFT) * ODD as u64 == 8320 * 1_000_000);
 
-    let steps = (timeout_us as u64 * clock_hz as u64).div_ceil(STEP_CLOCKS_PER_US);
+    let scaled = (timeout_us as u64 * clock_hz as u64).div_ceil(1 << SHIFT);
 
-    // Below 2 the counter does not run at all, which SLAU846 states outright.
-    if !(2..=255).contains(&steps) {
+    // Reject out of range before narrowing, which is also what makes the narrowing sound: anything the
+    // register can hold leaves `scaled` well inside `u32`.
+    if scaled > 255 * ODD as u64 {
         return Err(ConfigError::InvalidClockLowTimeout);
     }
-    Ok(Some(steps as u8))
+
+    // Divide by the odd factor by hand. It is a constant, but the core has no widening multiply, so the
+    // compiler reaches for the general software divider — ~400 bytes, and on a pre-solved [`Timing`] this
+    // is the only division left in the driver. The quotient fits in eight bits, so eight
+    // compare-subtract steps settle it.
+    let mut scaled = scaled as u32;
+    let mut steps: u32 = 0;
+
+    for bit in (0..8u32).rev() {
+        let sub = ODD << bit;
+
+        if scaled >= sub {
+            scaled -= sub;
+            steps |= 1 << bit;
+        }
+    }
+
+    // Anything left over falls inside the next step, and the timeout is never to be shorter than asked.
+    if scaled != 0 {
+        steps += 1;
+    }
+
+    // Below 2 the counter does not run at all, which SLAU846 states outright.
+    if steps < 2 {
+        return Err(ConfigError::InvalidClockLowTimeout);
+    }
+    Ok(steps as u8)
 }
 
 /// CPU cycles in half an SCL period, which is what the bus-recovery delays are paced by.

@@ -81,3 +81,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking** mspm0/trng: `Trng::new`, `new_fast` and `new_secure` take an interrupt binding, made with the new `bind_group_interrupts!`; without one the handler is no longer linked into every binary
 - **breaking** mspm0/gpio: `Flex`, `Input` and `OutputOpenDrain` take a mode, and the edge waits move to the `Async` one, built with `new_async` and an interrupt binding. Without one the port handlers are no longer linked into every binary
 - fix: mspm0: build on the C1105, C1106 and H3216 families, whose empty interrupt-group source list made the re-export an unused import
+- fix: mspm0/i2c: solve the SCL-low timeout and the bus-recovery delays without 32- or 64-bit division, so a pre-solved `Timing` no longer links the software dividers — 1.7 kB off a blocking I2C binary
