@@ -105,3 +105,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: clear the buffered receiver's timeout flag in the handler, which was left set so every subsequent read re-asserted the interrupt for a second entry that had nothing to do — halves the interrupt load on traffic that arrives in bursts
 - mspm0/uart: skip the buffered transmit path when nothing is queued and test the receive error bits together, taking 14% off every interrupt entry
 - fix: mspm0/uart: a buffered half now turns off its own interrupt sources when it is dropped and the other half keeps the interrupt alive, rather than leaving them armed for a handler that can no longer service them
+- mspm0/uart: wake the buffered UART's waiting task without taking a critical section, 15% off every interrupt entry at no cost in RAM

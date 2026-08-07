@@ -7,12 +7,12 @@ use core::task::Poll;
 use embassy_embedded_hal::SetConfig;
 use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use embassy_hal_internal::interrupt::InterruptExt;
-use embassy_sync::waitqueue::AtomicWaker;
 use embedded_hal_nb::nb;
 
 use crate::gpio::{AnyPin, SealedPin};
 use crate::interrupt::typelevel::Binding;
 use crate::pac::uart::Uart as Regs;
+use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{SleepLevel, WakeGuard};
 use crate::uart::{Config, ConfigError, CtsPin, Error, Info, Instance, RtsPin, RxPin, State, TxPin};
 use crate::{Peri, interrupt, pac};
@@ -623,9 +623,9 @@ pub(crate) struct BufferedState {
     /// non-buffered UART state. This is inline in order to avoid [`BufferedUartRx`]/Tx
     /// needing to carry around a 2nd static reference and waste another 4 bytes.
     state: State,
-    rx_waker: AtomicWaker,
+    rx_waker: IrqWaker,
     rx_buf: RingBuffer,
-    tx_waker: AtomicWaker,
+    tx_waker: IrqWaker,
     tx_buf: RingBuffer,
     rx_error: AtomicU8,
     /// Bytes the receiver is known to have dropped since the last report, saturating.
@@ -646,9 +646,9 @@ impl BufferedState {
     pub const fn new() -> Self {
         Self {
             state: State::new(),
-            rx_waker: AtomicWaker::new(),
+            rx_waker: IrqWaker::new(),
             rx_buf: RingBuffer::new(),
-            tx_waker: AtomicWaker::new(),
+            tx_waker: IrqWaker::new(),
             tx_buf: RingBuffer::new(),
             rx_error: AtomicU8::new(0),
             rx_dropped: AtomicU16::new(0),
