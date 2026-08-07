@@ -125,7 +125,7 @@ const _: () = {
 struct TimxDriver {
     /// Number of half-counter-range periods elapsed since boot.
     period: AtomicU32,
-    /// Timestamp at which to fire alarm. u64::MAX if no alarm is scheduled.
+    /// Timestamp at which to fire the alarm, **stored inverted** — see [`TimxDriver::alarm_at`].
     alarm: Mutex<Cell<u64>>,
     queue: Mutex<RefCell<Queue>>,
 }
@@ -202,10 +202,7 @@ impl TimxDriver {
         let t = (period as u64) << HALF_BITS;
 
         r.cpu_int(0).imask().modify(move |w| {
-            let alarm = self.alarm.borrow(cs);
-            let at = alarm.get();
-
-            if at < t + ARM_AHEAD {
+            if self.alarm_at(cs) < t + ARM_AHEAD {
                 // just enable it. `set_alarm` has already set the correct CC1 val.
                 w.set_ccu1(true);
             }
@@ -247,10 +244,24 @@ impl TimxDriver {
         }
     }
 
+    /// The timestamp the alarm is armed for, `u64::MAX` when it is disarmed.
+    ///
+    /// Held inverted in the cell so that disarmed is zero and the whole of [`DRIVER`] is
+    /// zero-initialised. One non-zero field would put all of it in `.data`, which is flash-resident on
+    /// this target, so it would cost its own size in flash on top of the RAM it already takes.
+    fn alarm_at(&self, cs: CriticalSection) -> u64 {
+        !self.alarm.borrow(cs).get()
+    }
+
+    /// Arm for `timestamp`, or disarm with `u64::MAX`. See [`TimxDriver::alarm_at`].
+    fn set_alarm_at(&self, cs: CriticalSection, timestamp: u64) {
+        self.alarm.borrow(cs).set(!timestamp);
+    }
+
     fn set_alarm(&self, cs: CriticalSection, timestamp: u64) -> bool {
         let r = regs();
 
-        self.alarm.borrow(cs).set(timestamp);
+        self.set_alarm_at(cs, timestamp);
 
         let t = self.now();
 
@@ -259,7 +270,7 @@ impl TimxDriver {
             // Disarm the alarm and return `false` to indicate that.
             r.cpu_int(0).imask().modify(|w| w.set_ccu1(false));
 
-            self.alarm.borrow(cs).set(u64::MAX);
+            self.set_alarm_at(cs, u64::MAX);
 
             return false;
         }
@@ -285,7 +296,7 @@ impl TimxDriver {
             // It is the caller's responsibility to handle this ambiguity.
             r.cpu_int(0).imask().modify(|w| w.set_ccu1(false));
 
-            self.alarm.borrow(cs).set(u64::MAX);
+            self.set_alarm_at(cs, u64::MAX);
 
             return false;
         }
@@ -337,7 +348,8 @@ impl Driver for TimxDriver {
 
 embassy_time_driver::time_driver_impl!(static DRIVER: TimxDriver = TimxDriver {
     period: AtomicU32::new(0),
-    alarm: Mutex::new(Cell::new(u64::MAX)),
+    // Disarmed, which inverted is zero, which is what keeps `DRIVER` out of `.data`.
+    alarm: Mutex::new(Cell::new(!u64::MAX)),
     queue: Mutex::new(RefCell::new(Queue::new()))
 });
 
@@ -363,7 +375,7 @@ pub(crate) fn wake_at_least(cs: CriticalSection, ticks: u32) -> bool {
     let ticks = ticks as u64;
 
     // A disarmed alarm reads `u64::MAX`, which is further off than any `ticks`.
-    period_end >= ticks && DRIVER.alarm.borrow(cs).get() >= now.saturating_add(ticks)
+    period_end >= ticks && DRIVER.alarm_at(cs) >= now.saturating_add(ticks)
 }
 
 #[cfg(all(time_driver_timg0, feature = "rt"))]
