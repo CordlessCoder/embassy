@@ -84,3 +84,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/i2c: solve the SCL-low timeout and the bus-recovery delays without 32- or 64-bit division, so a pre-solved `Timing` no longer links the software dividers — 1.7 kB off a blocking I2C binary
 - feat: mspm0/tim: add `low_level::solve_load` and `simple_pwm::Config::load`, a `const` period that spares the device the divisions `Config::frequency` needs
 - fix: mspm0/low-power: narrow the wake-distance check to 32 bits, which is all the time driver ever returns
+- fix: mspm0/executor: drop the redundant memory barriers from the low-power idle path

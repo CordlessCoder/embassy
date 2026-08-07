@@ -25,7 +25,7 @@ fn __pender(context: *mut ()) {
     #[cfg(feature = "executor-thread")]
     // Try to optimize away the branch when only thread mode is enabled.
     if !cfg!(feature = "executor-interrupt") || context == thread::THREAD_PENDER {
-        thread::SIGNAL_WORK_THREAD_MODE.store(true, core::sync::atomic::Ordering::SeqCst);
+        thread::SIGNAL_WORK_THREAD_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
         return;
     }
 
@@ -119,8 +119,13 @@ mod thread {
                     crate::probe::clear(poll_marker);
 
                     critical_section::with(|cs| {
-                        if SIGNAL_WORK_THREAD_MODE.load(Ordering::SeqCst) {
-                            SIGNAL_WORK_THREAD_MODE.store(false, Ordering::SeqCst);
+                        // `Relaxed` is enough on both sides. Every MSPM0 is a single core, so the only
+                        // thing that races the executor is an interrupt on the same core, and this check
+                        // runs with them masked — the section is what orders it against the pender, and
+                        // its acquire is the compiler barrier that stops the load being hoisted out.
+                        // Anything stronger only buys `dmb`s against observers that do not exist.
+                        if SIGNAL_WORK_THREAD_MODE.load(Ordering::Relaxed) {
+                            SIGNAL_WORK_THREAD_MODE.store(false, Ordering::Relaxed);
                         } else {
                             crate::low_power::sleep(cs);
                         }
