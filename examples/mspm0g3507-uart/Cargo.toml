@@ -1,0 +1,37 @@
+[package]
+edition = "2024"
+name = "embassy-mspm0-g3507-uart-examples"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+# A crate of its own so that `_probe` stays off `examples/mspm0g3507`: a cargo feature is crate-wide, and
+# an unarmed marker still costs every interrupt handler in the crate a load and a branch.
+embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", features = ["mspm0g3507pm", "defmt", "rt", "time-driver-any", "time", "_probe"] }
+embassy-executor = { version = "0.10.0", path = "../../embassy-executor", features = ["platform-cortex-m", "executor-thread"] }
+embassy-futures = { version = "0.1.0", path = "../../embassy-futures" }
+embassy-time = { version = "0.5.1", path = "../../embassy-time", features = ["defmt"] }
+panic-halt = "1.0.0"
+cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = { version = "0.7.0" }
+defmt = "1.0.1"
+# Non-blocking: probe-rs puts RTT into blocking mode, and a full buffer then stalls inside a critical
+# section for milliseconds, which is long enough to overrun a UART FIFO. Dropped log bytes are the
+# cheaper loss.
+defmt-rtt = { version = "1.0.0", features = ["disable-blocking-mode"] }
+
+embedded-io-async = { version = "0.7.0" }
+
+[profile.release]
+# Matches what actually gets flashed. Without these a release build has no LTO and
+# `opt-level = 3`, which is roughly 3x larger and makes size comparisons meaningless.
+debug = 2
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[package.metadata.embassy]
+build = [
+  { target = "thumbv6m-none-eabi", artifact-dir = "out/examples/mspm0g3507-uart" }
+]
