@@ -394,7 +394,21 @@ static CLOCKS: Mutex<Cell<Clocks>> = Mutex::new(Cell::new(Clocks::RESET));
 /// Before [`crate::init`] this is the reset tree. Configure it through
 /// [`Config::clock`](crate::Config::clock).
 pub fn clocks() -> Clocks {
-    critical_section::with(|cs| CLOCKS.borrow(cs).get())
+    with_clocks(|clocks| *clocks)
+}
+
+/// Read the tree in place, without the copy [`clocks`] hands back.
+///
+/// [`Clocks`] is forty bytes and the core has no wide load, so returning one by value is a `memcpy` call
+/// — which links the software one, ~600 bytes, into a binary that may need it for nothing else. A driver
+/// that only reads rates should take them through here.
+#[inline]
+pub(crate) fn with_clocks<R>(f: impl FnOnce(&Clocks) -> R) -> R {
+    critical_section::with(|cs| {
+        // SAFETY: every write goes through `set_clocks`, which needs the same token, so nothing can be
+        // mutating the cell for as long as `cs` is held.
+        f(unsafe { &*CLOCKS.borrow(cs).as_ptr() })
+    })
 }
 
 /// Publish the tree [`crate::init`] just programmed.

@@ -365,7 +365,7 @@ impl TrngInner<'_> {
         // MCLK now depends on the configured clock tree, so the band is picked at runtime. A tree
         // that leaves MCLK unusable here is a configuration error the user can only hit deliberately,
         // and the reset tree is checked at build time below.
-        let mclk = crate::sysctl::clocks().mclk;
+        let mclk = crate::sysctl::with_clocks(|clocks| clocks.mclk);
         let ratio = unwrap!(
             trng_ratio(mclk),
             "MCLK is outside the 9.5-20 MHz window the TRNG can be divided into"
@@ -448,7 +448,7 @@ impl TrngInner<'_> {
     async fn async_read_u32(&mut self) -> Result<u32, Error> {
         let _guard = <TRNG as LowPowerInstance>::SLEEP
             .power_domain
-            .floor_to_keep_running(crate::sysctl::clocks().mclk)
+            .floor_to_keep_running(crate::sysctl::with_clocks(|clocks| clocks.mclk))
             .map(WakeGuard::new);
 
         poll_fn(|cx| {

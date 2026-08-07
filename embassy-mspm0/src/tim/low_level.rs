@@ -250,9 +250,10 @@ impl<'d, T: Instance> Timer<'d, T> {
         let divider = r.clkdiv().read().ratio() as u32 + 1;
         let prescaler = r.commonregs(0).cps().read().pcnt() as u32 + 1;
 
-        let clocks = crate::sysctl::clocks();
+        let source_hz =
+            crate::sysctl::with_clocks(|clocks| self.clock_source().frequency(clocks, T::SLEEP.power_domain));
 
-        self.clock_source().frequency(&clocks, T::SLEEP.power_domain) / divider / prescaler
+        source_hz / divider / prescaler
     }
 
     /// Ticks in one counting period.
@@ -371,7 +372,7 @@ pub(crate) fn configure<T: Instance>(config: &Config) {
 /// Depends on the configured tree, so this reads the live clocks rather than answering at compile
 /// time as it did while the tree was fixed.
 pub(crate) fn sleep_floor<T: Instance>(clock: ClockSel) -> Option<SleepLevel> {
-    let clock_hz = clock.frequency(&crate::sysctl::clocks(), T::SLEEP.power_domain);
+    let clock_hz = crate::sysctl::with_clocks(|clocks| clock.frequency(clocks, T::SLEEP.power_domain));
 
     // The domain-level answer cannot know which instances stay clocked in STANDBY1, and reports
     // STANDBY1 for any LFCLK peripheral in PD0.

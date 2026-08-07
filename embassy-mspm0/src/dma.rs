@@ -67,7 +67,7 @@ impl<'d> Channel<'d> {
         Self {
             id: T::ID,
             sw_wake_floor: <T as crate::sysctl::LowPowerInstance>::SLEEP
-                .floor_for_operation(crate::sysctl::clocks().mclk),
+                .floor_for_operation(crate::sysctl::with_clocks(|clocks| clocks.mclk)),
             _marker: PhantomData,
         }
     }

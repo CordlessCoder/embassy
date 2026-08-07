@@ -894,12 +894,11 @@ fn configure(
 
     // Read the tree once rather than per arm, and take the rates from it instead of assuming the
     // reset values: MFCLK in particular reads as absent when the clock configuration left it off.
-    let clocks = crate::sysctl::clocks();
-    let clock = match config.clock_source {
+    let clock = crate::sysctl::with_clocks(|clocks| match config.clock_source {
         ClockSel::LfClk => clocks.lfclk,
         ClockSel::MfClk => clocks.mfclk,
         ClockSel::BusClk => clocks.bus_clock(info.sleep.power_domain),
-    };
+    });
 
     state.clock.store(clock, Ordering::Relaxed);
 

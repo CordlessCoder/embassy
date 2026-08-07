@@ -643,9 +643,7 @@ const fn convert_stime(stime: SampleTimeComparator) -> vals::Stime {
 /// If the source is outside `fADCCLK`. Selecting [`SampleClock::Hfclk`] without configuring HFCLK
 /// reads as stopped and lands here, as does [`SampleClock::Ulpclk`] under an LFCLK-sourced MCLK.
 fn adc_clock_hz(source: SampleClock) -> u32 {
-    let clocks = crate::sysctl::clocks();
-
-    let hz = match source {
+    let hz = crate::sysctl::with_clocks(|clocks| match source {
         SampleClock::Ulpclk => clocks.ulpclk,
 
         // Switching SYSOSC off does not take the ADC with it: the TRM (G-series 18.2.5) has the ADC
@@ -658,7 +656,7 @@ fn adc_clock_hz(source: SampleClock) -> u32 {
 
         #[cfg(mspm0_hfxt)]
         SampleClock::Hfclk => clocks.hfclk,
-    };
+    });
 
     assert!(
         hz >= ADC_CLK_MIN_HZ && hz <= ADC_CLK_MAX_HZ,
