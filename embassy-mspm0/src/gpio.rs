@@ -462,6 +462,10 @@ impl EdgeArm {
     ///
     /// Nothing here may be observable, because this value is returned by move: until it has come to rest
     /// in the frame that owns it, publishing its address would publish an address about to go stale.
+    ///
+    /// **Both of this type's `unsafe` assumptions are established here**, and neither field is written
+    /// again: the `% 32` is what lets [`EdgeArm::bit`] promise a bit in range, and the `/ 32` of a pin
+    /// this chip has is what lets [`EdgeArm::waiters`] index the port array without a check.
     fn new(block: gpio::Gpio, pin_port: u8, edge: Edge) -> Self {
         Self {
             block,
@@ -472,6 +476,25 @@ impl EdgeArm {
                 edge,
             }),
         }
+    }
+
+    /// The pin's bit within its port, with its range restated.
+    ///
+    /// `bit` is below 32 by construction, but it is reloaded from the task frame across the await, so
+    /// that is lost by the time the register writes need it and every `set_dio`/`set_din` below carries
+    /// the metapac's bounds assert into the critical section. Restating it folds those asserts and
+    /// their panic site away; masking instead would do the same but pays an `and` at every use.
+    ///
+    /// # Safety
+    ///
+    /// `bit` is `pin_port % 32`, set once by [`EdgeArm::new`] and never written again.
+    ///
+    /// Always inlined: the hint only reaches the register writes if it lands in the same body as they
+    /// do, and out of line it would buy a call instead of removing a branch.
+    #[inline(always)]
+    fn bit(&self) -> usize {
+        unsafe { core::hint::assert_unchecked(self.bit < 32) };
+        self.bit
     }
 
     /// The list this pin's port waits on.
@@ -517,7 +540,7 @@ impl EdgeArm {
             } else {
                 self.block.polarity15_0().as_ptr() as *mut u32
             };
-            let shift = (self.bit % 16) * 2;
+            let shift = (self.bit() % 16) * 2;
 
             // SAFETY: the pointer is one of this block's own polarity registers, and the critical
             // section this runs in keeps the read-modify-write whole against the port's interrupt.
@@ -529,7 +552,7 @@ impl EdgeArm {
             // Drop edges from before the wait, after the polarity write so that selecting the event
             // cannot leave a status bit behind.
             self.block.cpu_int().iclr().write(|w| {
-                w.set_dio(self.bit, true);
+                w.set_dio(self.bit(), true);
             });
 
             // Nothing was here to displace: the node is fresh, and this is its only arming.
@@ -541,10 +564,10 @@ impl EdgeArm {
 
             // Without fast wake the input synchronizer is unclocked in STOP and STANDBY, which loses the
             // edge rather than delaying it.
-            self.block.fastwake().modify(|w| w.set_din(self.bit, true));
+            self.block.fastwake().modify(|w| w.set_din(self.bit(), true));
 
             self.block.cpu_int().imask().modify(|w| {
-                w.set_dio(self.bit, true);
+                w.set_dio(self.bit(), true);
             });
         });
     }
@@ -564,11 +587,11 @@ fn _assert_edge_waits_are_send(pin: &mut Flex<'static, Async>) {
 impl Drop for EdgeArm {
     fn drop(&mut self) {
         critical_section::with(|cs| {
-            self.block.fastwake().modify(|w| w.set_din(self.bit, false));
-            self.block.cpu_int().imask().modify(|w| w.set_dio(self.bit, false));
+            self.block.fastwake().modify(|w| w.set_din(self.bit(), false));
+            self.block.cpu_int().imask().modify(|w| w.set_dio(self.bit(), false));
 
             // An edge that arrived while masked left this set with nobody to consume it.
-            self.block.cpu_int().iclr().write(|w| w.set_dio(self.bit, true));
+            self.block.cpu_int().iclr().write(|w| w.set_dio(self.bit(), true));
 
             // The pin is masked, so nothing can be walking the list or about to read this node.
             // Unlinking last is what makes the node safe to drop.
