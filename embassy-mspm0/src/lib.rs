@@ -164,11 +164,11 @@ macro_rules! bind_group_interrupts {
             ),*;
         )*
     }) => {
-        // The groups' vector-table entries, which nothing else emits now: a binary that binds no
-        // source links no demultiplexer at all. Emitted once here rather than per source, several
-        // sources sharing one group — so **this macro may appear at most once in a binary**, and a
-        // second invocation is a duplicate-symbol error naming the group.
-        $crate::__mspm0_group_vectors!();
+        // The vector-table entries for the groups these sources land on, which nothing else emits: a
+        // group nothing binds links no demultiplexer at all. Passed the source names so each group can
+        // decide for itself — so **this macro may appear at most once in a binary**, and a second
+        // invocation is a duplicate-symbol error naming the group.
+        $crate::__mspm0_group_vectors!($($source)*);
 
         #[derive(Copy, Clone)]
         $(#[$attr])*

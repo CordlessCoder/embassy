@@ -493,22 +493,48 @@ fn generate_groups() -> TokenStream {
     // against the *user's* features, not this crate's.
     let has_rt = env::var_os("CARGO_FEATURE_RT").is_some();
 
-    let vector_symbols = METADATA
-        .interrupt_groups
-        .iter()
-        .filter(|_| has_rt)
-        .map(|group| {
-            let symbol = Ident::new(group.name, Span::call_site());
-            let demux_name = Ident::new(&group.name.to_lowercase(), Span::call_site());
+    // One scanner per group, emitting that group's entry the first time it sees one of its own sources
+    // in the bound list and nothing at all if it sees none. A group with several sources bound — the
+    // ordinary case, since `GPIOA` and `GPIOB` share one — must still emit exactly once, and stopping at
+    // the first match is what `macro_rules!` can express where counting is not.
+    let scanners = METADATA.interrupt_groups.iter().filter(|_| has_rt).map(|group| {
+        let scanner = format_ident!("__mspm0_vectors_{}", group.name.to_lowercase());
+        let symbol = Ident::new(group.name, Span::call_site());
+        let demux_name = Ident::new(&group.name.to_lowercase(), Span::call_site());
+        let doc = format!("Emit `{}`'s vector-table entry if anything binds a source on it.", group.name);
+
+        let hits = group.interrupts.iter().map(|interrupt| {
+            let source = Ident::new(interrupt.name, Span::call_site());
 
             quote! {
-                #[allow(non_snake_case)]
-                #[unsafe(no_mangle)]
-                unsafe extern "C" fn #symbol() {
-                    $crate::_group_demux::#demux_name();
-                }
+                (#source $($rest:tt)*) => {
+                    #[allow(non_snake_case)]
+                    #[unsafe(no_mangle)]
+                    unsafe extern "C" fn #symbol() {
+                        $crate::_group_demux::#demux_name();
+                    }
+                };
             }
         });
+
+        quote! {
+            #[doc = #doc]
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! #scanner {
+                #(#hits)*
+                // Not one of this group's: drop it and keep looking.
+                ($other:tt $($rest:tt)*) => { $crate::#scanner!($($rest)*); };
+                () => {};
+            }
+        }
+    });
+
+    let scanner_calls = METADATA.interrupt_groups.iter().filter(|_| has_rt).map(|group| {
+        let scanner = format_ident!("__mspm0_vectors_{}", group.name.to_lowercase());
+
+        quote! { $crate::#scanner!($($source)*); }
+    });
 
     quote! {
         /// One demultiplexer per interrupt group, called by the vector-table symbol
@@ -529,14 +555,16 @@ fn generate_groups() -> TokenStream {
             #(#sources)*
         }
 
-        /// The group handlers' vector-table entries, emitted by `bind_group_interrupts!`.
+        #(#scanners)*
+
+        /// The group handlers' vector-table entries, for the groups the bound sources actually land on.
         ///
         /// Expands to nothing on a chip that groups nothing, and without `rt`.
         #[doc(hidden)]
         #[macro_export]
         macro_rules! __mspm0_group_vectors {
-            () => {
-                #(#vector_symbols)*
+            ($($source:ident)*) => {
+                #(#scanner_calls)*
             };
         }
     }
