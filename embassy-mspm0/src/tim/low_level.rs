@@ -266,8 +266,15 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// Errors outside [`Timer::tick_frequency`] down to that divided by the counter's full range.
     pub fn set_frequency(&self, hz: u32) -> Result<(), ConfigError> {
         let mode = counting_mode(T::info().regs);
-        let load = load_for_frequency(self.tick_frequency(), mode, hz)?;
 
+        self.set_load_value(load_for_frequency(self.tick_frequency(), mode, hz)?)
+    }
+
+    /// Program a load value, rejecting one the counter cannot hold.
+    ///
+    /// Takes what [`solve_load`] works out ahead of time, so a frequency known up front reaches the
+    /// register without the device dividing for it.
+    pub fn set_load_value(&self, load: u32) -> Result<(), ConfigError> {
         if load > T::Word::MAX.into() {
             return Err(ConfigError::TooLow);
         }
@@ -441,6 +448,85 @@ pub(crate) fn period_ticks(regs: Tim) -> u32 {
         CountingMode::CenterAligned => load.saturating_mul(2),
         _ => load.saturating_add(1),
     }
+}
+
+/// Solve the load value for `hz` ahead of time, so the device never divides for it.
+///
+/// The counter's rate is three divisions away from the clock tree — the source divider, the prescaler,
+/// and the period itself — and this core has no divide instruction, so leaving them to run time links a
+/// ~400 byte software divider. Worse, [`Timer::tick_frequency`] recovers the two dividers by *reading
+/// them back out of their registers*, which no amount of constant propagation can see through; solving
+/// here is the only way they fold.
+///
+/// Takes the tree rather than reading it, so this stays a `const fn`, exactly as
+/// [`ClockSel::frequency`] does: pass
+/// [`clock::ClockSetup::clocks`](crate::sysctl::clock::ClockSetup::clocks) for the tree
+/// [`crate::init`] is being given. A load solved against a tree the device does not end up running puts
+/// the period out by the same ratio.
+///
+/// The arguments are the like-named fields of [`simple_pwm::Config`](crate::tim::simple_pwm::Config),
+/// and the answer goes in its `load`. [`None`] means the frequency is unreachable on this instance —
+/// what [`Timer::set_frequency`] would have reported as a [`ConfigError`] at run time, but at compile
+/// time instead.
+///
+/// ```ignore
+/// use embassy_mspm0::peripherals::TIMG1;
+/// use embassy_mspm0::sysctl::clock;
+/// use embassy_mspm0::tim::low_level::solve_load;
+/// use embassy_mspm0::tim::simple_pwm::Config;
+/// use embassy_mspm0::tim::{ClockSel, CountingMode};
+///
+/// const LOAD: u32 = match solve_load::<TIMG1>(
+///     &clock::RESET_SETUP.clocks(),
+///     ClockSel::BusClk,
+///     1,
+///     1,
+///     CountingMode::EdgeAlignedUp,
+///     1_000,
+/// ) {
+///     Some(load) => load,
+///     None => core::panic!("1 kHz is not reachable with these dividers"),
+/// };
+///
+/// let config = Config {
+///     load: Some(LOAD),
+///     ..Default::default()
+/// };
+/// ```
+pub const fn solve_load<T: Instance>(
+    clocks: &crate::sysctl::Clocks,
+    clock: ClockSel,
+    divider: u8,
+    prescaler: u16,
+    counting_mode: CountingMode,
+    hz: u32,
+) -> Option<u32> {
+    if hz == 0 || divider == 0 || prescaler == 0 {
+        return None;
+    }
+
+    let tick_hz = clock.frequency(clocks, T::SLEEP.power_domain) / divider as u32 / prescaler as u32;
+
+    // Same arithmetic as `load_for_frequency`, which is what the run-time path still uses.
+    let load = match counting_mode {
+        CountingMode::CenterAligned => tick_hz / hz.saturating_mul(2),
+        _ => match (tick_hz / hz).checked_sub(1) {
+            Some(load) => load,
+            None => return None,
+        },
+    };
+
+    if load == 0 {
+        return None;
+    }
+
+    // The counter's width is a compile-time fact, so a load it cannot hold is caught here rather than
+    // by `set_load_value` on the device.
+    if <T::Word as Word>::BITS < 32 && load > (1 << <T::Word as Word>::BITS) - 1 {
+        return None;
+    }
+
+    Some(load)
 }
 
 /// Load value that makes a counter ticking at `tick_hz` complete one period at `hz`.

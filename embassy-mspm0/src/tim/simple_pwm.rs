@@ -52,7 +52,16 @@ pub struct Config {
     /// Output frequency in Hz.
     ///
     /// With the dividers this also fixes the duty resolution, which is [`SimplePwm::max_duty`].
+    ///
+    /// Ignored when [`Self::load`] is set, that having been solved for a frequency already.
     pub frequency: u32,
+
+    /// A load value solved ahead of time, skipping the divisions [`Self::frequency`] needs.
+    ///
+    /// Build one with [`low_level::solve_load`](crate::tim::low_level::solve_load) in a `const`, from
+    /// the same dividers and counting mode as this config. Solving it there rather than here is worth
+    /// ~600 bytes of flash, the core having no divide instruction.
+    pub load: Option<u32>,
 
     /// Keep the waveform running while the debugger holds the core halted.
     pub free_run_in_debug: bool,
@@ -66,6 +75,7 @@ impl Default for Config {
             divider: 1,
             prescaler: 1,
             frequency: 1_000,
+            load: None,
             free_run_in_debug: false,
         }
     }
@@ -202,7 +212,12 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         // releasing the pins and powering the instance back down.
         let mut this = Self { timer, pins };
 
-        this.set_frequency(config.frequency)?;
+        // Matched here rather than handed to a helper: an `Option` that crosses a call boundary stops
+        // the unused arm folding away, and folding it is the whole point of solving ahead of time.
+        match config.load {
+            Some(load) => this.timer.set_load_value(load)?,
+            None => this.set_frequency(config.frequency)?,
+        }
 
         for channel in Channel::ALL {
             if this.pins[channel.index()].is_some() {
