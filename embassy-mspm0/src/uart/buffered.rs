@@ -292,6 +292,15 @@ impl Drop for BufferedUartRx<'_> {
             // interrupt handler since we are running in RX only mode.
             if state.tx_buf.len() == 0 {
                 self.info.interrupt.disable();
+            } else {
+                // Same as the transmit half above, and the receive sources are the worse of the two to
+                // leave behind: nothing drains the FIFO once the buffer is gone, so a level that is
+                // already met keeps the line asserted rather than raising one stray interrupt.
+                self.info.regs.cpu_int(0).imask().modify(|w| {
+                    w.set_rxint(false);
+                    w.set_rtout(false);
+                });
+                self.info.regs.cpu_int(0).iclr().write(|w| w.set_rtout(true));
             }
 
             self.rx.as_ref().map(|x| x.set_as_disconnected());
@@ -424,6 +433,13 @@ impl Drop for BufferedUartTx<'_> {
             // interrupt handler since we are running in TX only mode.
             if state.rx_buf.len() == 0 {
                 self.info.interrupt.disable();
+            } else {
+                // The receiver keeps the line alive, so the transmit half's own source has to be turned
+                // off with it. A completion left armed here raises an interrupt that finds a
+                // deinitialised buffer and does nothing but cost a wake — and left pending, it fires
+                // again the moment a new transmitter arms it.
+                self.info.regs.cpu_int(0).imask().modify(|w| w.set_eot(false));
+                self.info.regs.cpu_int(0).iclr().write(|w| w.set_eot(true));
             }
 
             self.tx.as_ref().map(|x| x.set_as_disconnected());
