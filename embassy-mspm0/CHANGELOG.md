@@ -122,3 +122,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0: bump `mspm0-metapac`, which adds the `VREF` and `TIMB` register blocks and types `NVIC_PRIO_BITS` as `u8`
 - feat: mspm0: add the L1126, L1127, L2116 and L2117 chip features. Those parts carry UNICOMM rather than the standalone serial peripherals, so they have no I2C, UART or SPI driver yet
 - mspm0: bump `mspm0-metapac` again, widening the basic timer's counter array to the eight its TRM documents and adding `Timer::counters`
+- feat: mspm0/timb: add a driver for the basic timers, whose counters were previously not even given a peripheral singleton

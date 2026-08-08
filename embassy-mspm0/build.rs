@@ -73,6 +73,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_pincm_mapping());
     g.extend(generate_pin());
     g.extend(generate_timers());
+    g.extend(generate_basic_timers(cfgs));
     g.extend(generate_interrupts());
     g.extend(generate_peripheral_instances());
     g.extend(generate_low_power(&singletons));
@@ -826,9 +827,6 @@ fn get_singletons(cfgs: &mut common::CfgSet) -> Vec<Singleton> {
                 false
             }
 
-            // TODO: Remove after TIMB is fixed
-            "tim" if peripheral.name.starts_with("TIMB") => true,
-
             _ => false,
         };
 
@@ -1038,21 +1036,25 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
 
     // Apply cfgs to each timer and it's pins
     for singleton in singletons.iter_mut() {
-        if singleton.name.starts_with("TIM") {
-            // Remove suffixes for pin singletons.
-            let name = pin_suffixes
-                .into_iter()
-                .filter_map(|suffix| singleton.name.strip_suffix(suffix))
-                .next()
-                .unwrap_or(&singleton.name);
+        // Remove suffixes for pin singletons.
+        let name = pin_suffixes
+            .into_iter()
+            .filter_map(|suffix| singleton.name.strip_suffix(suffix))
+            .next()
+            .unwrap_or(&singleton.name);
 
-            let feature = format!("time-driver-{}", name.to_lowercase());
+        // Only a timer a `time-driver-*` feature can name, which is not every timer: the basic ones
+        // cannot back the driver, so hiding them would name a Cargo feature that does not exist.
+        if !TIME_DRIVER_TIMERS.contains(&name) {
+            continue;
+        }
 
-            if singleton.name.contains(selected_timer) {
-                singleton.cfg = Some(quote! { #[cfg(not(any(feature = "time-driver-any", feature = #feature)))] });
-            } else {
-                singleton.cfg = Some(quote! { #[cfg(not(feature = #feature))] });
-            }
+        let feature = format!("time-driver-{}", name.to_lowercase());
+
+        if singleton.name.contains(selected_timer) {
+            singleton.cfg = Some(quote! { #[cfg(not(any(feature = "time-driver-any", feature = #feature)))] });
+        } else {
+            singleton.cfg = Some(quote! { #[cfg(not(feature = #feature))] });
         }
     }
 }
@@ -1122,16 +1124,21 @@ fn generate_singletons(singletons: &[Singleton]) -> TokenStream {
     }
 }
 
+/// Whether an instance is a basic timer, which has its own register block and its own driver.
+///
+/// `Peripheral::version` is what says so: the basic timers are the `btimer` block, everything else is
+/// `tim_v1`. Their `kind` is `"tim"` either way, so that cannot tell them apart.
+fn is_basic_timer(peripheral: &mspm0_metapac::metadata::Peripheral) -> bool {
+    peripheral.version == Some("btimer")
+}
+
 fn generate_timers() -> TokenStream {
     // Generate timers
     let timer_impls = METADATA
         .peripherals
         .iter()
         .filter_map(|peripheral| peripheral.timer.map(|timer| (peripheral, timer)))
-        // The basic timers are a bare counter with no capture/compare block, which is what
-        // `ccp_channels == 0` says. `tim` has no driver for one, and their registers are laid out
-        // differently from the `tim_v1` block the metapac maps them to, so they get no impls at all.
-        .filter(|(_, timer)| timer.ccp_channels > 0)
+        .filter(|(peripheral, _)| !is_basic_timer(peripheral))
         .flat_map(|(peripheral, timer)| {
             let name = Ident::new(&peripheral.name, Span::call_site());
 
@@ -1185,6 +1192,36 @@ fn generate_timers() -> TokenStream {
 
     quote! {
         #(#timer_impls)*
+    }
+}
+
+/// `timb::Instance` for each basic timer, carrying how many of the block's eight counters exist.
+fn generate_basic_timers(cfgs: &mut CfgSet) -> TokenStream {
+    cfgs.declare("timb");
+
+    let impls: Vec<_> = METADATA
+        .peripherals
+        .iter()
+        .filter(|peripheral| is_basic_timer(peripheral))
+        .map(|peripheral| {
+            let name = Ident::new(&peripheral.name, Span::call_site());
+            let counters = peripheral
+                .timer
+                .unwrap_or_else(|| panic!("{} is a basic timer with no `Timer` metadata", peripheral.name))
+                .counters;
+
+            quote! {
+                impl_timb_instance!(#name, counters: #counters);
+            }
+        })
+        .collect();
+
+    if !impls.is_empty() {
+        cfgs.enable("timb");
+    }
+
+    quote! {
+        #(#impls)*
     }
 }
 

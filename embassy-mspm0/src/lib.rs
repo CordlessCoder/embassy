@@ -31,6 +31,8 @@ pub mod probe;
 pub(crate) mod sync;
 pub mod sysctl;
 pub mod tim;
+#[cfg(timb)]
+pub mod timb;
 #[cfg(trng)]
 pub mod trng;
 // TODO: UART unicomm
