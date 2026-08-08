@@ -1,0 +1,38 @@
+[package]
+edition = "2024"
+name = "embassy-mspm0-l1306-rtic-examples"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+# MSPM0 is Cortex-M0+, which has no BASEPRI, so RTIC masks globally the way `critical-section` does.
+rtic = { version = "2", features = ["thumbv6-backend"] }
+
+embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", features = ["mspm0l1306rhb", "defmt", "rt", "time-driver-any", "time"] }
+embassy-sync = { version = "0.8.0", path = "../../embassy-sync", features = ["defmt"] }
+embassy-time = { version = "0.5.1", path = "../../embassy-time", features = ["defmt"] }
+# RTIC has no executor of its own to drive `embassy-time`'s queue, so the queue comes in directly.
+embassy-time-queue-utils = { version = "0.3.2", path = "../../embassy-time-queue-utils", features = ["generic-queue-8"] }
+embassy-futures = { version = "0.1.2", path = "../../embassy-futures" }
+
+cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = { version = "0.7.0" }
+defmt = "1.0.1"
+defmt-rtt = { version = "1.0.0", features = ["disable-blocking-mode"] }
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+[profile.release]
+debug = 2
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[profile.dev]
+debug = 2
+opt-level = 2
+
+[package.metadata.embassy]
+build = [
+  { target = "thumbv6m-none-eabi", artifact-dir = "out/examples/mspm0l1306-rtic" }
+]
