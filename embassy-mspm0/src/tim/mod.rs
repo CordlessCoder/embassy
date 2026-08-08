@@ -254,19 +254,28 @@ impl CountingMode {
 
 pub(crate) trait SealedInstance {
     fn info() -> &'static Info;
-    fn state() -> &'static State;
+    /// One waker per channel this instance has.
+    ///
+    /// A slice rather than `&'static State<N>`, because a trait method cannot return a type whose size
+    /// varies per implementor without `generic_const_exprs`. Monomorphised per instance the pointer and
+    /// the length are both constants, so it costs nothing to hand out.
+    fn cc_wakers() -> &'static [IrqWaker];
 }
 
-/// Peripheral state.
-pub(crate) struct State {
+/// Peripheral state, sized by how many capture/compare channels the instance has.
+///
+/// `N` comes from the metapac's `ccp_channels` by way of `build.rs`, the same figure that decides
+/// whether an instance implements [`General4ChannelInstance`], so an instance cannot carry slots for
+/// channels it does not have.
+pub(crate) struct State<const N: usize> {
     /// Woken by a capture or compare event on the channel of the same index.
-    pub(crate) cc: [IrqWaker; 4],
+    pub(crate) cc: [IrqWaker; N],
 }
 
-impl State {
+impl<const N: usize> State<N> {
     pub(crate) const fn new() -> Self {
         Self {
-            cc: [const { IrqWaker::new() }; 4],
+            cc: [const { IrqWaker::new() }; N],
         }
     }
 }
@@ -313,10 +322,10 @@ macro_rules! impl_tim_instance {
             }
 
             #[inline]
-            fn state() -> &'static crate::tim::State {
-                static STATE: crate::tim::State = crate::tim::State::new();
+            fn cc_wakers() -> &'static [crate::sync::irq_waker::IrqWaker] {
+                static STATE: crate::tim::State<{ $channels as usize }> = crate::tim::State::new();
 
-                &STATE
+                &STATE.cc
             }
         }
 

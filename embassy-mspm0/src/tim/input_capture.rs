@@ -10,10 +10,11 @@ use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Ccond, Coc, Cpv, Fp, Isel};
+use crate::sync::irq_waker::IrqWaker;
 use crate::tim::low_level::{self, Config as TimerConfig, Event, Timer};
 use crate::tim::{
     Ch0, Ch1, Ch2, Ch3, Channel, ClockSel, CountingMode, General2ChannelInstance, General4ChannelInstance, Instance,
-    State, TimerChannel, TimerPin, Word,
+    TimerChannel, TimerPin, Word,
 };
 use crate::{Peri, interrupt};
 
@@ -88,7 +89,7 @@ pub struct InterruptHandler<T: Instance> {
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
         let r = T::info().regs;
-        let state = T::state();
+        let wakers = T::cc_wakers();
 
         // Other events the caller enabled through `Timer` are not ours to acknowledge.
         let fired = r.cpu_int(0).mis().read().0 & low_level::CC_UP_BITS;
@@ -96,9 +97,11 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         // Mask rather than clear: the flag has to survive until the future reads `CC`.
         r.cpu_int(0).imask().modify(|w| w.0 &= !fired);
 
-        for channel in Channel::ALL {
-            if fired & Event::CaptureOrCompareUp(channel).mask().0 != 0 {
-                state.cc[channel.index()].wake();
+        // The instance's own channels, not all four: a two-channel timer has neither the slots nor the
+        // events for the other two.
+        for (index, waker) in wakers.iter().enumerate() {
+            if fired & Event::CaptureOrCompareUp(Channel::ALL[index]).mask().0 != 0 {
+                waker.wake();
             }
         }
     }
@@ -327,7 +330,7 @@ impl<'d, T: Instance> InputCapture<'d, T> {
     pub fn channel(&mut self, channel: Channel) -> CaptureChannel<'_, <T as Instance>::Word> {
         CaptureChannel {
             regs: self.timer.regs(),
-            state: T::state(),
+            waker: &T::cc_wakers()[channel.index()],
             channel,
             _phantom: PhantomData,
         }
@@ -369,7 +372,7 @@ impl<'d, T: Instance> InputCapture<'d, T> {
 /// gives the right interval.
 pub struct CaptureChannel<'d, W: Word> {
     regs: Tim,
-    state: &'static State,
+    waker: &'static IrqWaker,
     channel: Channel,
     _phantom: PhantomData<(&'d mut (), W)>,
 }
@@ -382,7 +385,7 @@ impl<W: Word> CaptureChannel<'_, W> {
         let event = Event::CaptureOrCompareUp(self.channel);
 
         poll_fn(|cx| {
-            self.state.cc[self.channel.index()].register(cx.waker());
+            self.waker.register(cx.waker());
 
             if low_level::is_pending(self.regs, event) {
                 let value = W::from_reg(self.regs.counterregs(0).cc(self.channel.index()).read());

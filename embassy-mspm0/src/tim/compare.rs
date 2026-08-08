@@ -12,10 +12,11 @@ use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Act, Ccpiv, Ccpo, Coc};
+use crate::sync::irq_waker::IrqWaker;
 use crate::tim::low_level::{self, Config as TimerConfig, Event, Timer};
 use crate::tim::{
     Ch0, Ch1, Ch2, Ch3, Channel, ClockSel, CountingDirection, General2ChannelInstance, General4ChannelInstance,
-    Instance, State, TimerChannel, TimerPin, Word,
+    Instance, TimerChannel, TimerPin, Word,
 };
 use crate::{Peri, interrupt};
 
@@ -90,7 +91,7 @@ pub struct InterruptHandler<T: Instance> {
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
         let r = T::info().regs;
-        let state = T::state();
+        let wakers = T::cc_wakers();
 
         // Both directions, since the counting mode is a runtime choice. Only the enabled one can be
         // set in `MIS`, and other events the caller enabled through `Timer` are not ours to acknowledge.
@@ -99,11 +100,14 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         // Mask rather than clear: the flag is what tells the waiting future the match happened.
         r.cpu_int(0).imask().modify(|w| w.0 &= !fired);
 
-        for channel in Channel::ALL {
+        // The instance's own channels, not all four: a two-channel timer has neither the slots nor the
+        // events for the other two.
+        for (index, waker) in wakers.iter().enumerate() {
+            let channel = Channel::ALL[index];
             let mask = Event::CaptureOrCompareUp(channel).mask().0 | Event::CaptureOrCompareDown(channel).mask().0;
 
             if fired & mask != 0 {
-                state.cc[channel.index()].wake();
+                waker.wake();
             }
         }
     }
@@ -261,7 +265,7 @@ impl<'d, T: Instance> Compare<'d, T> {
     pub fn channel(&mut self, channel: Channel) -> CompareChannel<'_, <T as Instance>::Word> {
         CompareChannel {
             regs: self.timer.regs(),
-            state: T::state(),
+            waker: &T::cc_wakers()[channel.index()],
             channel,
             _phantom: PhantomData,
         }
@@ -287,7 +291,7 @@ impl<T: Instance> Drop for Compare<'_, T> {
 /// otherwise be a match that never happens.
 pub struct CompareChannel<'d, W: Word> {
     regs: Tim,
-    state: &'static State,
+    waker: &'static IrqWaker,
     channel: Channel,
     _phantom: PhantomData<(&'d mut (), W)>,
 }
@@ -329,7 +333,7 @@ impl<W: Word> CompareChannel<'_, W> {
         let event = self.event();
 
         poll_fn(|cx| {
-            self.state.cc[self.channel.index()].register(cx.waker());
+            self.waker.register(cx.waker());
 
             if low_level::is_pending(self.regs, event) {
                 low_level::clear_pending(self.regs, event);
