@@ -747,8 +747,8 @@ impl<'d> Output<'d> {
     #[inline]
     pub fn new(pin: Peri<'d, impl Pin>, initial_output: Level) -> Self {
         let mut pin = Flex::new(pin);
-        pin.set_as_output();
         pin.set_level(initial_output);
+        pin.set_as_output();
         Self { pin }
     }
 
