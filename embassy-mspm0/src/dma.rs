@@ -385,6 +385,11 @@ impl<'a> Future for Transfer<'a> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        #[cfg(feature = "_probe")]
+        let probe = crate::probe::target(crate::probe::Marker::DmaPoll);
+        #[cfg(feature = "_probe")]
+        crate::probe::set(probe);
+
         let state: &ChannelState = &STATE[self.channel.id as usize];
 
         state.waker.register(cx.waker());
@@ -392,11 +397,12 @@ impl<'a> Future for Transfer<'a> {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
 
-        if self.channel.is_running() {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
+        let running = self.channel.is_running();
+
+        #[cfg(feature = "_probe")]
+        crate::probe::clear(probe);
+
+        if running { Poll::Pending } else { Poll::Ready(()) }
     }
 }
 
@@ -601,6 +607,9 @@ impl<'d> Channel<'d> {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
 
+        #[cfg(feature = "_probe")]
+        crate::probe::count(crate::probe::target(crate::probe::Marker::DmaTrigger));
+
         // Enable and request together, with the interrupt already armed above.
         self.ctl().modify(|w| {
             w.set_en(true);
@@ -674,6 +683,11 @@ macro_rules! impl_full_dma_channel {
 fn on_irq(dma: pac::dma::Dma) {
     use crate::BitIter;
 
+    #[cfg(feature = "_probe")]
+    let probe = crate::probe::target(crate::probe::Marker::DmaHandler);
+    #[cfg(feature = "_probe")]
+    crate::probe::set(probe);
+
     let events = dma.int_event(0);
     let mis = events.mis().read();
 
@@ -703,4 +717,7 @@ fn on_irq(dma: pac::dma::Dma) {
             });
         }
     }
+
+    #[cfg(feature = "_probe")]
+    crate::probe::clear(probe);
 }

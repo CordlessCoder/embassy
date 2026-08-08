@@ -61,20 +61,24 @@ pub enum Marker {
     /// A pulse where the handler wakes the transmit waker, which is the driver's only way of getting the
     /// task run again once it has blocked. Bounds how often the task can have been polled at all.
     UartTxWake = 7,
+
+    /// The DMA interrupt handler, whole. Where its edge falls against
+    /// [`DmaTrigger`](Marker::DmaTrigger) is the measurement: an interrupt that arrives before the
+    /// transfer it belongs to has finished is one nobody is waiting on yet.
+    DmaHandler = 8,
+
+    /// A toggle where a channel is triggered, at the end of its configuration. Marks the start of a
+    /// transfer, which is otherwise invisible — a memory-to-memory transfer reaches no pin.
+    DmaTrigger = 9,
+
+    /// One poll of a transfer future, which is where its waker is registered. A completion interrupt
+    /// landing before the first of these is a completion the waiter cannot have been woken by.
+    DmaPoll = 10,
 }
 
 /// One word per marker: bit 31 is [`ARMED`], bits 15:8 the port, bits 7:0 the pin. Zero is unarmed,
 /// which is why the armed bit is needed at all — port A pin 0 is otherwise an all-zero word.
-static MARKERS: [AtomicU32; 8] = [
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-];
+static MARKERS: [AtomicU32; 11] = [const { AtomicU32::new(0) }; 11];
 
 /// Drive `pin` on `port` across `marker`.
 ///
