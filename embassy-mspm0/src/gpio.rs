@@ -957,6 +957,8 @@ impl AnyPin {
     ///
     /// # Safety
     /// - `pin_port` should not in use by another driver.
+    /// - `pin_port` must name a pin this chip has. The edge waits index their port's waiter list
+    ///   without a bounds check, on the strength of this.
     #[inline]
     pub unsafe fn steal(pin_port: u8) -> Peri<'static, Self> {
         Peri::new_unchecked(Self { pin_port })

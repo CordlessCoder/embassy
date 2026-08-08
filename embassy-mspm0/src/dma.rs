@@ -95,6 +95,14 @@ impl<'d> Channel<'d> {
     }
 
     /// Create a new read DMA transfer.
+    ///
+    /// # Safety
+    ///
+    /// `src` must be valid for reads of `dst.len()` words for as long as the transfer runs, and must
+    /// not be written by anything else meanwhile. The hardware writes `dst` behind the compiler's
+    /// back, so the returned [`Transfer`] must be awaited, `blocking_wait`ed or dropped before `dst`
+    /// is read; leaking it with [`mem::forget`](core::mem::forget()) leaves the DMA writing into memory
+    /// the borrow checker considers free again.
     pub unsafe fn read<'a, SW: Word, DW: Word>(
         &'a mut self,
         trigger_source: u8,
@@ -106,6 +114,12 @@ impl<'d> Channel<'d> {
     }
 
     /// Create a new read DMA transfer, using raw pointers.
+    ///
+    /// # Safety
+    ///
+    /// As [`read`](Self::read), and additionally `dst` must be valid for writes for its whole length
+    /// for as long as the transfer runs. Nothing here ties that to a lifetime — the caller keeps the
+    /// destination alive.
     pub unsafe fn read_raw<'a, SW: Word, DW: Word>(
         &'a mut self,
         trigger_source: u8,
@@ -137,6 +151,14 @@ impl<'d> Channel<'d> {
     }
 
     /// Create a new write DMA transfer.
+    ///
+    /// # Safety
+    ///
+    /// `dst` must be valid for writes of `src.len()` words for as long as the transfer runs, and must
+    /// not be read or written by anything else meanwhile. The returned [`Transfer`] must be awaited,
+    /// `blocking_wait`ed or dropped before `src` is reused; leaking it with
+    /// [`mem::forget`](core::mem::forget()) leaves the DMA reading memory the borrow checker considers
+    /// free again.
     pub unsafe fn write<'a, SW: Word, DW: Word>(
         &'a mut self,
         trigger_source: u8,
@@ -148,6 +170,12 @@ impl<'d> Channel<'d> {
     }
 
     /// Create a new write DMA transfer, using raw pointers.
+    ///
+    /// # Safety
+    ///
+    /// As [`write`](Self::write), and additionally `src` must be valid for reads for its whole length
+    /// for as long as the transfer runs. Nothing here ties that to a lifetime — the caller keeps the
+    /// source alive.
     pub unsafe fn write_raw<'a, SW: Word, DW: Word>(
         &'a mut self,
         trigger_source: u8,
