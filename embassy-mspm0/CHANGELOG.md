@@ -112,3 +112,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/adc: an asynchronous read now parks on the conversion interrupt instead of polling for it in a loop, freeing the CPU for the duration of a conversion
 - mspm0/i2c: wake the waiting task without taking a critical section
 - fix: mspm0/dma: an awaited transfer now completes -- the channel was configured while enabled so it ignored the transfer mode, triggered before its interrupt was armed, and never had its completion flag cleared
+- mspm0/dma: wake a transfer's waiting task without taking a critical section

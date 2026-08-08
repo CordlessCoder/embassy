@@ -12,12 +12,12 @@ use core::{fmt, mem};
 use critical_section::CriticalSection;
 use embassy_hal_internal::PeripheralType;
 use embassy_hal_internal::interrupt::InterruptExt;
-use embassy_sync::waitqueue::AtomicWaker;
 use mspm0_metapac::common::{RW, Reg};
 use mspm0_metapac::dma::regs;
 use mspm0_metapac::dma::vals::{self, Autoen, Em, Incr, Preirq, Wdth};
 
 use crate::interrupt::typelevel::{Handler, Interrupt};
+use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{SleepLevel, WakeGuard};
 use crate::{Peri, interrupt, pac};
 
@@ -442,14 +442,14 @@ const CHANNEL_COUNT: usize = crate::_generated::DMA_CHANNELS;
 static STATE: [ChannelState; CHANNEL_COUNT] = [const { ChannelState::new() }; CHANNEL_COUNT];
 
 struct ChannelState {
-    waker: AtomicWaker,
+    /// Woken by [`on_irq`], which is the only waker side: every channel's interrupt is the one `DMA`
+    /// line, so the handler cannot preempt itself.
+    waker: IrqWaker,
 }
 
 impl ChannelState {
     const fn new() -> Self {
-        Self {
-            waker: AtomicWaker::new(),
-        }
+        Self { waker: IrqWaker::new() }
     }
 }
 
