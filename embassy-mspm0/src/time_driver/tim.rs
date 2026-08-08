@@ -178,6 +178,12 @@ impl TimxDriver {
 
         // Enabling latches the events `period` counts. Unmasking without clearing them first delivers
         // both immediately and advances the clock by a period apiece.
+        //
+        // The clear does not close the window entirely. `CTRCTL.EN` takes a functional clock cycle to
+        // take effect — 30.5 us at LFCLK undivided, per `TIMER_ERR_04` — while this write follows it a
+        // few core cycles later, so the counter can start and latch an event after the clear has already
+        // happened. That costs one spurious handler entry near the first tick. It is harmless because
+        // `next_period` reconciles rather than counting entries; it was not harmless before that.
         regs.cpu_int(0).iclr().write(|w| {
             w.set_z(true);
             w.set_ccu0(true);
@@ -196,9 +202,29 @@ impl TimxDriver {
     fn next_period(&self, cs: CriticalSection) {
         let r = regs();
 
+        // Advance only when the counter disagrees with what `period` claims.
+        //
+        // `calc_now` reads the period's parity as saying which half of its range the counter is in, so
+        // the two have to stay in step. Advancing on every entry does not keep them there: the timer is
+        // clocked from LFCLK, so clearing the interrupt needs an LFCLK edge to take effect while the
+        // handler returns in a microsecond. The core re-enters on the same event, and blind counting
+        // takes the parity with it — permanently, since nothing ever puts it back. Measured: an extra
+        // advance ~47 us after a real one, and from then on `now()` sits half a counter range out.
+        //
+        // Reconciling instead makes a repeated entry a no-op. The repeat is still worth removing, but it
+        // stops being a correctness problem and becomes a wasted wake.
+        let counter: u32 = W::from_reg(r.counterregs(0).ctr().read()).into();
+        let period = self.period.load(Ordering::Relaxed);
+
         // We only modify the period from the timer interrupt, so we know this can't race.
-        let period = self.period.load(Ordering::Relaxed) + 1;
+        if (period & 1) == (counter >> HALF_BITS) {
+            return;
+        }
+
+        let period = period + 1;
         self.period.store(period, Ordering::Relaxed);
+
+
         let t = (period as u64) << HALF_BITS;
 
         r.cpu_int(0).imask().modify(move |w| {
@@ -211,6 +237,7 @@ impl TimxDriver {
 
     fn on_interrupt(&self) {
         let r = regs();
+
 
         critical_section::with(|cs| {
             let mis = r.cpu_int(0).mis().read();
@@ -231,6 +258,7 @@ impl TimxDriver {
             }
 
             if mis.ccu1() {
+
                 self.trigger_alarm(cs);
             }
         });
@@ -285,6 +313,8 @@ impl TimxDriver {
 
         // Enable it if it'll happen soon. Otherwise, `next_period` will enable it.
         let diff = timestamp - t;
+
+
         r.cpu_int(0).imask().modify(|w| w.set_ccu1(diff < ARM_AHEAD));
 
         // Reevaluate if the alarm timestamp is still in the future
@@ -326,6 +356,7 @@ impl Driver for TimxDriver {
             if period != period2 {
                 continue;
             }
+
 
             return calc_now::<W>(period, counter);
         }
