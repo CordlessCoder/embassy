@@ -84,6 +84,12 @@ pub use embassy_hal_internal::Peri;
 pub use mspm0_metapac as pac;
 #[cfg(not(feature = "unstable-pac"))]
 pub(crate) use mspm0_metapac as pac;
+/// How many priority bits the NVIC implements.
+///
+/// Re-exported at the path [RTIC](https://rtic.rs)'s `#[app(device = embassy_mspm0)]` looks for.
+/// Without it an application has to write a shim module of its own to hold it.
+#[cfg(feature = "rt")]
+pub use pac::NVIC_PRIO_BITS;
 
 /// The interrupt groups' demultiplexers, called by the vector-table symbols
 /// [`bind_group_interrupts!`] emits. Public only so that macro can name them from the user's crate.
@@ -91,15 +97,6 @@ pub(crate) use mspm0_metapac as pac;
 #[doc(hidden)]
 pub use crate::_generated::group_demux as _group_demux;
 pub use crate::_generated::interrupt;
-
-/// How many priority bits the NVIC implements.
-///
-/// The same constant the PAC carries, narrowed to the `u8` that
-/// [RTIC](https://rtic.rs)'s `#[app(device = embassy_mspm0)]` looks for. Without it an application has
-/// to write a shim module of its own to hold the cast.
-#[cfg(feature = "rt")]
-pub const NVIC_PRIO_BITS: u8 = pac::NVIC_PRIO_BITS as u8;
-
 /// The interrupt enum, at the path RTIC's `#[app(device = embassy_mspm0)]` expects it.
 ///
 /// Needed only by a hardware task: `#[task(binds = ...)]` names the enum from the crate root, while

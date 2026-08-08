@@ -119,3 +119,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/i2c-target: an over-length write no longer leaves its surplus bytes for the next `listen` to deliver as a fresh command
 - fix: mspm0/gpio: `Output::new` no longer drives the pin to its previous level before applying the requested one
 - feat: mspm0: export `NVIC_PRIO_BITS` and `Interrupt` at the crate root, so RTIC's `#[app(device = embassy_mspm0)]` needs no shim module
+- mspm0: bump `mspm0-metapac`, which adds the `VREF` and `TIMB` register blocks and types `NVIC_PRIO_BITS` as `u8`
