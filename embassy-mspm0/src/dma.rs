@@ -532,15 +532,19 @@ impl<'d> Channel<'d> {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
 
+        // SLAU 5.2.5:
+        // "The DMATSEL bits should be modified only when the DMACTLx.DMAEN bit is
+        //  0; otherwise, unpredictable DMA triggers can occur."
+        //
+        // This has to be a write of its own: the channel has to be *already* disabled for the rest of
+        // DMACTL to take, so a store that clears DMAEN alongside them leaves them at their old values.
+        // DMATM is the one that shows it — the channel keeps whatever mode it was last configured for.
         self.ctl().modify(|w| {
-            // SLAU 5.2.5:
-            // "The DMATSEL bits should be modified only when the DMACTLx.DMAEN bit is
-            //  0; otherwise, unpredictable DMA triggers can occur."
-            //
-            // We also want to stop any transfers before setup.
             w.set_en(false);
             w.set_req(false);
+        });
 
+        self.ctl().modify(|w| {
             // Not every part supports auto enable, so force its value to 0.
             w.set_autoen(Autoen::None);
             w.set_preirq(Preirq::PreirqDisable);
@@ -575,20 +579,31 @@ impl<'d> Channel<'d> {
         self.sa().write_value(src as u32);
         self.da().write_value(dst as u32);
 
-        self.ctl().modify(|w| {
-            // FIXME: Why did putting set_req later fix some transfers
-            w.set_en(true);
-            w.set_req(true);
-        });
+        // Left disabled. Enabling is what starts a software-triggered transfer, so it belongs in
+        // `start`, after the interrupt has been armed.
     }
 
+    /// Arm the completion interrupt, then trigger the transfer.
+    ///
+    /// The order is the point. Enabling the channel before arming runs a transfer whose completion is
+    /// reported to nobody, and the handler masks the channel off on its way out, so the transfer the
+    /// caller goes on to await has nothing left to interrupt with.
     fn start(&self) {
+        // A stale flag does the same thing from the other direction: it latches whether or not the
+        // channel is unmasked, so one left over from an earlier transfer fires the moment the channel
+        // is armed and is again masked off before this transfer has been triggered.
+        pac::DMA.int_event(0).iclr().write(|w| {
+            w.set_ch(self.id as usize, true);
+        });
+
         self.mask_interrupt(true);
 
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
 
+        // Enable and request together, with the interrupt already armed above.
         self.ctl().modify(|w| {
+            w.set_en(true);
             w.set_req(true);
         });
     }
@@ -623,9 +638,11 @@ impl<'d> Channel<'d> {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
 
-        let ctl = self.ctl().read();
-
-        ctl.req() && ctl.en()
+        // DMAEN alone. The hardware clears it when a single or block transfer runs out of DMASZ, which
+        // is what "finished" means here; DMAREQ is the trigger and the hardware clears that as soon as
+        // it takes the request up, so testing it as well reports a transfer that is still writing as
+        // done — and the waiter that believes it walks away while the DMA still holds the buffer.
+        self.ctl().read().en()
     }
 }
 
@@ -670,9 +687,17 @@ fn on_irq(dma: pac::dma::Dma) {
     // Ignore preirq interrupts (values greater than 16).
     for i in BitIter(mis.0 & 0x0000_FFFF) {
         if let Some(state) = STATE.get(i as usize) {
+            // Masking the channel is not clearing it: the flag stays latched in `ris`, so the next
+            // transfer's unmask raises the interrupt again the moment it is armed, and the handler
+            // masks the channel back off before the transfer it belongs to has finished. The
+            // completion nobody is left listening for is the one that matters.
+            events.iclr().write(|w| {
+                w.set_ch(i as usize, true);
+            });
+
             state.waker.wake();
 
-            // Notify the future that the counter size hit zero
+            // Nothing more to report until the next transfer arms it again.
             events.imask().modify(|w| {
                 w.set_ch(i as usize, false);
             });
