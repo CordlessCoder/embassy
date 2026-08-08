@@ -35,6 +35,8 @@ pub mod tim;
 pub mod timb;
 #[cfg(trng)]
 pub mod trng;
+#[cfg(unicomm)]
+pub mod unicomm;
 // TODO: UART unicomm
 #[cfg(not(unicomm))]
 pub mod uart;

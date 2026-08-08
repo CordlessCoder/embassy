@@ -74,6 +74,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_pin());
     g.extend(generate_timers());
     g.extend(generate_basic_timers(cfgs));
+    g.extend(generate_unicomm(cfgs));
     g.extend(generate_interrupts());
     g.extend(generate_peripheral_instances());
     g.extend(generate_low_power(&singletons));
@@ -1219,6 +1220,58 @@ fn generate_basic_timers(cfgs: &mut CfgSet) -> TokenStream {
     if !impls.is_empty() {
         cfgs.enable("timb");
     }
+
+    quote! {
+        #(#impls)*
+    }
+}
+
+/// `unicomm::Instance` for each UNICOMM instance, plus one marker trait per mode it implements.
+///
+/// Which modes an instance has is per instance and per device — no instance implements all four — so
+/// the capability traits are what stop a UART being built on an I2C-only instance.
+fn generate_unicomm(cfgs: &mut CfgSet) -> TokenStream {
+    cfgs.declare_all(&["unicomm_uart", "unicomm_spi", "unicomm_i2c_controller", "unicomm_i2c_target"]);
+
+    let impls: Vec<_> = METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.unicomm.map(|unicomm| (peripheral, unicomm)))
+        .flat_map(|(peripheral, unicomm)| {
+            let name = Ident::new(&peripheral.name, Span::call_site());
+            let mut out = vec![quote! { impl_unicomm_instance!(#name); }];
+
+            for (present, cfg, macro_name, suffix) in [
+                (unicomm.uart, "unicomm_uart", "impl_unicomm_uart", "UART"),
+                (unicomm.spi, "unicomm_spi", "impl_unicomm_spi", "SPI"),
+                (
+                    unicomm.i2c_controller,
+                    "unicomm_i2c_controller",
+                    "impl_unicomm_i2c_controller",
+                    "I2CC",
+                ),
+                (
+                    unicomm.i2c_target,
+                    "unicomm_i2c_target",
+                    "impl_unicomm_i2c_target",
+                    "I2CT",
+                ),
+            ] {
+                if !present {
+                    continue;
+                }
+
+                cfgs.enable(cfg);
+
+                let macro_name = Ident::new(macro_name, Span::call_site());
+                let regs = Ident::new(&format!("{}_{suffix}", peripheral.name), Span::call_site());
+
+                out.push(quote! { #macro_name!(#name, #regs); });
+            }
+
+            out
+        })
+        .collect();
 
     quote! {
         #(#impls)*
