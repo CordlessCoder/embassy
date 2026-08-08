@@ -291,7 +291,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
 
     pub fn scomp1(&self) -> u16 {
         let r = T::info().regs;
-        r.scomp0().read().val()
+        r.scomp1().read().val()
     }
 }
 
