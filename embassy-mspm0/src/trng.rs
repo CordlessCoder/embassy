@@ -7,7 +7,6 @@ use core::task::Poll;
 
 use cortex_m::asm;
 use embassy_hal_internal::Peri;
-use embassy_sync::waitqueue::AtomicWaker;
 use mspm0_metapac::trng::regs::Int;
 use mspm0_metapac::trng::vals::Cmd::*;
 use mspm0_metapac::trng::vals::{self, PwrenKey, Ratio, RstctlKey};
@@ -16,11 +15,12 @@ use rand_core::{TryCryptoRng, TryRng};
 use crate::interrupt_group::Binding;
 use crate::peripherals::TRNG;
 use crate::sealed;
+use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{LowPowerInstance, WakeGuard};
 
 /// Woken by the TRNG interrupt. Reachable only through [`InterruptHandler`], so a binary that binds
 /// no handler drops it along with the handler.
-static WAKER: AtomicWaker = AtomicWaker::new();
+static WAKER: IrqWaker = IrqWaker::new();
 
 /// Decimation rate marker types. See [`DecimRate`].
 pub trait SecurityMarker: sealed::Sealed {

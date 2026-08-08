@@ -108,3 +108,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/uart: wake the buffered UART's waiting task without taking a critical section, 15% off every interrupt entry at no cost in RAM
 - mspm0/tim: wake a timer's capture and compare channels without taking a critical section, which the old waker did only in order to put the waker back afterwards
 - mspm0/tim: size a timer's waker array by the capture/compare channels it actually has, halving it on a two-channel instance and shortening the handler's walk to match
+- mspm0/trng: wake the waiting task without taking a critical section
