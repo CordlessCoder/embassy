@@ -651,8 +651,12 @@ impl<'d> Channel<'d> {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
 
+        // SLAU846 5.2.6: a halted block transfer continues once `DMAEN` is set again *and* a trigger is
+        // resent — "a trigger is necessary for halted transfer to resume". `DMAREQ` supplies that for a
+        // software-triggered channel and is ignored by one waiting on a hardware source, which is why it
+        // is asserted unconditionally.
         self.ctl().modify(|w| {
-            // w.set_en(true);
+            w.set_en(true);
             w.set_req(true);
         });
     }
@@ -665,8 +669,12 @@ impl<'d> Channel<'d> {
         //
         // SLAU846 5.2.6:
         // "A DMA block transfer in progress can be stopped by clearing the DMAEN bit"
+        //
+        // `DMAEN` is what stops it, and it is also what `is_running` reports, so leaving it set means a
+        // cancelled transfer never reads as stopped and `Drop` spins on it forever. `DMAREQ` goes too,
+        // dropping a software request the hardware has not taken up yet.
         self.ctl().modify(|w| {
-            // w.set_en(false);
+            w.set_en(false);
             w.set_req(false);
         });
     }
