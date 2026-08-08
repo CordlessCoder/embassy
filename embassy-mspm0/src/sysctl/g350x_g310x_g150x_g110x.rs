@@ -1,4 +1,4 @@
-//! SYSCTL configuration for G518x.
+//! SYSCTL configuration for the `g350x_g310x_g150x_g110x` register block.
 
 use mspm0_metapac::sysctl::vals;
 
@@ -41,6 +41,7 @@ pub enum ClkOutSource {
     /// Use USBFLL as the source.
     ///
     /// The divider is required for this clock source.
+    #[cfg(usbfs)]
     UsbFll(ClkOutDiv),
 }
 
@@ -53,6 +54,7 @@ impl ClkOutSource {
             ClkOutSource::MfpClk(div) => div_to_pac(Some(div)),
             ClkOutSource::Hfclk(div) => div_to_pac(div),
             ClkOutSource::SysPllClk1(div) => div_to_pac(div),
+            #[cfg(usbfs)]
             ClkOutSource::UsbFll(div) => div_to_pac(Some(div)),
         }
     }
@@ -66,6 +68,7 @@ impl ClkOutSource {
             ClkOutSource::Hfclk(_) => vals::Exclksrc::Hfclk,
             ClkOutSource::SysPllClk1(_) => vals::Exclksrc::Syspllout1,
             // FIXME: Update SVD to define _RESERVED_6 as USBFLL
+            #[cfg(usbfs)]
             ClkOutSource::UsbFll(_) => vals::Exclksrc::_RESERVED_6,
         }
     }

@@ -12,18 +12,16 @@ use crate::pac::sysctl::vals;
 use crate::peripherals::CLK_OUT;
 use crate::{Peri, pac};
 
-// TODO: Use sysctl version instead
-#[cfg_attr(mspm0c110x, path = "c1103_1104.rs")]
-#[cfg_attr(mspm0c1105_c1106, path = "c1105_1106.rs")]
-#[cfg_attr(
-    any(mspm0g110x, mspm0g150x, mspm0g310x, mspm0g350x),
-    path = "g110x_150x_310x_350x.rs"
-)]
-#[cfg_attr(any(mspm0g151x, mspm0g351x), path = "g151x_351x.rs")]
-#[cfg_attr(mspm0g518x, path = "g511x_518x.rs")]
-#[cfg_attr(mspm0h321x, path = "h321x.rs")]
-#[cfg_attr(any(mspm0l110x, mspm0l130x, mspm0l134x), path = "l_typea.rs")]
-#[cfg_attr(any(mspm0l122x, mspm0l222x), path = "l_typeb.rs")]
+// One file per SYSCTL version, named after it. The version is what selects the register block, so a
+// new device reusing an existing one needs no edit here — a family list needed one per family, and
+// missed four of them. `build.rs::SYSCTL_VERSIONS` is the other half; an unknown version fails there.
+#[cfg_attr(sysctl_c110x, path = "c110x.rs")]
+#[cfg_attr(sysctl_c1105_c1106, path = "c1105_c1106.rs")]
+#[cfg_attr(sysctl_g350x_g310x_g150x_g110x, path = "g350x_g310x_g150x_g110x.rs")]
+#[cfg_attr(sysctl_g351x_g151x, path = "g351x_g151x.rs")]
+#[cfg_attr(sysctl_h321x, path = "h321x.rs")]
+#[cfg_attr(sysctl_l110x_l130x_l134x, path = "l110x_l130x_l134x.rs")]
+#[cfg_attr(sysctl_l122x_l222x, path = "l122x_l222x.rs")]
 mod inner;
 
 pub mod clock;

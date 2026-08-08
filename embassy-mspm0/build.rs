@@ -97,7 +97,7 @@ fn generate_code(cfgs: &mut CfgSet) {
 /// A family list goes stale — `trng` was gated on six families while the metadata reported seven.
 /// Add a kind here when a module starts gating on it; an undeclared cfg warns, so an omission shows
 /// up at once.
-const PERIPHERAL_KIND_CFGS: &[&str] = &["mathacl", "trng"];
+const PERIPHERAL_KIND_CFGS: &[&str] = &["mathacl", "trng", "usbfs"];
 
 /// Enable a cfg for each kind in [`PERIPHERAL_KIND_CFGS`] this chip actually has.
 fn peripheral_kind_cfgs(cfgs: &mut CfgSet) {
@@ -190,6 +190,19 @@ impl SysctlCaps {
     };
 }
 
+/// Every SYSCTL version the crate knows, each of which gets a `sysctl_<version>` cfg.
+///
+/// `sysctl/mod.rs` picks its per-version file with these, and there is one file per entry.
+const SYSCTL_VERSIONS: &[&str] = &[
+    "c110x",
+    "c1105_c1106",
+    "g350x_g310x_g150x_g110x",
+    "g351x_g151x",
+    "h321x",
+    "l110x_l130x_l134x",
+    "l122x_l222x",
+];
+
 /// Emit a cfg for the parts of SYSCTL that only the register block can answer.
 ///
 /// Keyed on the SYSCTL peripheral *version*, which is what selects the register block, so the table
@@ -257,9 +270,15 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
         other => panic!(
             "unknown SYSCTL version {other:?}: work out which RSTCAUSE.ID causes it defines, and \
              whether it has SHUTDNSTORE and whether its TRM adds the USELFCLK step to STOP0 \
-             entry, and add it to `sysctl_version_cfgs`"
+             entry, and add it to `sysctl_version_cfgs`, to `SYSCTL_VERSIONS`, and as a file in \
+             `src/sysctl/`"
         ),
     };
+
+    for known in SYSCTL_VERSIONS {
+        cfgs.declare(&format!("sysctl_{known}"));
+    }
+    cfgs.enable(&format!("sysctl_{version}"));
 
     for (cfg, present) in [
         ("mspm0_stop0_clears_lfclk", caps.stop0_clears_lfclk),
