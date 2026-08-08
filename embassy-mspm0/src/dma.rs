@@ -46,7 +46,7 @@ pub enum BurstSize {
     /// is reevaluated.
     _16,
 
-    /// The burst size is 32, after 32 transfers the block transfer is interrupted and the priority
+    /// The burst size is 32, after 33 transfers the block transfer is interrupted and the priority
     /// is reevaluated.
     _32,
 }

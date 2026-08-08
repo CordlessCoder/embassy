@@ -165,7 +165,7 @@ pub enum FifoThreshold {
     /// A single entry: interrupt as soon as one byte can move.
     ///
     /// Lowest latency and highest cost. This was the driver's only behaviour before the level was
-    /// configurable, and it is what limits the receive rate to roughly 230400 baud.
+    /// configurable, and it is what holds the reliable receive rate below 460800 baud.
     AtLeastOne,
 
     /// One of four.

@@ -112,7 +112,7 @@ atomics-critical-section = ["portable-atomic/critical-section"]
 
 ## Emulate them by disabling interrupts inline, asserting that the target is single-core.
 ##
-## True of every MSPM0, and worth about 18% of a GPIO wake. It bypasses the application's
+## True of every MSPM0, and worth about 12% of a GPIO wake. It bypasses the application's
 ## `critical-section` implementation, which is why it is opt-in.
 ##
 ## Set `default-features = false` to use it, and re-list `rt` if you want it.

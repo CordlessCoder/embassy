@@ -313,7 +313,9 @@ pub struct Config {
 
     /// The size of DMA block transfer burst.
     ///
-    /// If this is set to a value
+    /// Bounds how many transfers one channel makes before the controller re-evaluates priority, so a
+    /// smaller burst lets a higher-priority channel in sooner and arbitrates more often. The default
+    /// runs a whole block uninterrupted.
     pub dma_burst_size: dma::BurstSize,
 
     /// Whether the DMA channels are used in a fixed priority or a round robin fashion.
