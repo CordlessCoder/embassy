@@ -65,10 +65,14 @@ mod thread {
 
     /// Thread-mode executor that deep-sleeps on idle via [`low_power::sleep`](crate::low_power::sleep).
     ///
-    /// This is the simplest and most common kind of executor. It runs on
-    /// thread mode (at the lowest priority level), and uses the `WFE` ARM instruction
-    /// to sleep when it has no more work to do. When a task is woken, a `SEV` instruction
-    /// is executed, to make the `WFE` exit from sleep and poll the task.
+    /// It runs on thread mode, at the lowest priority level, and sleeps when it has no more work to
+    /// do. How deep that sleep goes is decided by the [`WakeGuard`](crate::sysctl::WakeGuard)s the
+    /// drivers hold and by [`Config::min_sleep`](crate::Config::min_sleep); with nothing to block it
+    /// the chip reaches its deepest allowed level rather than plain `WFI`.
+    ///
+    /// The sleep is entered with interrupts masked, so a task woken between the poll and the sleep
+    /// would otherwise be missed. `WFI` has no event register for a `SEV` to latch into, so the
+    /// pender instead sets a flag that the executor checks inside the same critical section.
     pub struct Executor {
         inner: raw::Executor,
         not_send: PhantomData<*mut ()>,
