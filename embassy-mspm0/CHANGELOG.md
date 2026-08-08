@@ -116,3 +116,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/adc: `scomp1` read the `SCOMP0` sample period register instead of `SCOMP1`
 - fix: mspm0/time-driver: a repeated timer interrupt no longer shifts the clock by half the counter's range, which made a long `Timer` deadline fire late
 - fix: mspm0/dma: cancelling a transfer no longer hangs; `DMAEN` is what stops it and what `is_running` reports, and it was left set
+- fix: mspm0/i2c-target: an over-length write no longer leaves its surplus bytes for the next `listen` to deliver as a fresh command

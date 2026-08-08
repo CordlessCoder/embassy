@@ -379,6 +379,26 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
         }
     }
 
+    /// Discard whatever is left in the receive FIFO.
+    ///
+    /// Used where a command ends with the controller still sending: the bytes that did not fit stay
+    /// queued otherwise, and the next [`I2cTarget::listen`] hands them over as the start of the
+    /// following write.
+    #[inline]
+    fn flush_rx_fifo(&mut self) {
+        let regs = self.info.regs;
+
+        regs.target(0).tfifoctl().modify(|w| {
+            w.set_rxflush(true);
+        });
+
+        while regs.target(0).tfifosr().read().rxfifocnt() != 0 {}
+
+        regs.target(0).tfifoctl().modify(|w| {
+            w.set_rxflush(false);
+        });
+    }
+
     /// The address the last command was addressed to.
     ///
     /// Worth asking only with a masked [`SecondAddress`], where the controller's address is one of a
@@ -438,6 +458,13 @@ impl<'d> I2cTarget<'d, Async> {
                 }
 
                 if buffer.len() == len && regs.target(0).tfifosr().read().rxfifocnt() > 0 {
+                    // Ending here still ends the command, so it owes the same cleanup as every other
+                    // terminating arm below: disarm, and drop what did not fit. Returning without either
+                    // leaves the surplus queued, and the next `listen` delivers it as the head of the
+                    // following write — a corruption that surfaces one transaction later.
+                    me.flush_rx_fifo();
+                    regs.cpu_int(0).imask().write(|_| {});
+
                     if is_gencall {
                         return Poll::Ready(Err(Error::PartialGeneralCall(buffer.len())));
                     } else {
