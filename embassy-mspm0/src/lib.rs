@@ -92,6 +92,22 @@ pub(crate) use mspm0_metapac as pac;
 pub use crate::_generated::group_demux as _group_demux;
 pub use crate::_generated::interrupt;
 
+/// How many priority bits the NVIC implements.
+///
+/// The same constant the PAC carries, narrowed to the `u8` that
+/// [RTIC](https://rtic.rs)'s `#[app(device = embassy_mspm0)]` looks for. Without it an application has
+/// to write a shim module of its own to hold the cast.
+#[cfg(feature = "rt")]
+pub const NVIC_PRIO_BITS: u8 = pac::NVIC_PRIO_BITS as u8;
+
+/// The interrupt enum, at the path RTIC's `#[app(device = embassy_mspm0)]` expects it.
+///
+/// Needed only by a hardware task: `#[task(binds = ...)]` names the enum from the crate root, while
+/// software tasks and dispatchers do not. It is the same type as
+/// [`interrupt::Interrupt`].
+#[cfg(feature = "rt")]
+pub use crate::interrupt::Interrupt;
+
 /// Interrupt sources dispatched by an interrupt group rather than by an NVIC line of their own.
 ///
 /// Several peripherals share one NVIC line, and the group's handler reads `INT_GROUPn.IIDX` to
