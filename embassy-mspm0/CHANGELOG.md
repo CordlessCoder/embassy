@@ -106,3 +106,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/uart: skip the buffered transmit path when nothing is queued and test the receive error bits together, taking 14% off every interrupt entry
 - fix: mspm0/uart: a buffered half now turns off its own interrupt sources when it is dropped and the other half keeps the interrupt alive, rather than leaving them armed for a handler that can no longer service them
 - mspm0/uart: wake the buffered UART's waiting task without taking a critical section, 15% off every interrupt entry at no cost in RAM
+- mspm0/tim: wake a timer's capture and compare channels without taking a critical section, which the old waker did only in order to put the waker back afterwards

@@ -8,11 +8,11 @@ pub mod low_level;
 pub mod simple_pwm;
 
 use embassy_hal_internal::PeripheralType;
-use embassy_sync::waitqueue::AtomicWaker;
 use mspm0_metapac::tim::Tim;
 
 use crate::gpio::Pin;
 use crate::interrupt;
+use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{LowPowerInstance, PowerDomain};
 
 /// A timer instance.
@@ -260,13 +260,13 @@ pub(crate) trait SealedInstance {
 /// Peripheral state.
 pub(crate) struct State {
     /// Woken by a capture or compare event on the channel of the same index.
-    pub(crate) cc: [AtomicWaker; 4],
+    pub(crate) cc: [IrqWaker; 4],
 }
 
 impl State {
     pub(crate) const fn new() -> Self {
         Self {
-            cc: [const { AtomicWaker::new() }; 4],
+            cc: [const { IrqWaker::new() }; 4],
         }
     }
 }
