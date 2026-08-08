@@ -137,6 +137,11 @@ pub enum Vrsel {
     ExtrefVrefm = 1,
 
     /// Internal reference
+    ///
+    /// The ADC requests the internal reference when a sample is triggered, and that request does not
+    /// hold off the sample window. A conversion taken before the reference buffer has started returns
+    /// an unreliable value rather than reporting anything, so allow the reference 200 us to start
+    /// (`Tstartup` in the device datasheet) before relying on a result.
     IntrefVssa = 2,
 
     /// VDDA and VREFM connected to VREF+ and VREF- of ADC
@@ -144,6 +149,8 @@ pub enum Vrsel {
     VddaVrefm = 3,
 
     /// INTREF and VREFM connected to VREF+ and VREF- of ADC
+    ///
+    /// Carries the same startup requirement as [`IntrefVssa`](Self::IntrefVssa).
     #[cfg(adc_neg_vref)]
     IntrefVrefm = 4,
 }
