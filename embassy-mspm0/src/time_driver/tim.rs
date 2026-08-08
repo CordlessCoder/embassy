@@ -224,11 +224,20 @@ impl TimxDriver {
         let period = period + 1;
         self.period.store(period, Ordering::Relaxed);
 
+        #[cfg(feature = "_probe")]
+        crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverPeriod));
 
         let t = (period as u64) << HALF_BITS;
 
+        let arming = self.alarm_at(cs) < t + ARM_AHEAD;
+
+        #[cfg(feature = "_probe")]
+        if arming {
+            crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverArm));
+        }
+
         r.cpu_int(0).imask().modify(move |w| {
-            if self.alarm_at(cs) < t + ARM_AHEAD {
+            if arming {
                 // just enable it. `set_alarm` has already set the correct CC1 val.
                 w.set_ccu1(true);
             }
@@ -238,6 +247,8 @@ impl TimxDriver {
     fn on_interrupt(&self) {
         let r = regs();
 
+        #[cfg(feature = "_probe")]
+        crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverIrqEntry));
 
         critical_section::with(|cs| {
             let mis = r.cpu_int(0).mis().read();
@@ -258,6 +269,8 @@ impl TimxDriver {
             }
 
             if mis.ccu1() {
+                #[cfg(feature = "_probe")]
+                crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverAlarm));
 
                 self.trigger_alarm(cs);
             }
@@ -314,6 +327,10 @@ impl TimxDriver {
         // Enable it if it'll happen soon. Otherwise, `next_period` will enable it.
         let diff = timestamp - t;
 
+        #[cfg(feature = "_probe")]
+        if diff < ARM_AHEAD {
+            crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverSetAlarm));
+        }
 
         r.cpu_int(0).imask().modify(|w| w.set_ccu1(diff < ARM_AHEAD));
 
@@ -357,6 +374,13 @@ impl Driver for TimxDriver {
                 continue;
             }
 
+            // `calc_now` assumes the period's parity says which half of its range the counter is in.
+            // Nothing enforces that across the clock domain boundary, and breaking it either way
+            // overstates the answer by half the range.
+            #[cfg(feature = "_probe")]
+            if (period & 1) != (counter >> HALF_BITS) {
+                crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverSkew));
+            }
 
             return calc_now::<W>(period, counter);
         }

@@ -80,15 +80,45 @@ pub enum Marker {
     /// One poll of a transfer future, which is where its waker is registered. A completion interrupt
     /// landing before the first of these is a completion the waiter cannot have been woken by.
     DmaPoll = 10,
+
+    /// An edge per time-driver bookkeeping tick, where `period` advances. These should be evenly spaced
+    /// at half the counter's range forever; a gap is the driver losing track of time.
+    TimeDriverPeriod = 11,
+
+    /// An edge where the deferred arm actually unmasks the alarm compare. Its distance back to the
+    /// preceding [`TimeDriverPeriod`](Marker::TimeDriverPeriod) edge says whether the arm happened at
+    /// the boundary it should have or a period late.
+    TimeDriverArm = 12,
+
+    /// An edge where the alarm compare fires in the handler. Against
+    /// [`TimeDriverArm`](Marker::TimeDriverArm) this separates "armed late" from "armed on time and the
+    /// match went missing".
+    TimeDriverAlarm = 13,
+
+    /// An edge where `set_alarm` arms the compare itself, rather than deferring to
+    /// [`TimeDriverArm`](Marker::TimeDriverArm). A deadline re-scheduled from inside the handler takes
+    /// this path, so an arm that appears here and not there is one the deferred path never saw.
+    TimeDriverSetAlarm = 14,
+
+    /// An edge each time `now()` returns a value built from a `period` whose parity disagrees with the
+    /// counter's top bit. That pairing is what `calc_now` XORs on, and either way of breaking it
+    /// overstates the answer by exactly half the counter's range.
+    TimeDriverSkew = 15,
+
+    /// An edge per `on_interrupt` entry, whatever caused it. Against
+    /// [`TimeDriverPeriod`](Marker::TimeDriverPeriod) this says whether two `period` advances came from
+    /// one entry servicing both the zero and half-overflow flags, or from two entries.
+    TimeDriverIrqEntry = 16,
 }
 
 /// One byte per marker: bit 7 is [`ARMED`], bits 6:5 the port, bits 4:0 the pin. Zero is unarmed, which
 /// is why the armed bit is needed at all — port A pin 0 is otherwise an all-zero entry.
 ///
-/// A byte rather than a word because a pin index needs 5 bits and a port 2. Worth 28 bytes of flash and
-/// three per armed marker of RAM, measured; the table is emitted per element, so only the markers an
-/// application arms cost anything at all.
-static MARKERS: [AtomicU8; 11] = [const { AtomicU8::new(0) }; 11];
+/// A byte rather than a word because a pin index needs 5 bits and a port 2, and because the table is
+/// read on every instrumented path: a byte index needs no scaling, so the load is one `ldrb` rather than
+/// a shift and an `ldr`. That matters more than the RAM — `_probe` distorting what it measures is a
+/// mistake this branch has already made once.
+static MARKERS: [AtomicU8; 17] = [const { AtomicU8::new(0) }; 17];
 
 /// Drive `pin` on `port` across `marker`.
 ///
