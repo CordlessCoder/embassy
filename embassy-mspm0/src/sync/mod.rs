@@ -4,4 +4,6 @@
 //! program does. `embassy-sync` is where to look for the latter.
 
 pub(crate) mod irq_waker;
+// Only the GPIO edge waits use this, and they exist only with `rt`.
+#[cfg(feature = "rt")]
 pub(crate) mod linked_waiter;
