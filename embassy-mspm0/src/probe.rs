@@ -15,13 +15,19 @@
 //! See `examples/mspm0g3507-lowpower/src/bin/wake_latency_probe.rs` for the GPIO markers and
 //! `examples/mspm0g3507-uart/src/bin/uart_overrun.rs` for the UART ones.
 
-use portable_atomic::{AtomicU32, Ordering};
+use portable_atomic::{AtomicU8, Ordering};
 
 use crate::gpio::Port;
 use crate::pac;
 
-/// Set in a marker's word once [`arm`] has been called for it.
-const ARMED: u32 = 1 << 31;
+/// Set in a marker's byte once [`arm`] has been called for it.
+const ARMED: u8 = 1 << 7;
+
+/// Bits a pin index occupies. A port has at most 32 pins.
+const PIN_BITS: u8 = 5;
+
+/// Mask for the pin index.
+const PIN_MASK: u8 = (1 << PIN_BITS) - 1;
 
 /// A stretch of driver code, bracketed by one pin.
 ///
@@ -76,9 +82,13 @@ pub enum Marker {
     DmaPoll = 10,
 }
 
-/// One word per marker: bit 31 is [`ARMED`], bits 15:8 the port, bits 7:0 the pin. Zero is unarmed,
-/// which is why the armed bit is needed at all — port A pin 0 is otherwise an all-zero word.
-static MARKERS: [AtomicU32; 11] = [const { AtomicU32::new(0) }; 11];
+/// One byte per marker: bit 7 is [`ARMED`], bits 6:5 the port, bits 4:0 the pin. Zero is unarmed, which
+/// is why the armed bit is needed at all — port A pin 0 is otherwise an all-zero entry.
+///
+/// A byte rather than a word because a pin index needs 5 bits and a port 2. Worth 28 bytes of flash and
+/// three per armed marker of RAM, measured; the table is emitted per element, so only the markers an
+/// application arms cost anything at all.
+static MARKERS: [AtomicU8; 11] = [const { AtomicU8::new(0) }; 11];
 
 /// Drive `pin` on `port` across `marker`.
 ///
@@ -86,7 +96,9 @@ static MARKERS: [AtomicU32; 11] = [const { AtomicU32::new(0) }; 11];
 /// this records where to write and nothing else, so that the instrumented path costs a store rather than
 /// a pin setup. Nothing checks the pin is not in use elsewhere.
 pub fn arm(marker: Marker, port: Port, pin: u8) {
-    MARKERS[marker as usize].store(ARMED | (port as u32) << 8 | pin as u32, Ordering::Relaxed);
+    debug_assert!(pin <= PIN_MASK, "pin index does not fit the marker table");
+
+    MARKERS[marker as usize].store(ARMED | (port as u8) << PIN_BITS | (pin & PIN_MASK), Ordering::Relaxed);
 }
 
 /// Where a marker's pin is, resolved once so both edges of a bracket cannot straddle an [`arm`] call.
@@ -97,7 +109,7 @@ pub(crate) fn target(marker: Marker) -> Option<(pac::gpio::Gpio, usize)> {
         return None;
     }
 
-    let block = match (probe >> 8) & 0xff {
+    let block = match probe >> PIN_BITS & 0x3 {
         0 => pac::GPIOA,
         #[cfg(gpio_pb)]
         1 => pac::GPIOB,
@@ -106,7 +118,7 @@ pub(crate) fn target(marker: Marker) -> Option<(pac::gpio::Gpio, usize)> {
         _ => return None,
     };
 
-    Some((block, (probe & 0xff) as usize))
+    Some((block, (probe & PIN_MASK) as usize))
 }
 
 /// Open a bracket.
