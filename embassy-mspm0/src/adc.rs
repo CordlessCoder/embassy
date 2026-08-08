@@ -9,11 +9,11 @@ use core::num::NonZeroU16;
 use core::task::Poll;
 
 use embassy_hal_internal::PeripheralType;
-use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::adc::{Adc as Regs, regs, vals};
+use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::WakeGuard;
 use crate::{Peri, interrupt};
 
@@ -562,13 +562,20 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
     }
 
     /// Return `impl Future` to reduce async state machine size.
+    ///
+    /// Parks on the conversion interrupt rather than polling for it. The caller arms the interrupt for
+    /// the last channel of the sequence before starting it, and the handler clears the flag and wakes
+    /// this. Waiting before a sequence is started is the same wait: it only ever blocks on a
+    /// conversion a cancelled read left running, whose interrupt is still armed.
     #[inline]
     fn wait_for_conversion() -> impl Future<Output = ()> {
         let r = T::info().regs;
 
         poll_fn(move |cx| {
+            // Registered before the test, so a conversion that finishes in between still wakes this.
+            T::state().waker.register(cx.waker());
+
             if r.ctl0().read().enc() {
-                cx.waker().wake_by_ref();
                 Poll::Pending
             } else {
                 Poll::Ready(())
@@ -579,14 +586,14 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
 
 /// Peripheral state.
 pub(crate) struct State {
-    waker: AtomicWaker,
+    /// Woken by [`InterruptHandler`], which is the only waker side: the handler is bound per instance,
+    /// and the driver owns the instance for as long as it can wait on it.
+    waker: IrqWaker,
 }
 
 impl State {
     pub const fn new() -> Self {
-        Self {
-            waker: AtomicWaker::new(),
-        }
+        Self { waker: IrqWaker::new() }
     }
 }
 
