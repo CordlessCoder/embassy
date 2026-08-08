@@ -152,6 +152,10 @@ impl core::error::Error for Error {}
 ///
 /// Usage example, taking the peripheral from `embassy_mspm0::init`:
 /// ```no_run
+/// # #![no_std]
+/// # #[panic_handler]
+/// # fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+/// # fn main() {}
 /// use embassy_mspm0::peripherals::TRNG;
 /// use embassy_mspm0::trng::{self, Trng};
 /// use embassy_mspm0::{Peri, bind_group_interrupts};
