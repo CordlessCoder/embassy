@@ -110,3 +110,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/tim: size a timer's waker array by the capture/compare channels it actually has, halving it on a two-channel instance and shortening the handler's walk to match
 - mspm0/trng: wake the waiting task without taking a critical section
 - fix: mspm0/adc: an asynchronous read now parks on the conversion interrupt instead of polling for it in a loop, freeing the CPU for the duration of a conversion
+- mspm0/i2c: wake the waiting task without taking a critical section

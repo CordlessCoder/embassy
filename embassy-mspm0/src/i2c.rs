@@ -8,7 +8,6 @@ use core::task::Poll;
 use embassy_embedded_hal::SetConfig;
 use embassy_hal_internal::PeripheralType;
 use embassy_hal_internal::drop::OnDrop;
-use embassy_sync::waitqueue::AtomicWaker;
 use mspm0_metapac::i2c;
 
 use crate::Peri;
@@ -18,6 +17,7 @@ use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::i2c::{I2c as Regs, vals};
 use crate::pac::{self};
+use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{SleepInfo, SleepLevel, WakeGuard};
 
 /// The clock source for the I2C.
@@ -1937,7 +1937,9 @@ pub(crate) struct Info {
 pub(crate) struct State {
     /// The clock rate of the I2C. This might be configured.
     pub(crate) clock: AtomicU32,
-    pub(crate) waker: AtomicWaker,
+    /// Woken by [`InterruptHandler`], which is the only waker side: the handler is bound per
+    /// instance, and the driver owns the instance for as long as it can wait on it.
+    pub(crate) waker: IrqWaker,
     /// A transfer future was dropped part-way, so the controller is still running a burst nobody is
     /// servicing. Set by [`I2c::abort_on_drop`] and cleared by [`I2c::recover_bus`].
     pub(crate) abandoned: AtomicBool,
@@ -2035,7 +2037,7 @@ macro_rules! impl_i2c_instance {
 
                 static STATE: State = State {
                     clock: core::sync::atomic::AtomicU32::new(0),
-                    waker: embassy_sync::waitqueue::AtomicWaker::new(),
+                    waker: crate::sync::irq_waker::IrqWaker::new(),
                     abandoned: core::sync::atomic::AtomicBool::new(false),
                 };
                 &STATE
