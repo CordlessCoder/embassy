@@ -120,3 +120,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/gpio: `Output::new` no longer drives the pin to its previous level before applying the requested one
 - feat: mspm0: export `NVIC_PRIO_BITS` and `Interrupt` at the crate root, so RTIC's `#[app(device = embassy_mspm0)]` needs no shim module
 - mspm0: bump `mspm0-metapac`, which adds the `VREF` and `TIMB` register blocks and types `NVIC_PRIO_BITS` as `u8`
+- feat: mspm0: add the L1126, L1127, L2116 and L2117 chip features. Those parts carry UNICOMM rather than the standalone serial peripherals, so they have no I2C, UART or SPI driver yet
