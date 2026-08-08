@@ -1483,7 +1483,11 @@ fn rustfmt(path: impl AsRef<Path>) {
 ///
 /// What each timer *is* comes from `Peripheral::timer`, per instance and per device. Only the set of
 /// selectable names lives here.
-// TODO: Fix TIMB0, which has no capture/compare block and so cannot drive the time driver as written.
+///
+/// **No TIMB, deliberately.** A basic timer has no capture/compare, so an alarm would mean writing
+/// `LD` on the same counter the clock is read from; and SLAU847 §29.1.2 clocks every counter from the
+/// bus clock, whose rate changes with the power mode, where the driver wants LFCLK so that STANDBY
+/// does not stop it. Nothing loses by it: every device with a TIMB also has a TIMA and a TIMG.
 const TIME_DRIVER_TIMERS: &[&str] = &[
     "TIMG0", "TIMG1", "TIMG2", "TIMG3", "TIMG4", "TIMG5", "TIMG6", "TIMG7", "TIMG8", "TIMG9", "TIMG10", "TIMG11",
     "TIMG12", "TIMG13", "TIMG14", "TIMA0", "TIMA1",
