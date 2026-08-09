@@ -312,7 +312,7 @@ impl<'d, T: Instance> InputCapture<'d, T> {
         r.counterregs(0).ifctl(n).write(|w| {
             w.set_isel(Isel::CcpxInput);
             w.set_inv(false);
-            w.set_cpv(Cpv::Consecutive);
+            w.set_cpv(Cpv::ConsecPer);
             w.set_fe(filter != Filter::None);
 
             w.set_fp(match filter {

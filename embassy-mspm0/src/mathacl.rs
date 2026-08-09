@@ -48,8 +48,8 @@ impl<'d> Mathacl<'d> {
     pub fn new<T: Instance>(_instance: Peri<'d, T>) -> Self {
         // Init power
         T::regs().gprcm(0).rstctl().write(|w| {
-            w.set_resetstkyclr(vals::Resetstkyclr::Clr);
-            w.set_resetassert(vals::Resetassert::Assert);
+            w.set_resetstkyclr(true);
+            w.set_resetassert(true);
             w.set_key(vals::ResetKey::Key);
         });
 
@@ -84,19 +84,15 @@ impl<'d> Mathacl<'d> {
         });
 
         // integer part has to be 0 bits
-        self.regs.op1().write(|w| {
-            w.set_data(IQType::from_f32(native, 0, true).unwrap().to_reg());
-        });
+        self.regs
+            .op1()
+            .write_value(IQType::from_f32(native, 0, true).unwrap().to_reg());
 
-        while self.regs.status().read().busy() == vals::Busy::Notdone {}
+        while self.regs.status().read().busy() {}
 
         match sin {
-            true => Ok(IQType::from_reg(self.regs.res2().read().data(), 0, true)
-                .unwrap()
-                .to_f32()),
-            false => Ok(IQType::from_reg(self.regs.res1().read().data(), 0, true)
-                .unwrap()
-                .to_f32()),
+            true => Ok(IQType::from_reg(self.regs.res2().read(), 0, true).unwrap().to_f32()),
+            false => Ok(IQType::from_reg(self.regs.res1().read(), 0, true).unwrap().to_f32()),
         }
     }
 
@@ -123,18 +119,14 @@ impl<'d> Mathacl<'d> {
             w.set_optype(signed);
         });
 
-        self.regs.op2().write(|w| {
-            w.set_data(divisor as u32);
-        });
+        self.regs.op2().write_value(divisor as u32);
 
-        self.regs.op1().write(|w| {
-            w.set_data(dividend as u32);
-        });
+        self.regs.op1().write_value(dividend as u32);
 
-        while self.regs.status().read().busy() == vals::Busy::Notdone {}
+        while self.regs.status().read().busy() {}
 
         // read quotient
-        Ok(self.regs.res1().read().data() as i32)
+        Ok(self.regs.res1().read() as i32)
     }
 
     pub fn div_u32(&mut self, dividend: u32, divisor: u32) -> Result<u32, Error> {
@@ -150,18 +142,14 @@ impl<'d> Mathacl<'d> {
             w.set_optype(signed);
         });
 
-        self.regs.op2().write(|w| {
-            w.set_data(divisor);
-        });
+        self.regs.op2().write_value(divisor);
 
-        self.regs.op1().write(|w| {
-            w.set_data(dividend);
-        });
+        self.regs.op1().write_value(dividend);
 
-        while self.regs.status().read().busy() == vals::Busy::Notdone {}
+        while self.regs.status().read().busy() {}
 
         // read quotient
-        Ok(self.regs.res1().read().data())
+        Ok(self.regs.res1().read())
     }
 
     /// Divide function (DIV) computes with a known dividend and divisor.
@@ -187,19 +175,15 @@ impl<'d> Mathacl<'d> {
             w.set_qval(dividend.f_bits.into());
         });
 
-        self.regs.op2().write(|w| {
-            w.set_data(divisor.to_reg());
-        });
+        self.regs.op2().write_value(divisor.to_reg());
 
-        self.regs.op1().write(|w| {
-            w.set_data(dividend.to_reg());
-        });
+        self.regs.op1().write_value(dividend.to_reg());
 
-        while self.regs.status().read().busy() == vals::Busy::Notdone {}
+        while self.regs.status().read().busy() {}
 
         // read quotient
         return Ok(
-            IQType::from_reg(self.regs.res1().read().data(), dividend.i_bits.into(), dividend.signed)
+            IQType::from_reg(self.regs.res1().read(), dividend.i_bits.into(), dividend.signed)
                 .unwrap()
                 .to_f32(),
         );

@@ -186,13 +186,13 @@ impl TimxDriver {
         // `next_period` reconciles rather than counting entries; it was not harmless before that.
         regs.cpu_int(0).iclr().write(|w| {
             w.set_z(true);
-            w.set_ccu0(true);
-            w.set_ccu1(true);
+            w.set_ccu(0, true);
+            w.set_ccu(1, true);
         });
 
         regs.cpu_int(0).imask().modify(|w| {
             w.set_z(true);
-            w.set_ccu0(true);
+            w.set_ccu(0, true);
         });
 
         <T as tim::Instance>::Interrupt::IRQ.unpend();
@@ -239,7 +239,7 @@ impl TimxDriver {
         r.cpu_int(0).imask().modify(move |w| {
             if arming {
                 // just enable it. `set_alarm` has already set the correct CC1 val.
-                w.set_ccu1(true);
+                w.set_ccu(1, true);
             }
         });
     }
@@ -264,11 +264,11 @@ impl TimxDriver {
             }
 
             // Half overflow
-            if mis.ccu0() {
+            if mis.ccu(0) {
                 self.next_period(cs);
             }
 
-            if mis.ccu1() {
+            if mis.ccu(1) {
                 #[cfg(feature = "_probe")]
                 crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverAlarm));
 
@@ -309,7 +309,7 @@ impl TimxDriver {
         if timestamp <= t {
             // If alarm timestamp has passed the alarm will not fire.
             // Disarm the alarm and return `false` to indicate that.
-            r.cpu_int(0).imask().modify(|w| w.set_ccu1(false));
+            r.cpu_int(0).imask().modify(|w| w.set_ccu(1, false));
 
             self.set_alarm_at(cs, u64::MAX);
 
@@ -332,7 +332,7 @@ impl TimxDriver {
             crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverSetAlarm));
         }
 
-        r.cpu_int(0).imask().modify(|w| w.set_ccu1(diff < ARM_AHEAD));
+        r.cpu_int(0).imask().modify(|w| w.set_ccu(1, diff < ARM_AHEAD));
 
         // Reevaluate if the alarm timestamp is still in the future
         let t = self.now();
@@ -341,7 +341,7 @@ impl TimxDriver {
             // the alarm may or may not have fired.
             // Disarm the alarm and return `false` to indicate that.
             // It is the caller's responsibility to handle this ambiguity.
-            r.cpu_int(0).imask().modify(|w| w.set_ccu1(false));
+            r.cpu_int(0).imask().modify(|w| w.set_ccu(1, false));
 
             self.set_alarm_at(cs, u64::MAX);
 

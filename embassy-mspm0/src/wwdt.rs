@@ -363,12 +363,12 @@ impl Watchdog {
         });
 
         //init watchdog
-        T::regs().wwdtctl0().write(|w| {
+        T::regs().ctl0().write(|w| {
             w.set_clkdiv(config.timeout.get_clkdiv());
             w.set_per(config.timeout.get_period());
             w.set_mode(vals::Mode::Window);
-            w.set_window0(config.closed_window.get_native_size());
-            w.set_window1(vals::Window::Size0);
+            w.set_window(0, config.closed_window.get_native_size());
+            w.set_window(1, vals::Window::Size0);
             w.set_stism(if config.stop_in_sleep {
                 vals::Stism::Stop
             } else {
@@ -378,7 +378,7 @@ impl Watchdog {
         });
 
         // Set Window0 as active window
-        T::regs().wwdtctl1().write(|w| {
+        T::regs().ctl1().write(|w| {
             w.set_winsel(vals::Winsel::Win0);
             w.set_key(vals::Wwdtctl1Key::Key);
         });
@@ -396,7 +396,7 @@ impl Watchdog {
 
     /// Pet (reload, refresh) the watchdog.
     pub fn pet(&mut self) {
-        self.regs.wwdtcntrst().write(|w| {
+        self.regs.cntrst().write(|w| {
             w.set_restart(vals::WwdtcntrstRestart::Restart);
         });
     }

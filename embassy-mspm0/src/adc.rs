@@ -251,7 +251,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         });
 
         r.ctl1().modify(|w| {
-            w.set_sc(vals::Sc::Start);
+            w.set_sc(true);
         });
 
         // Wait for conversion
@@ -277,28 +277,28 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         assert!(period <= Config::MAX_SAMPLE_PERIOD);
         let r = T::info().regs;
 
-        r.scomp0().write(|w| {
+        r.scomp(0).write(|w| {
             w.set_val(period.get());
         });
     }
 
     pub fn scomp0(&self) -> u16 {
         let r = T::info().regs;
-        r.scomp0().read().val()
+        r.scomp(0).read().val()
     }
 
     pub fn set_scomp1(&mut self, period: NonZeroU16) {
         assert!(period <= Config::MAX_SAMPLE_PERIOD);
         let r = T::info().regs;
 
-        r.scomp1().write(|w| {
+        r.scomp(1).write(|w| {
             w.set_val(period.get());
         });
     }
 
     pub fn scomp1(&self) -> u16 {
         let r = T::info().regs;
-        r.scomp1().read().val()
+        r.scomp(1).read().val()
     }
 }
 
@@ -348,7 +348,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         });
 
         r.ctl1().modify(|w| {
-            w.set_sc(vals::Sc::Start);
+            w.set_sc(true);
         });
 
         Self::wait_for_conversion().await;
@@ -393,7 +393,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         });
 
         r.ctl1().modify(|w| {
-            w.set_sc(vals::Sc::Start);
+            w.set_sc(true);
         });
 
         Self::wait_for_conversion().await;
@@ -511,7 +511,8 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
 
         r.ctl1().write(|w| {
             w.set_trigsrc(vals::Trigsrc::Software);
-            w.set_sc(vals::Sc::Stop);
+            // Configured, not converting; a read starts it.
+            w.set_sc(false);
             w.set_conseq(vals::Conseq::Sequence);
             w.set_sampmode(vals::Sampmode::Auto);
             w.set_avgn(vals::Avgn::Disable);
@@ -525,16 +526,16 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
             w.set_rstsampcapen(false);
             w.set_dmaen(false);
             w.set_fifoen(false);
-            w.set_sampcnt(vals::Sampcnt::Min);
+            w.set_sampcnt(0);
             w.set_startadd(0);
             w.set_endadd(0);
         });
 
-        r.scomp0().write(|w| {
+        r.scomp(0).write(|w| {
             w.set_val(config.sample_period_0.get());
         });
 
-        r.scomp1().write(|w| {
+        r.scomp(1).write(|w| {
             w.set_val(config.sample_period_1.get());
         });
     }

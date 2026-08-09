@@ -101,8 +101,8 @@ pub enum Event {
 
 impl Event {
     /// This event's bit in `IMASK`, `RIS`, `MIS` and `ICLR`, which all share a layout.
-    pub(crate) const fn mask(self) -> regs::CpuInt {
-        let mut mask = regs::CpuInt(0);
+    pub(crate) const fn mask(self) -> regs::Int {
+        let mut mask = regs::Int(0);
 
         match self {
             Event::Zero => mask.set_z(true),
@@ -113,8 +113,8 @@ impl Event {
             // selecting between four arms — which the compiler cannot see through the generated
             // setters. Free where the event is a constant, and a table instead of a branch chain
             // where the channel is not.
-            Event::CaptureOrCompareUp(channel) => return regs::CpuInt(1 << (CCU0_BIT + channel.index())),
-            Event::CaptureOrCompareDown(channel) => return regs::CpuInt(1 << (CCD0_BIT + channel.index())),
+            Event::CaptureOrCompareUp(channel) => return regs::Int(1 << (CCU0_BIT + channel.index())),
+            Event::CaptureOrCompareDown(channel) => return regs::Int(1 << (CCD0_BIT + channel.index())),
         }
 
         mask
@@ -135,27 +135,11 @@ const _: () = {
     let mut channel = 0;
 
     while channel < Channel::ALL.len() {
-        let mut up = regs::CpuInt(0);
-        let mut down = regs::CpuInt(0);
+        let mut up = regs::Int(0);
+        let mut down = regs::Int(0);
 
-        match channel {
-            0 => {
-                up.set_ccu0(true);
-                down.set_ccd0(true);
-            }
-            1 => {
-                up.set_ccu1(true);
-                down.set_ccd1(true);
-            }
-            2 => {
-                up.set_ccu2(true);
-                down.set_ccd2(true);
-            }
-            _ => {
-                up.set_ccu3(true);
-                down.set_ccd3(true);
-            }
-        }
+        up.set_ccu(channel, true);
+        down.set_ccd(channel, true);
 
         core::assert!(up.0 == 1 << (CCU0_BIT + channel));
         core::assert!(down.0 == 1 << (CCD0_BIT + channel));
@@ -593,7 +577,7 @@ fn teardown<T: Instance>() {
     let r = T::info().regs;
 
     r.counterregs(0).ctrctl().modify(|w| w.set_en(false));
-    r.cpu_int(0).imask().write_value(regs::CpuInt(0));
+    r.cpu_int(0).imask().write_value(regs::Int(0));
 
     r.gprcm(0).pwren().write(|w| {
         w.set_enable(false);

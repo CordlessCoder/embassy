@@ -22,7 +22,6 @@ use core::sync::atomic::Ordering;
 
 use critical_section::CriticalSection;
 use embassy_time::{Duration, TICK_HZ};
-use pac::cpuss::vals::Prefetch;
 use pac::sysctl::vals::Dsleep;
 use portable_atomic::{AtomicU8, AtomicU32};
 
@@ -189,7 +188,7 @@ impl PrefetchSuspend {
     fn new() -> Self {
         let saved = pac::CPUSS.ctl().read();
         let mut disabled = saved;
-        disabled.set_prefetch(Prefetch::Disable);
+        disabled.set_prefetch(false);
         pac::CPUSS.ctl().write_value(disabled);
 
         // CPU_ERR_02 means the prefetcher will not be disabled until pending flash access is finished.
