@@ -40,6 +40,8 @@ pub mod unicomm;
 // TODO: UART unicomm
 #[cfg(not(unicomm))]
 pub mod uart;
+#[cfg(vref)]
+pub mod vref;
 pub mod wwdt;
 
 /// Operating modes for peripherals.

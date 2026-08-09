@@ -153,8 +153,12 @@ pub enum Vrsel {
     ///
     /// The ADC requests the internal reference when a sample is triggered, and that request does not
     /// hold off the sample window. A conversion taken before the reference buffer has started returns
-    /// an unreliable value rather than reporting anything, so allow the reference 200 us to start
-    /// (`Tstartup` in the device datasheet) before relying on a result.
+    /// an unreliable value rather than reporting anything.
+    ///
+    /// **Hold a [`Vref`](crate::vref::Vref) across any conversion that selects this.** Its constructor
+    /// does not return until the reference has settled, and dropping it powers the reference down, so
+    /// the borrow is what says the reference was up for the conversion. The 200 us that used to be
+    /// documented here as a caller's delay is `Tstartup`, which is per device and spans 20x.
     IntrefVssa = 2,
 
     /// VDDA and VREFM connected to VREF+ and VREF- of ADC

@@ -84,6 +84,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_dma_channel_count());
     g.extend(generate_adc_constants(cfgs));
     g.extend(generate_trng_constants());
+    g.extend(generate_vref_constants());
     g.extend(generate_clock_ceilings());
     g.extend(clock_tree);
 
@@ -99,7 +100,7 @@ fn generate_code(cfgs: &mut CfgSet) {
 /// A family list goes stale — `trng` was gated on six families while the metadata reported seven.
 /// Add a kind here when a module starts gating on it; an undeclared cfg warns, so an omission shows
 /// up at once.
-const PERIPHERAL_KIND_CFGS: &[&str] = &["mathacl", "trng", "usbfs"];
+const PERIPHERAL_KIND_CFGS: &[&str] = &["mathacl", "trng", "usbfs", "vref"];
 
 /// Enable a cfg for each kind in [`PERIPHERAL_KIND_CFGS`] this chip actually has.
 fn peripheral_kind_cfgs(cfgs: &mut CfgSet) {
@@ -135,7 +136,7 @@ fn peripheral_name_cfgs(cfgs: &mut CfgSet) {
 /// Add one here when a driver starts gating on it. The cfg is emitted from the device's own errata
 /// sheet, so unlike the family lists these replace it cannot miss a part — and a new device gets its
 /// workarounds without an edit.
-const ERRATA_CFGS: &[&str] = &["GPIO_ERR_01", "UART_ERR_03", "UART_ERR_08"];
+const ERRATA_CFGS: &[&str] = &["GPIO_ERR_01", "UART_ERR_03", "UART_ERR_08", "VREF_ERR_01"];
 
 /// Enable a cfg, lowercased, for each erratum in [`ERRATA_CFGS`] that applies to this chip.
 fn errata_cfgs(cfgs: &mut CfgSet) {
@@ -712,6 +713,32 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
         /// `fADCCLK`, the range the clock selected by `CLKCFG.SAMPCLK` must stay within.
         pub const ADC_CLK_MIN_HZ: u32 = #min;
         pub const ADC_CLK_MAX_HZ: u32 = #max;
+    }
+}
+
+/// Emit how long VREF takes to settle on this device.
+///
+/// A per-device figure rather than a constant because it spans 20x across the line — 200 us on a
+/// G3507 against 10 us on a C1104 — and the driver has to block for it on any device carrying
+/// `VREF_ERR_01`, where `CTL1.READY` cannot report a second enable.
+fn generate_vref_constants() -> TokenStream {
+    let Some(vref) = METADATA.peripherals.iter().find_map(|peripheral| peripheral.vref) else {
+        return TokenStream::new();
+    };
+
+    let Some(startup_ns) = vref.startup_ns else {
+        // Reachable only if a family's datasheet gains a VREF without a `Tstartup` row. Better to stop
+        // than to invent a number the driver would block on.
+        return quote! {
+            compile_error!(
+                "this device has a VREF but no startup time; `vref` cannot know when the reference is up"
+            );
+        };
+    };
+
+    quote! {
+        /// Time from enabling VREF to a settled reference, in nanoseconds.
+        pub const VREF_STARTUP_NS: u32 = #startup_ns;
     }
 }
 
@@ -1437,6 +1464,7 @@ fn generate_peripheral_instances() -> TokenStream {
             "wwdt" => Some(quote! { impl_wwdt_instance!(#peri); }),
             "adc" => Some(quote! { impl_adc_instance!(#peri); }),
             "mathacl" => Some(quote! { impl_mathacl_instance!(#peri); }),
+            "vref" => Some(quote! { impl_vref_instance!(#peri); }),
             _ => None,
         };
 
