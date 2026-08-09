@@ -134,3 +134,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/vref: add a driver for the internal voltage reference, whose constructor returns only once the reference has settled
 - fix: mspm0/mathacl: `sin` and `cos` no longer panic at an angle of exactly plus or minus pi, which their own range check accepts
 - fix: mspm0/mathacl: work around MATHACL_ERR_02, where the accelerator answers `sin(-pi/2)` with `+1`
+- fix: mspm0/mathacl: a division whose quotient does not fit 32 bits now reports `Error::Overflow` instead of returning a saturated result

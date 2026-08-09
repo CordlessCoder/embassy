@@ -1,4 +1,5 @@
-//! Probes the two angles `MATHACL_ERR_02` names, and their neighbours.
+//! Probes both MATHACL errata: the two angles `MATHACL_ERR_02` names, and `MATHACL_ERR_01`'s
+//! divide-by-zero.
 //!
 //! No wiring. The erratum says `COS(-180)` returns `+1` where it should return `-1`, and `SIN(-90)`
 //! likewise, with no workaround but negating in software. It applies to the `MSPM0G3x0x` (`slaz742`)
@@ -17,6 +18,13 @@
 //!
 //! It also found two defects that had nothing to do with the erratum: `sin(PI)` panicked, and `sin`
 //! returned the previous call's result. Both are fixed; this example is what shows they stay fixed.
+//!
+//! # `MATHACL_ERR_01`
+//!
+//! A status error latches and only a peripheral reset clears it. `STATUS.ERR` has exactly one
+//! non-zero value, `DIVBY0`, so the question is whether a zero divisor can reach the accelerator —
+//! and the last phase answers it by offering one to each divide entry point and then checking the
+//! accelerator still divides correctly afterwards.
 
 #![no_std]
 #![no_main]
@@ -26,7 +34,7 @@ use core::f32::consts::PI;
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_mspm0::mathacl::{Mathacl, Precision};
+use embassy_mspm0::mathacl::{Error, IQType, Mathacl, Precision};
 use embassy_time::Timer;
 use panic_probe as _;
 
@@ -71,6 +79,43 @@ async fn main(_spawner: Spawner) -> ! {
     }
 
     info!("expected: sin(-90)=-1 cos(-180)=-1; a +1 in either is MATHACL_ERR_02");
+
+    // MATHACL_ERR_01. Each of these must be refused by the driver rather than handed to the
+    // accelerator, because a DIVBY0 that does reach it latches until the peripheral is reset.
+    let zero_iq = IQType::from_f32(0.0, 15, true).unwrap();
+    let one_iq = IQType::from_f32(1.0, 15, true).unwrap();
+
+    let refused = [
+        macl.div_i32(7, 0).is_err(),
+        macl.div_u32(7, 0).is_err(),
+        macl.div_iq(one_iq, zero_iq).is_err(),
+    ];
+
+    if refused.iter().all(|r| *r) {
+        info!("all three divides refused a zero divisor");
+    } else {
+        error!("a zero divisor reached the accelerator: {}", refused);
+    }
+
+    // Not an erratum, but the same status word: a quotient too wide for the result register. 1.0
+    // divided by 0.00002 is 50000, past the 15 integer bits the dividend's format carries, and
+    // 0.00002 clears the divide-by-zero guard's tolerance by a factor of two.
+    let tiny = IQType::from_f32(0.00002, 15, true).unwrap();
+    match macl.div_iq(one_iq, tiny) {
+        Err(Error::Overflow) => info!("overflow reported for 1.0/0.00002"),
+        other => error!("expected Overflow for 1.0/0.00002, got {}", other),
+    }
+
+    match macl.div_i32(i32::MIN, -1) {
+        Err(Error::Overflow) => info!("overflow reported for i32::MIN / -1"),
+        other => error!("expected Overflow for i32::MIN/-1, got {}", other),
+    }
+
+    // The accelerator is only known to be unharmed if it still works.
+    match (macl.div_i32(1000, 3), macl.sin(-PI / 2.0, Precision::High)) {
+        (Ok(1000..=1001) | Ok(333), Ok(s)) if s < -0.999 => info!("PASS: still correct afterwards"),
+        (q, s) => error!("FAIL: after the zero divisors, div_i32(1000,3)={} sin(-90)={}", q, s),
+    }
 
     loop {
         Timer::after_secs(60).await;

@@ -35,6 +35,12 @@ const MAX_POLLS: u32 = 4096;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
+    /// A division produced a quotient wider than the 32 bits the result register holds.
+    ///
+    /// The value in `RES1` is saturated or truncated rather than correct, so it is not returned.
+    /// Reachable from `div_iq` whenever the quotient exceeds the dividend's own fixed-point format,
+    /// which needs no extreme inputs at all, and from `div_i32` at `i32::MIN / -1`.
+    Overflow,
     /// The accelerator did not finish an operation within [`MAX_POLLS`] reads of `STATUS.BUSY`.
     ///
     /// Not reachable by a caller doing anything wrong: an operation takes at most `NUMITER` cycles,
@@ -90,12 +96,32 @@ impl<'d> Mathacl<'d> {
     /// on when the poll costs tens of cycles.
     fn wait_for_result(&mut self) -> Result<(), Error> {
         for _ in 0..MAX_POLLS {
-            if !self.regs.status().read().busy() {
+            let status = self.regs.status().read();
+
+            if !status.busy() {
+                // Free: the status word is already loaded for the `BUSY` test above, so noticing an
+                // overflow costs a bit test rather than a register read.
+                //
+                // `STATUS.ERR` is not checked with it, and that is deliberate. It reports a division
+                // by zero, which the guards on the public divides refuse before the accelerator ever
+                // sees one — catching it there tells the caller sooner and keeps `MATHACL_ERR_01`,
+                // where a set `ERR` latches until the peripheral is reset, out of reach entirely.
+                if status.ovf() {
+                    self.clear_overflow();
+                    return Err(Error::Overflow);
+                }
+
                 return Ok(());
             }
         }
 
         Err(Error::Timeout)
+    }
+
+    /// Clear a latched overflow, which stays set until written otherwise and would then be read as
+    /// belonging to the next operation.
+    fn clear_overflow(&mut self) {
+        self.regs.statusclr().write(|w| w.set_clr_ovf(true));
     }
 
     /// Internal helper SINCOS function.
