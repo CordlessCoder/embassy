@@ -132,3 +132,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/mathacl: `sin` no longer returns the previous call's result, and no operation waits unbounded
 - mspm0: bump `mspm0-metapac` for VREF startup times, indexed `CTL1.READY` and four data corrections
 - feat: mspm0/vref: add a driver for the internal voltage reference, whose constructor returns only once the reference has settled
+- fix: mspm0/mathacl: `sin` and `cos` no longer panic at an angle of exactly plus or minus pi, which their own range check accepts

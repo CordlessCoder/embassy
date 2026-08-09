@@ -106,6 +106,14 @@ impl<'d> Mathacl<'d> {
 
         let native = self.div_iq(IQType::from_f32(rad, 15, true)?, IQType::from_f32(PI, 15, true)?)?;
 
+        // The hardware takes the angle per unit of pi, in a format with no integer bit, so a magnitude
+        // of exactly one has nowhere to go — `from_f32` rejects it and this used to unwrap that into a
+        // panic on `sin(PI)`, an input the range check above accepts. Both results are exact, so answer
+        // them here rather than finding a way to hand the accelerator a number it cannot hold.
+        if native <= -1.0 || native >= 1.0 {
+            return Ok(if sin { 0.0 } else { -1.0 });
+        }
+
         self.regs.ctl().write(|w| {
             w.set_func(vals::Func::Sincos);
             w.set_numiter(precision as u8);
