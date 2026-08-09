@@ -116,9 +116,13 @@ fn deepest_allowed() -> Option<SleepLevel> {
 /// A wake scheduled sooner than [`Config::min_sleep`](crate::Config::min_sleep) also leaves it a plain
 /// `WFI`.
 ///
+/// Another scheduler can call it to get the same idle behaviour: under RTIC that is `#[idle]`, which
+/// is the only place the safety condition below holds.
+///
 /// # Safety
 /// Must be called from thread mode. `WFI` in a handler is only woken by an interrupt of *higher*
-/// priority than the one running, so sleeping inside the lowest-priority handler never returns.
+/// priority than the one running, so sleeping inside the lowest-priority handler never returns. An
+/// RTIC software task runs in its dispatcher's handler and is therefore not a valid caller.
 ///
 /// Deep sleep powers down PD1 (and, in STANDBY, most of PD0). The drivers hold their own
 /// [`WakeGuard`](crate::sysctl::WakeGuard)s for work that has to survive it; anything driving a
