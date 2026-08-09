@@ -1,0 +1,78 @@
+//! Probes the two angles `MATHACL_ERR_02` names, and their neighbours.
+//!
+//! No wiring. The erratum says `COS(-180)` returns `+1` where it should return `-1`, and `SIN(-90)`
+//! likewise, with no workaround but negating in software. It applies to the `MSPM0G3x0x` (`slaz742`)
+//! and `MSPM0G351x` (`slaz758`) families.
+//!
+//! Both angles are printed alongside their positive counterparts and a neighbour a little either side,
+//! because the question a fix needs answered is not "is the erratum real" but **"over what input range
+//! is it wrong"** — correcting exactly one input value is only right if exactly one value is affected.
+//!
+//! # What it found
+//!
+//! `SIN(-90)` returned `+1` and its neighbours 1.6 and 0.2 degrees away were both correctly signed, so
+//! one input is affected and the driver corrects that one. `COS(-180)` never reaches the accelerator —
+//! an angle of pi normalises to a magnitude the per-unit format cannot hold, and the driver answers it
+//! exactly — so that half of the erratum is unreachable here.
+//!
+//! It also found two defects that had nothing to do with the erratum: `sin(PI)` panicked, and `sin`
+//! returned the previous call's result. Both are fixed; this example is what shows they stay fixed.
+
+#![no_std]
+#![no_main]
+
+use core::f32::consts::PI;
+
+use defmt::*;
+use defmt_rtt as _;
+use embassy_executor::Spawner;
+use embassy_mspm0::mathacl::{Mathacl, Precision};
+use embassy_time::Timer;
+use panic_probe as _;
+
+/// Angles either side of the two the erratum names, as multiples of pi.
+///
+/// The offsets are far larger than the fixed-point quantisation so a neighbour is genuinely a
+/// different input rather than the same one twice.
+const CASES: [(f32, &str); 10] = [
+    (-1.0, "-180 deg"),
+    (-0.999, "-179.8 deg"),
+    (-0.99, "-178.2 deg"),
+    (1.0, "+180 deg"),
+    (-0.5, "-90 deg"),
+    (-0.499, "-89.8 deg"),
+    (-0.49, "-88.2 deg"),
+    (0.5, "+90 deg"),
+    (0.0, "0 deg"),
+    (-0.25, "-45 deg"),
+];
+
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) -> ! {
+    let p = embassy_mspm0::init(Default::default());
+    let mut macl = Mathacl::new(p.MATHACL);
+
+    info!("angle          sin        cos");
+
+    for (turns, name) in CASES {
+        let rad = turns * PI;
+
+        // Reported rather than unwrapped: `-1.0` needs an integer bit that the per-unit encoding does
+        // not have, so the interesting inputs are exactly the ones that might not survive the trip.
+        let s = macl.sin(rad, Precision::High);
+        let c = macl.cos(rad, Precision::High);
+
+        match (s, c) {
+            (Ok(s), Ok(c)) => info!("{=str}  {=f32}  {=f32}", name, s, c),
+            (Err(e), Ok(c)) => warn!("{=str}  sin err {}  cos {=f32}", name, e, c),
+            (Ok(s), Err(e)) => warn!("{=str}  sin {=f32}  cos err {}", name, s, e),
+            (Err(a), Err(b)) => warn!("{=str}  sin err {}  cos err {}", name, a, b),
+        }
+    }
+
+    info!("expected: sin(-90)=-1 cos(-180)=-1; a +1 in either is MATHACL_ERR_02");
+
+    loop {
+        Timer::after_secs(60).await;
+    }
+}
