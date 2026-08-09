@@ -19,9 +19,6 @@
 //! latencies of 8 to 20 µs. A logic analyser on the two pins is the finer instrument — this is the one
 //! that needs no instrument.
 //!
-//! Expect `no ack` for the first few seconds of a run: the target leaves a re-flash window before its
-//! first sleep, and nothing is listening until it opens.
-//!
 //! The target's own reply path — GPIO interrupt, waker, one executor poll — is inside the number and is
 //! a few hundred nanoseconds of it. Its `wfi` case is the control that shows how much.
 

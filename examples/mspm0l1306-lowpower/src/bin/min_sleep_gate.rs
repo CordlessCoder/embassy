@@ -66,10 +66,6 @@ async fn main(_spawner: Spawner) -> ! {
     config.min_sleep = Duration::from_ticks(MIN_SLEEP_TICKS);
     let p = embassy_mspm0::init(config);
 
-    // Deep sleep can drop the debug connection, so leave a window to re-flash through.
-    info!("re-flash window, starting in 5s");
-    Timer::after_secs(5).await;
-
     info!(
         "min_sleep {} ticks; this part wakes in {} ns and would default to {} ticks",
         MIN_SLEEP_TICKS,

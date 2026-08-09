@@ -16,8 +16,8 @@
 //! | `PA1`  (RX)  | `PB2`  (UART3 TX) | the answer |
 //! | `GND`        | `GND`             |            |
 //!
-//! The probe drops as soon as this deep-sleeps, so the L1306 is the observer, not defmt. The boot delay
-//! is there to leave a window to re-flash in — without it the debugger cannot take the device back.
+//! The L1306 is the observer rather than defmt: an attached RTT session holds the device out of deep
+//! sleep, so the thing under test does not happen while something is watching it that way.
 //!
 //! The time driver wakes the device about once a second on its own, so a sleep is not proof on its own
 //! that the UART did the waking. The host's reply timeout is what separates the two.
@@ -71,9 +71,6 @@ const WAKE_BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UA
 #[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
-
-    info!("re-flash window, sleeping in 5s");
-    Timer::after_secs(5).await;
 
     // The instance under test. Configured here and never again.
     //

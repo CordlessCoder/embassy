@@ -71,9 +71,6 @@ const BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART3_D
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
-    info!("re-flash window, starting in 5s");
-    Timer::after_secs(5).await;
-
     let mut config = Config::default().with_baud(BAUD);
     config.clock_source = ClockSel::BusClk;
     let mut uart = unwrap!(UartTx::new_blocking(p.UART3, p.PB2, config));

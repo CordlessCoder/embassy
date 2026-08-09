@@ -80,9 +80,6 @@ bind_group_interrupts!(struct Irqs {
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
-    info!("re-flash window, starting in 5s");
-    Timer::after_secs(5).await;
-
     info!(
         "the table says {} ns for the deepest mode, and min_sleep defaults to {} ticks",
         MAX_WAKE_NS,
