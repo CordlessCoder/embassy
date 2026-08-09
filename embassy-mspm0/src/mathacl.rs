@@ -14,6 +14,12 @@ use crate::Peri;
 use crate::pac::mathacl::{Mathacl as Regs, vals};
 use crate::sysctl::WakeGuard;
 
+/// How close a float has to be for the unit tests to call it equal.
+///
+/// It used to double as `div_iq`'s divide-by-zero guard, rejecting any divisor inside it. That test is
+/// on the encoding now: a divisor of 1e-6 is not a division by zero, and testing it as a float was
+/// what pulled the software floating-point routines into every caller of `div_iq`.
+#[cfg(test)]
 const ERROR_TOLERANCE: f32 = 0.00001;
 
 pub enum Precision {
@@ -21,6 +27,22 @@ pub enum Precision {
     Medium = 15,
     Low = 1,
 }
+
+/// `-0.5` as the accelerator's registers hold it: **two's complement**, 31 fractional bits and no
+/// integer bits, so a half is the top bit below the sign.
+///
+/// The one input `MATHACL_ERR_02` gets wrong, which is -90 degrees expressed per unit of pi.
+#[cfg(mathacl_err_02)]
+const NEGATIVE_HALF: u32 = 0xC000_0000;
+
+/// `-1.0` in the same format, which two's complement holds exactly where a sign-and-magnitude layout
+/// could not.
+///
+/// Worth being careful with: reading this as sign-and-magnitude gives `0xFFFF_FFFF`, which decodes to
+/// **one least-significant bit** rather than to minus one, and the difference does not show up until
+/// the answer is printed.
+#[cfg(mathacl_err_02)]
+const NEGATIVE_ONE: u32 = 0x8000_0000;
 
 /// Reads of `STATUS.BUSY` before an operation is declared wedged.
 ///
@@ -124,13 +146,76 @@ impl<'d> Mathacl<'d> {
         self.regs.statusclr().write(|w| w.set_clr_ovf(true));
     }
 
+    /// Sine of an angle given as a fraction of pi, without touching floating point.
+    ///
+    /// `per_unit` is the angle divided by pi, so `-0.5` is -90 degrees. That is the form the
+    /// accelerator takes, so this is the shortest path to it: no normalising division, and nothing
+    /// that would link the software floating-point routines a core with no FPU needs for [`Self::sin`].
+    ///
+    /// The argument must carry no integer bits and be signed, which is what its range of just under
+    /// -1 to 1 needs; anything else is [`Error::FaultIQTypeFormat`]. The result comes back in the same
+    /// format.
+    pub fn sin_per_unit(&mut self, per_unit: IQType, precision: Precision) -> Result<IQType, Error> {
+        self.sincos_per_unit(per_unit, precision, true)
+    }
+
+    /// Cosine of an angle given as a fraction of pi, without touching floating point.
+    ///
+    /// See [`Self::sin_per_unit`].
+    pub fn cos_per_unit(&mut self, per_unit: IQType, precision: Precision) -> Result<IQType, Error> {
+        self.sincos_per_unit(per_unit, precision, false)
+    }
+
+    /// The fixed-point SINCOS, which every other trigonometric entry point goes through.
+    fn sincos_per_unit(&mut self, per_unit: IQType, precision: Precision, sin: bool) -> Result<IQType, Error> {
+        if per_unit.i_bits != 0 || !per_unit.signed {
+            return Err(Error::FaultIQTypeFormat);
+        }
+
+        let operand = per_unit.to_reg();
+
+        // `MATHACL_ERR_02`: the accelerator answers `SIN(-90)` with `+1`. TI offers no workaround but
+        // correcting it in software, and the exact answer is known, so it is returned rather than the
+        // hardware's negated — which would be the same number by a longer route.
+        //
+        // Exactly one input is affected, which is what makes a point fix right: measured either side,
+        // -89.8 and -88.2 degrees both come back correctly signed. Compared against the encoded
+        // operand rather than a decoded value, so the test is on the number the accelerator is handed.
+        #[cfg(mathacl_err_02)]
+        if sin && operand == NEGATIVE_HALF {
+            return IQType::from_reg(NEGATIVE_ONE, 0, true).map_err(Error::IQTypeError);
+        }
+
+        self.regs.ctl().write(|w| {
+            w.set_func(vals::Func::Sincos);
+            w.set_numiter(precision as u8);
+        });
+
+        self.regs.op1().write_value(operand);
+
+        // SLAU846 §10.3 calls this poll optional, on the grounds that reading a result before the
+        // operation finishes stalls the bus until it completes. **That is not true of `RES2`**, which
+        // is where SINCOS puts the sine: without this, `sin` returns the previous call's answer, while
+        // `cos` off `RES1` is correct. Measured, and it is why the poll is back.
+        self.wait_for_result()?;
+
+        let result = match sin {
+            true => self.regs.res2().read(),
+            false => self.regs.res1().read(),
+        };
+
+        IQType::from_reg(result, 0, true).map_err(Error::IQTypeError)
+    }
+
     /// Internal helper SINCOS function.
     fn sincos(&mut self, rad: f32, precision: Precision, sin: bool) -> Result<f32, Error> {
         if rad > PI || rad < -PI {
             return Err(Error::ValueInWrongRange);
         }
 
-        let native = self.div_iq(IQType::from_f32(rad, 15, true)?, IQType::from_f32(PI, 15, true)?)?;
+        let native = self
+            .div_iq(IQType::from_f32(rad, 15, true)?, IQType::from_f32(PI, 15, true)?)?
+            .to_f32();
 
         // The hardware takes the angle per unit of pi, in a format with no integer bit, so a magnitude
         // of exactly one has nowhere to go — `from_f32` rejects it and this used to unwrap that into a
@@ -140,38 +225,9 @@ impl<'d> Mathacl<'d> {
             return Ok(if sin { 0.0 } else { -1.0 });
         }
 
-        // `MATHACL_ERR_02`: the accelerator answers `SIN(-90)` with `+1`. TI offers no workaround but
-        // correcting it in software, and the exact answer is known, so it is returned rather than the
-        // hardware's negated — which would be the same number by a longer route.
-        //
-        // Exactly one input is affected, which is what makes a point fix right: measured either side,
-        // -89.8 and -88.2 degrees both come back correctly signed. `COS(-180)`, the other half of the
-        // erratum, is already answered above, an angle of pi never reaching the accelerator.
-        #[cfg(mathacl_err_02)]
-        if sin && native == -0.5 {
-            return Ok(-1.0);
-        }
-
-        self.regs.ctl().write(|w| {
-            w.set_func(vals::Func::Sincos);
-            w.set_numiter(precision as u8);
-        });
-
-        // integer part has to be 0 bits
-        self.regs
-            .op1()
-            .write_value(IQType::from_f32(native, 0, true).unwrap().to_reg());
-
-        // SLAU846 §10.3 calls this poll optional, on the grounds that reading a result before the
-        // operation finishes stalls the bus until it completes. **That is not true of `RES2`**, which
-        // is where SINCOS puts the sine: without this, `sin` returns the previous call's answer, while
-        // `cos` off `RES1` is correct. Measured, and it is why the poll is back.
-        self.wait_for_result()?;
-
-        match sin {
-            true => Ok(IQType::from_reg(self.regs.res2().read(), 0, true).unwrap().to_f32()),
-            false => Ok(IQType::from_reg(self.regs.res1().read(), 0, true).unwrap().to_f32()),
-        }
+        Ok(self
+            .sincos_per_unit(IQType::from_f32(native, 0, true)?, precision, sin)?
+            .to_f32())
     }
 
     /// Calsulates trigonometric sine operation in the range [-1,1) with a give precision.
@@ -227,9 +283,15 @@ impl<'d> Mathacl<'d> {
     }
 
     /// Divide function (DIV) computes with a known dividend and divisor.
-    pub fn div_iq(&mut self, dividend: IQType, divisor: IQType) -> Result<f32, Error> {
-        let divisor_value = divisor.to_f32();
-        if -ERROR_TOLERANCE < divisor_value && divisor_value < ERROR_TOLERANCE {
+    pub fn div_iq(&mut self, dividend: IQType, divisor: IQType) -> Result<IQType, Error> {
+        // Tested on the encoding rather than on `to_f32`, so a fixed-point caller never reaches the
+        // software floating-point routines through this. It is also exact where the old test was not:
+        // a divisor of 1e-6 is not zero and no longer reports as a division by zero — it divides, and
+        // says `Overflow` if the quotient will not fit.
+        //
+        // Catching the true zero here is what keeps `MATHACL_ERR_01` unreachable, where a `STATUS.ERR`
+        // the accelerator sets stays set until the peripheral is reset.
+        if divisor.i_data == 0 && divisor.f_data == 0 {
             return Err(Error::DivideByZero);
         }
 
@@ -254,11 +316,8 @@ impl<'d> Mathacl<'d> {
         self.regs.op1().write_value(dividend.to_reg());
 
         self.wait_for_result()?;
-        return Ok(
-            IQType::from_reg(self.regs.res1().read(), dividend.i_bits.into(), dividend.signed)
-                .unwrap()
-                .to_f32(),
-        );
+
+        IQType::from_reg(self.regs.res1().read(), dividend.i_bits, dividend.signed).map_err(Error::IQTypeError)
     }
 }
 
@@ -298,6 +357,7 @@ impl From<IQTypeError> for Error {
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct IQType {
     i_bits: u8,
     f_bits: u8,

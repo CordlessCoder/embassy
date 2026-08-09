@@ -38,7 +38,12 @@ async fn main(_spawner: Spawner) -> ! {
     let div_iq_s1 = IQType::from_f32(-1.0, 15, true).unwrap();
     let div_iq_s2 = IQType::from_f32(3.0, 15, true).unwrap();
     match macl.div_iq(div_iq_s1, div_iq_s2) {
-        Ok(res) => info!("div IQ signed {}/{} = {}", div_iq_s1.to_f32(), div_iq_s2.to_f32(), res),
+        Ok(res) => info!(
+            "div IQ signed {}/{} = {}",
+            div_iq_s1.to_f32(),
+            div_iq_s2.to_f32(),
+            res.to_f32()
+        ),
         Err(e) => error!("div IQ signed Error: {:?}", e),
     }
 
@@ -50,7 +55,7 @@ async fn main(_spawner: Spawner) -> ! {
             "div IQ unsigned {}/{} = {}",
             div_iq_u1.to_f32(),
             div_iq_u2.to_f32(),
-            res
+            res.to_f32()
         ),
         Err(e) => error!("div IQ unsigned Error: {:?}", e),
     }
