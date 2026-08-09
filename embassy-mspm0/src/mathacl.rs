@@ -114,6 +114,18 @@ impl<'d> Mathacl<'d> {
             return Ok(if sin { 0.0 } else { -1.0 });
         }
 
+        // `MATHACL_ERR_02`: the accelerator answers `SIN(-90)` with `+1`. TI offers no workaround but
+        // correcting it in software, and the exact answer is known, so it is returned rather than the
+        // hardware's negated — which would be the same number by a longer route.
+        //
+        // Exactly one input is affected, which is what makes a point fix right: measured either side,
+        // -89.8 and -88.2 degrees both come back correctly signed. `COS(-180)`, the other half of the
+        // erratum, is already answered above, an angle of pi never reaching the accelerator.
+        #[cfg(mathacl_err_02)]
+        if sin && native == -0.5 {
+            return Ok(-1.0);
+        }
+
         self.regs.ctl().write(|w| {
             w.set_func(vals::Func::Sincos);
             w.set_numiter(precision as u8);

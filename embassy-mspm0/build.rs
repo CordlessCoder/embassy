@@ -136,7 +136,7 @@ fn peripheral_name_cfgs(cfgs: &mut CfgSet) {
 /// Add one here when a driver starts gating on it. The cfg is emitted from the device's own errata
 /// sheet, so unlike the family lists these replace it cannot miss a part — and a new device gets its
 /// workarounds without an edit.
-const ERRATA_CFGS: &[&str] = &["GPIO_ERR_01", "UART_ERR_03", "UART_ERR_08", "VREF_ERR_01"];
+const ERRATA_CFGS: &[&str] = &["GPIO_ERR_01", "MATHACL_ERR_02", "UART_ERR_03", "UART_ERR_08", "VREF_ERR_01"];
 
 /// Enable a cfg, lowercased, for each erratum in [`ERRATA_CFGS`] that applies to this chip.
 fn errata_cfgs(cfgs: &mut CfgSet) {
