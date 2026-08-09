@@ -130,3 +130,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/adc: the two sample-time comparators are set through one `set_sample_period`/`sample_period` pair taking a `SampleTimeComparator`, replacing four `scomp0`/`scomp1` methods
 - fix: mspm0/i2c-target: a read the controller ends early no longer leaves its unsent bytes to answer the next read
 - fix: mspm0/mathacl: every operation now returns without an unbounded spin -- reading the result register already waits for it
+- mspm0: bump `mspm0-metapac` for VREF startup times, indexed `CTL1.READY` and four data corrections
