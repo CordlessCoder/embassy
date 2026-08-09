@@ -158,9 +158,10 @@ swd-pins-as-gpio = []
 ## Deep-sleep support: the [`low_power`] module, the sleep guards the drivers hold, and the executor
 ## that idles into a sleep mode.
 ##
-## Pulls in `embassy-time` for [`Config::min_sleep`], the deep-sleep entry threshold. The point of the
-## feature is the low-power executor, which is an `embassy-time` user already.
-low-power = ["dep:embassy-time"]
+## Needs no time source. [`Config::min_sleep`], the deep-sleep entry threshold, exists only alongside a
+## `time-driver-*` feature, which is what brings `embassy-time` in — without one nothing schedules a
+## wake, so there is no duration to gate on.
+low-power = []
 
 executor-thread = ["_executor"]
 
@@ -176,7 +177,10 @@ _probe = []
 
 # Features starting with `_` are for internal use only. They're not intended
 # to be enabled by other crates, and are not covered by semver guarantees.
-_time-driver = ["dep:embassy-time-driver", "dep:embassy-time-queue-utils"]
+# `embassy-time` is here rather than on `low-power` because it is `Config::min_sleep`'s `Duration` that
+# needs it, and that field exists only where a time driver does. Anything selecting a time driver is an
+# `embassy-time` user already — implementing its driver trait is what the feature is for.
+_time-driver = ["dep:embassy-time-driver", "dep:embassy-time-queue-utils", "dep:embassy-time"]
 
 ## Enable APIs that wait on `embassy-time`, such as [`wwdt::Watchdog::run`].
 time = ["dep:embassy-time", "embassy-embedded-hal/time"]

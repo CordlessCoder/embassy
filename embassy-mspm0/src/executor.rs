@@ -67,8 +67,8 @@ mod thread {
     ///
     /// It runs on thread mode, at the lowest priority level, and sleeps when it has no more work to
     /// do. How deep that sleep goes is decided by the [`WakeGuard`](crate::sysctl::WakeGuard)s the
-    /// drivers hold and by [`Config::min_sleep`](crate::Config::min_sleep); with nothing to block it
-    /// the chip reaches its deepest allowed level rather than plain `WFI`.
+    /// drivers hold and, with a time driver, by `Config::min_sleep`; with nothing to block it the chip
+    /// reaches its deepest allowed level rather than plain `WFI`.
     ///
     /// The sleep is entered with interrupts masked, so a task woken between the poll and the sleep
     /// would otherwise be missed. `WFI` has no event register for a `SEV` to latch into, so the

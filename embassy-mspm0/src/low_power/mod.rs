@@ -4,8 +4,9 @@
 //! the chip shallower than a given [`SleepLevel`]; the low-power executor then idles into the deepest
 //! mode no guard blocks.
 //!
-//! Duration gates it too: a wake scheduled sooner than [`Config::min_sleep`](crate::Config::min_sleep)
-//! leaves the idle a plain `WFI`.
+//! With a time driver, duration gates it too: a wake scheduled sooner than `Config::min_sleep` leaves
+//! the idle a plain `WFI`. Without one nothing schedules a wake, so only the guards decide and this
+//! module needs no time source at all.
 //!
 //! # Wake source caveats
 //! - `GPIO_ERR_01` (L110x/L13xx, G1x0x/G3x0x) — a wake edge can be missed. Only the STANDBY1 half is
@@ -21,9 +22,12 @@
 use core::sync::atomic::Ordering;
 
 use critical_section::CriticalSection;
+#[cfg(feature = "_time-driver")]
 use embassy_time::{Duration, TICK_HZ};
 use pac::sysctl::vals::Dsleep;
-use portable_atomic::{AtomicU8, AtomicU32};
+use portable_atomic::AtomicU8;
+#[cfg(feature = "_time-driver")]
+use portable_atomic::AtomicU32;
 
 use crate::pac;
 
@@ -46,9 +50,11 @@ pub const MAX_WAKE_NS: u32 = crate::_generated::MAX_WAKE_NS;
 ///
 /// Entry costs roughly what wake does, and the published figures are typical rather than worst case,
 /// so this is about the shortest sleep that can pay for itself — two or three ticks on every MSPM0.
+#[cfg(feature = "_time-driver")]
 pub const DEFAULT_MIN_SLEEP: Duration = Duration::from_ticks(ns_to_ticks(4 * MAX_WAKE_NS as u64));
 
 /// Ticks covering `ns`, rounded up.
+#[cfg(feature = "_time-driver")]
 const fn ns_to_ticks(ns: u64) -> u64 {
     (ns * TICK_HZ).div_ceil(1_000_000_000)
 }
@@ -57,27 +63,24 @@ const fn ns_to_ticks(ns: u64) -> u64 {
 ///
 /// A `u32` reaches 36 hours at 32.768 kHz, and reading it needs no critical section on a target
 /// without 64-bit atomics.
+#[cfg(feature = "_time-driver")]
 static MIN_SLEEP_TICKS: AtomicU32 = AtomicU32::new(DEFAULT_MIN_SLEEP.as_ticks() as u32);
 
 /// Apply [`Config::min_sleep`](crate::Config::min_sleep).
+#[cfg(feature = "_time-driver")]
 pub(crate) fn set_min_sleep(min_sleep: Duration) {
     MIN_SLEEP_TICKS.store(min_sleep.as_ticks().min(u32::MAX as u64) as u32, Ordering::Relaxed);
 }
 
 /// Whether the next wake is far enough out for a deep-sleep mode to be worth entering.
-fn min_sleep_met(cs: CriticalSection) -> bool {
-    wake_at_least(cs, MIN_SLEEP_TICKS.load(Ordering::Relaxed))
-}
-
-/// Whether nothing wakes the core again for at least `ticks`.
 #[cfg(feature = "_time-driver")]
-fn wake_at_least(cs: CriticalSection, ticks: u32) -> bool {
-    crate::time_driver::wake_at_least(cs, ticks)
+fn min_sleep_met(cs: CriticalSection) -> bool {
+    crate::time_driver::wake_at_least(cs, MIN_SLEEP_TICKS.load(Ordering::Relaxed))
 }
 
 /// Without a time driver nothing schedules a wake, so the sleep is unbounded and always long enough.
 #[cfg(not(feature = "_time-driver"))]
-fn wake_at_least(_cs: CriticalSection, _ticks: u32) -> bool {
+fn min_sleep_met(_cs: CriticalSection) -> bool {
     true
 }
 
@@ -113,8 +116,7 @@ fn deepest_allowed() -> Option<SleepLevel> {
 /// chip supports; a held guard caps the depth, and a guard on [`SleepLevel::Stop0`] keeps it a
 /// plain `WFI`.
 ///
-/// A wake scheduled sooner than [`Config::min_sleep`](crate::Config::min_sleep) also leaves it a plain
-/// `WFI`.
+/// With a time driver, a wake scheduled sooner than `Config::min_sleep` also leaves it a plain `WFI`.
 ///
 /// Another scheduler can call it to get the same idle behaviour: under RTIC that is `#[idle]`, which
 /// is the only place the safety condition below holds.

@@ -347,10 +347,12 @@ pub struct Config {
     /// Shortest time to the next wake for which [`low_power::sleep`] enters a deep-sleep mode.
     ///
     /// Below it the chip stays in RUN for a plain `WFI`, since entering and leaving a mode costs about
-    /// twice its wake-up latency. Only the time driver's wake counts, so this has no effect without
-    /// one, and a value longer than the driver's bookkeeping tick — one second with a 16-bit timer,
-    /// 18 hours with a 32-bit one — stops the chip deep-sleeping at all.
-    #[cfg(feature = "low-power")]
+    /// twice its wake-up latency. A value longer than the driver's bookkeeping tick — one second with a
+    /// 16-bit timer, 18 hours with a 32-bit one — stops the chip deep-sleeping at all.
+    ///
+    /// Only the time driver's wake counts, so this exists only alongside one. Without a time driver
+    /// nothing schedules a wake and the guards alone decide the depth.
+    #[cfg(all(feature = "low-power", feature = "_time-driver"))]
     pub min_sleep: embassy_time::Duration,
 }
 
@@ -360,7 +362,7 @@ impl Default for Config {
             clock: sysctl::clock::RESET_SETUP,
             dma_burst_size: dma::BurstSize::Complete,
             dma_round_robin: false,
-            #[cfg(feature = "low-power")]
+            #[cfg(all(feature = "low-power", feature = "_time-driver"))]
             min_sleep: low_power::DEFAULT_MIN_SLEEP,
         }
     }
@@ -413,7 +415,7 @@ pub fn init(config: Config) -> Peripherals {
         // SAFETY: Peripherals::take_with_cs will only be run once or panic.
         unsafe { dma::init(cs, config.dma_burst_size, config.dma_round_robin) };
 
-        #[cfg(feature = "low-power")]
+        #[cfg(all(feature = "low-power", feature = "_time-driver"))]
         low_power::set_min_sleep(config.min_sleep);
 
         #[cfg(feature = "_time-driver")]
