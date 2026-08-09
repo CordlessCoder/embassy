@@ -88,7 +88,10 @@ impl<'d> Mathacl<'d> {
             .op1()
             .write_value(IQType::from_f32(native, 0, true).unwrap().to_reg());
 
-        while self.regs.status().read().busy() {}
+        // No poll of `STATUS.BUSY` before reading the result, and none is wanted: a result register
+        // read issued before the operation finishes stalls the bus until it does, so the hardware
+        // does the waiting. SLAU846 §10.3 calls the poll optional and it is the only thing that made
+        // this driver spin unbounded. The stall is at most `NUMITER` cycles, 31 at `Precision::High`.
 
         match sin {
             true => Ok(IQType::from_reg(self.regs.res2().read(), 0, true).unwrap().to_f32()),
@@ -123,9 +126,7 @@ impl<'d> Mathacl<'d> {
 
         self.regs.op1().write_value(dividend as u32);
 
-        while self.regs.status().read().busy() {}
-
-        // read quotient
+        // Reading the quotient stalls until the division finishes; see `sincos`.
         Ok(self.regs.res1().read() as i32)
     }
 
@@ -146,9 +147,7 @@ impl<'d> Mathacl<'d> {
 
         self.regs.op1().write_value(dividend);
 
-        while self.regs.status().read().busy() {}
-
-        // read quotient
+        // Reading the quotient stalls until the division finishes; see `sincos`.
         Ok(self.regs.res1().read())
     }
 
@@ -179,9 +178,7 @@ impl<'d> Mathacl<'d> {
 
         self.regs.op1().write_value(dividend.to_reg());
 
-        while self.regs.status().read().busy() {}
-
-        // read quotient
+        // Reading the quotient stalls until the division finishes; see `sincos`.
         return Ok(
             IQType::from_reg(self.regs.res1().read(), dividend.i_bits.into(), dividend.signed)
                 .unwrap()
