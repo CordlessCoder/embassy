@@ -22,11 +22,24 @@ pub enum Precision {
     Low = 1,
 }
 
+/// Reads of `STATUS.BUSY` before an operation is declared wedged.
+///
+/// An operation takes at most `NUMITER` cycles — 31 at [`Precision::High`] — and a poll is a register
+/// read, so the loop resolves in tens of iterations. This is orders of magnitude above that, which is
+/// the point: it bounds a spin that would otherwise be unbounded without ever being reached in
+/// ordinary use.
+const MAX_POLLS: u32 = 4096;
+
 /// Error type for Mathacl operations.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
+    /// The accelerator did not finish an operation within [`MAX_POLLS`] reads of `STATUS.BUSY`.
+    ///
+    /// Not reachable by a caller doing anything wrong: an operation takes at most `NUMITER` cycles,
+    /// so this means the peripheral is wedged.
+    Timeout,
     ValueInWrongRange,
     DivideByZero,
     FaultIQTypeFormat,
@@ -70,6 +83,21 @@ impl<'d> Mathacl<'d> {
         }
     }
 
+    /// Wait for the current operation to finish, or give up.
+    ///
+    /// Every result read goes through this. The alternative — trusting the bus to stall on a result
+    /// register read — holds for `RES1` and not for `RES2`, so it is not a distinction worth building
+    /// on when the poll costs tens of cycles.
+    fn wait_for_result(&mut self) -> Result<(), Error> {
+        for _ in 0..MAX_POLLS {
+            if !self.regs.status().read().busy() {
+                return Ok(());
+            }
+        }
+
+        Err(Error::Timeout)
+    }
+
     /// Internal helper SINCOS function.
     fn sincos(&mut self, rad: f32, precision: Precision, sin: bool) -> Result<f32, Error> {
         if rad > PI || rad < -PI {
@@ -88,10 +116,11 @@ impl<'d> Mathacl<'d> {
             .op1()
             .write_value(IQType::from_f32(native, 0, true).unwrap().to_reg());
 
-        // No poll of `STATUS.BUSY` before reading the result, and none is wanted: a result register
-        // read issued before the operation finishes stalls the bus until it does, so the hardware
-        // does the waiting. SLAU846 §10.3 calls the poll optional and it is the only thing that made
-        // this driver spin unbounded. The stall is at most `NUMITER` cycles, 31 at `Precision::High`.
+        // SLAU846 §10.3 calls this poll optional, on the grounds that reading a result before the
+        // operation finishes stalls the bus until it completes. **That is not true of `RES2`**, which
+        // is where SINCOS puts the sine: without this, `sin` returns the previous call's answer, while
+        // `cos` off `RES1` is correct. Measured, and it is why the poll is back.
+        self.wait_for_result()?;
 
         match sin {
             true => Ok(IQType::from_reg(self.regs.res2().read(), 0, true).unwrap().to_f32()),
@@ -126,7 +155,7 @@ impl<'d> Mathacl<'d> {
 
         self.regs.op1().write_value(dividend as u32);
 
-        // Reading the quotient stalls until the division finishes; see `sincos`.
+        self.wait_for_result()?;
         Ok(self.regs.res1().read() as i32)
     }
 
@@ -147,7 +176,7 @@ impl<'d> Mathacl<'d> {
 
         self.regs.op1().write_value(dividend);
 
-        // Reading the quotient stalls until the division finishes; see `sincos`.
+        self.wait_for_result()?;
         Ok(self.regs.res1().read())
     }
 
@@ -178,7 +207,7 @@ impl<'d> Mathacl<'d> {
 
         self.regs.op1().write_value(dividend.to_reg());
 
-        // Reading the quotient stalls until the division finishes; see `sincos`.
+        self.wait_for_result()?;
         return Ok(
             IQType::from_reg(self.regs.res1().read(), dividend.i_bits.into(), dividend.signed)
                 .unwrap()

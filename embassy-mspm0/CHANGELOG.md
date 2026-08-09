@@ -129,6 +129,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0: bump `mspm0-metapac` for a generated-API cleanup across every register block; the call sites move but nothing the HAL programs changes
 - feat: mspm0/adc: the two sample-time comparators are set through one `set_sample_period`/`sample_period` pair taking a `SampleTimeComparator`, replacing four `scomp0`/`scomp1` methods
 - fix: mspm0/i2c-target: a read the controller ends early no longer leaves its unsent bytes to answer the next read
-- fix: mspm0/mathacl: every operation now returns without an unbounded spin -- reading the result register already waits for it
+- fix: mspm0/mathacl: `sin` no longer returns the previous call's result, and no operation waits unbounded
 - mspm0: bump `mspm0-metapac` for VREF startup times, indexed `CTL1.READY` and four data corrections
 - feat: mspm0/vref: add a driver for the internal voltage reference, whose constructor returns only once the reference has settled
