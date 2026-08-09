@@ -39,9 +39,40 @@ Four things to know before writing one:
   `build.rs`. Without it a binding fails at *link* time naming a peripheral the application never
   mentioned — the group demultiplexer resolves every source on the group, and that script is what
   provides the unbound ones. The error gives no hint that a linker script is missing.
-- **A HAL interrupt outranks every RTIC task.** RTIC assigns priorities only to the interrupts it
-  manages; the rest keep NVIC priority 0, the highest. So a driver's interrupt preempts a hardware task
-  at any priority, which is usually what you want and is worth knowing either way.
+- **A HAL interrupt outranks every RTIC task** until you say otherwise. RTIC assigns priorities only to
+  the interrupts it manages; the rest keep NVIC priority 0, the highest. So a driver's interrupt
+  preempts a hardware task at any priority. That is often what you want — see below for placing one
+  deliberately instead.
+
+## Placing a driver's interrupt in the RTIC priority scheme
+
+Every async driver enables its own interrupt and none of them sets a priority, so it stays wherever
+NVIC reset left it: 0, above everything RTIC schedules. One call moves it, after the driver is
+constructed:
+
+```rust
+use embassy_mspm0::interrupt::Priority;
+use embassy_mspm0::interrupt::typelevel::Interrupt as _;
+
+interrupt::typelevel::GROUP1::set_priority(Priority::P2);
+```
+
+The two numbering schemes run in opposite directions, which is the part worth having written down.
+RTIC counts up from 1, the NVIC counts *down* from 0, and this part has two priority bits:
+
+| RTIC task priority | NVIC value | `Priority` |
+|---|---|---|
+| — (unmanaged, the default) | `0x00` | `P0` |
+| 3, the highest task | `0x40` | `P1` |
+| 2 | `0x80` | `P2` |
+| 1, the lowest task | `0xC0` | `P3` |
+
+So `Priority::Pn` is RTIC priority `4 - n`. Three levels are all RTIC's source-masking backend offers
+on this core, and a driver left alone sits above all three.
+
+**On a chip where the peripheral reaches the CPU through an interrupt group, the group is the unit.**
+`GROUP1` carries `COMP0` here as well as `GPIOA`, so that call moves both; a per-peripheral priority is
+not available to you. Which peripherals share a group is per chip.
 
 ## Sleeping, rather than spinning in `wfi`
 

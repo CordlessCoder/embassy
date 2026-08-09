@@ -12,8 +12,8 @@
 //!
 //! `on_pend` at 3 preempts the two software tasks at 1 and 2. It is the one place a number is worth
 //! choosing deliberately: an interrupt RTIC does not manage — every HAL driver's — keeps NVIC
-//! priority 0, the highest, so it preempts *every* RTIC task. Give a hardware task a priority knowing
-//! that.
+//! priority 0, the highest, so it preempts *every* RTIC task unless it is given a priority of its own.
+//! `init` gives the GPIO group one; the README's table says which `Priority` is which RTIC level.
 //!
 //! `UART0` is bound because it is an NVIC line nothing else in this binary uses, and it is pended
 //! from software: the point here is the priority relationship, not the peripheral.
@@ -31,6 +31,8 @@ mod app {
     use cortex_m::peripheral::NVIC;
     use defmt::info;
     use embassy_mspm0::gpio::{self, Input, Level, Output, Pull};
+    use embassy_mspm0::interrupt::Priority;
+    use embassy_mspm0::interrupt::typelevel::Interrupt as _;
     use embassy_mspm0::mode::Async;
     use embassy_mspm0::{Config, bind_group_interrupts, interrupt};
     use embassy_time::Timer;
@@ -61,6 +63,11 @@ mod app {
         led.set_high();
 
         let button = Input::new_async(p.PA14, Pull::Up, Irqs);
+
+        // The edge reaches the CPU on GROUP1's NVIC line, which nothing has given a priority, so it
+        // would preempt `on_pend` as well as the tasks. Put it level with the task it wakes. On a
+        // chip where GPIO shares a group this moves every source on that group, not just this pin.
+        interrupt::typelevel::GROUP1::set_priority(Priority::P2);
 
         watch::spawn(button, led).map_err(|_| ()).unwrap();
         report::spawn().map_err(|_| ()).unwrap();
