@@ -16,6 +16,7 @@ wiring: `LED1` is on `PA0` and `S2` on `PA14`, both on the board itself.
 |---|---|
 | `blinky` | the smallest RTIC application that uses `embassy_time` and an `embassy-mspm0` driver |
 | `layered` | an RTIC hardware task preempting async tasks that wait on the HAL's own GPIO driver |
+| `lp_idle` | `#[idle]` entering the HAL's deep sleep instead of spinning in `wfi` |
 
 ## RTIC on top of `embassy-mspm0`, rather than instead of it
 
@@ -41,6 +42,29 @@ Four things to know before writing one:
 - **A HAL interrupt outranks every RTIC task.** RTIC assigns priorities only to the interrupts it
   manages; the rest keep NVIC priority 0, the highest. So a driver's interrupt preempts a hardware task
   at any priority, which is usually what you want and is worth knowing either way.
+
+## Sleeping, rather than spinning in `wfi`
+
+RTIC has no idle policy of its own, and the bare `wfi` an `#[idle]` usually holds only reaches the
+shallowest mode. `low_power::sleep` is the call the low-power executor makes on idle, and an RTIC
+application can make it directly for the same sleep depths:
+
+```rust
+#[idle]
+fn idle(_: idle::Context) -> ! {
+    loop {
+        critical_section::with(|cs| unsafe { embassy_mspm0::low_power::sleep(cs) });
+    }
+}
+```
+
+It needs the `low-power` feature on `embassy-mspm0`, and `critical-section` as a direct dependency
+because the HAL does not re-export it. `low-power` pulls in no executor, so this is the whole cost.
+
+**`#[idle]` is the only place it may be called.** `sleep` must run in thread mode — a `WFI` in a
+handler is woken only by something of higher priority than the handler, so at the lowest priority it
+never returns. RTIC's software tasks run in their dispatcher's handler, so the same call from a
+`#[task]` compiles and hangs. `lp_idle` is the worked example.
 
 ## What this costs
 
