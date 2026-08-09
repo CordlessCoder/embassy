@@ -27,10 +27,10 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_stm32::Config;
 use embassy_stm32::i2c::{self, I2c};
 use embassy_stm32::rcc::{Pll, PllDiv, PllMul, PllPreDiv, PllSource, Sysclk, VoltageScale};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::Config;
 use embassy_time::Timer;
 use panic_probe as _;
 
@@ -68,7 +68,10 @@ async fn main(_spawner: Spawner) -> ! {
 
     let mut i2c = I2c::new_blocking(p.I2C1, p.PB8, p.PB9, i2c_config);
 
-    info!("driving {:#x}: {} rounds of overlong, canary, read", TARGET_ADDR, ROUNDS);
+    info!(
+        "driving {:#x}: {} rounds of overlong, canary, read",
+        TARGET_ADDR, ROUNDS
+    );
 
     let mut overlong_err = 0u32;
     let mut canary_err = 0u32;

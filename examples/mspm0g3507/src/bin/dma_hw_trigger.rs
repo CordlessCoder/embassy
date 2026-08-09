@@ -76,8 +76,7 @@ async fn main(_spawner: Spawner) -> ! {
         options.mode = TransferMode::Block;
 
         // SAFETY: as above.
-        let transfer =
-            unwrap!(unsafe { channel.read(HARDWARE_TRIGGER, &raw mut source, &mut *dest, options) });
+        let transfer = unwrap!(unsafe { channel.read(HARDWARE_TRIGGER, &raw mut source, &mut *dest, options) });
 
         // Phase 1. The trigger has not fired and cannot have, so nothing may have moved.
         //
@@ -87,7 +86,10 @@ async fn main(_spawner: Spawner) -> ! {
         if moved {
             ran_early += 1;
             if ran_early == 1 {
-                error!("round {}: destination written with no trigger -- start asserted DMAREQ", round);
+                error!(
+                    "round {}: destination written with no trigger -- start asserted DMAREQ",
+                    round
+                );
             }
         }
 

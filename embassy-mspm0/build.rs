@@ -136,7 +136,13 @@ fn peripheral_name_cfgs(cfgs: &mut CfgSet) {
 /// Add one here when a driver starts gating on it. The cfg is emitted from the device's own errata
 /// sheet, so unlike the family lists these replace it cannot miss a part — and a new device gets its
 /// workarounds without an edit.
-const ERRATA_CFGS: &[&str] = &["GPIO_ERR_01", "MATHACL_ERR_02", "UART_ERR_03", "UART_ERR_08", "VREF_ERR_01"];
+const ERRATA_CFGS: &[&str] = &[
+    "GPIO_ERR_01",
+    "MATHACL_ERR_02",
+    "UART_ERR_03",
+    "UART_ERR_08",
+    "VREF_ERR_01",
+];
 
 /// Enable a cfg, lowercased, for each erratum in [`ERRATA_CFGS`] that applies to this chip.
 fn errata_cfgs(cfgs: &mut CfgSet) {
@@ -523,7 +529,10 @@ fn generate_groups() -> TokenStream {
         let scanner = format_ident!("__mspm0_vectors_{}", group.name.to_lowercase());
         let symbol = Ident::new(group.name, Span::call_site());
         let demux_name = Ident::new(&group.name.to_lowercase(), Span::call_site());
-        let doc = format!("Emit `{}`'s vector-table entry if anything binds a source on it.", group.name);
+        let doc = format!(
+            "Emit `{}`'s vector-table entry if anything binds a source on it.",
+            group.name
+        );
 
         let hits = group.interrupts.iter().map(|interrupt| {
             let source = Ident::new(interrupt.name, Span::call_site());
@@ -1258,7 +1267,12 @@ fn generate_basic_timers(cfgs: &mut CfgSet) -> TokenStream {
 /// Which modes an instance has is per instance and per device — no instance implements all four — so
 /// the capability traits are what stop a UART being built on an I2C-only instance.
 fn generate_unicomm(cfgs: &mut CfgSet) -> TokenStream {
-    cfgs.declare_all(&["unicomm_uart", "unicomm_spi", "unicomm_i2c_controller", "unicomm_i2c_target"]);
+    cfgs.declare_all(&[
+        "unicomm_uart",
+        "unicomm_spi",
+        "unicomm_i2c_controller",
+        "unicomm_i2c_target",
+    ]);
 
     let impls: Vec<_> = METADATA
         .peripherals
