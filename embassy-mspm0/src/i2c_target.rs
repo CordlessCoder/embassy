@@ -379,6 +379,57 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
         }
     }
 
+    /// Discard whatever a finished command left in a FIFO.
+    ///
+    /// SLAU846 §25.2.3.13 asks for the FIFO interrupts to be masked before a flush and their flags to
+    /// be dealt with after, and both matter here rather than being ceremony: emptying a FIFO raises
+    /// the same events a finished command does, and left latched they are answered by the next
+    /// [`I2cTarget::listen`] — which would read a flushed transmit FIFO as a fresh `Command::Read`.
+    ///
+    /// The controller's `I2c::flush_fifos` is the same routine against the other half of the
+    /// peripheral; fix one and look at the other.
+    fn flush_fifos(&mut self, tx: bool, rx: bool) {
+        let target = self.info.regs.target(0);
+        let int = self.info.regs.cpu_int(0);
+
+        // Read back and restored one field at a time rather than saved and rewritten whole, so a
+        // change to any other bit between here and the end of the flush survives it.
+        let armed = int.imask().read();
+        int.imask().modify(|w| {
+            w.set_ttxfifotrg(false);
+            w.set_trxfifotrg(false);
+            w.set_ttxempty(false);
+            w.set_trxfifofull(false);
+        });
+
+        target.tfifoctl().modify(|w| {
+            w.set_txflush(tx);
+            w.set_rxflush(rx);
+        });
+        // Unbounded, and deliberately so: this waits on the FIFO emptying itself with the flush bits
+        // held, which is the peripheral's own doing and does not depend on the bus.
+        while (tx && target.tfifosr().read().txfifocnt() as usize != self.info.fifo_size)
+            || (rx && target.tfifosr().read().rxfifocnt() != 0)
+        {}
+        target.tfifoctl().modify(|w| {
+            w.set_txflush(false);
+            w.set_rxflush(false);
+        });
+
+        int.iclr().write(|w| {
+            w.set_ttxfifotrg(true);
+            w.set_trxfifotrg(true);
+            w.set_ttxempty(true);
+            w.set_trxfifofull(true);
+        });
+        int.imask().modify(|w| {
+            w.set_ttxfifotrg(armed.ttxfifotrg());
+            w.set_trxfifotrg(armed.trxfifotrg());
+            w.set_ttxempty(armed.ttxempty());
+            w.set_trxfifofull(armed.trxfifofull());
+        });
+    }
+
     /// Discard whatever is left in the receive FIFO.
     ///
     /// Used where a command ends with the controller still sending: the bytes that did not fit stay
@@ -386,17 +437,7 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
     /// following write.
     #[inline]
     fn flush_rx_fifo(&mut self) {
-        let regs = self.info.regs;
-
-        regs.target(0).tfifoctl().modify(|w| {
-            w.set_rxflush(true);
-        });
-
-        while regs.target(0).tfifosr().read().rxfifocnt() != 0 {}
-
-        regs.target(0).tfifoctl().modify(|w| {
-            w.set_rxflush(false);
-        });
+        self.flush_fifos(false, true);
     }
 
     /// The address the last command was addressed to.
@@ -421,17 +462,12 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
         self.info.regs.target(0).tsr().read().oar2sel()
     }
 
-    /// Blocking function to empty the tx fifo
+    /// Discard whatever is queued to transmit, blocking until it is gone.
     ///
-    /// This function can be used to empty the transmit FIFO if data remains after handling a 'read' command (LeftoverBytes).
+    /// Worth calling after a [`ReadStatus::LeftoverBytes`], which says a read ended with bytes still
+    /// queued.
     pub fn flush_tx_fifo(&mut self) {
-        self.info.regs.target(0).tfifoctl().modify(|w| {
-            w.set_txflush(true);
-        });
-        while self.info.regs.target(0).tfifosr().read().txfifocnt() as usize != self.info.fifo_size {}
-        self.info.regs.target(0).tfifoctl().modify(|w| {
-            w.set_txflush(false);
-        });
+        self.flush_fifos(true, false);
     }
 }
 
