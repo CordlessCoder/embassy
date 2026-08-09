@@ -127,3 +127,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/unicomm: power a UNICOMM instance up in one of its modes, with a trait per mode so asking for one the instance does not implement fails to compile. The four mode drivers do not exist yet
 - mspm0: bump `mspm0-metapac` for a UNICOMM register cleanup; no register or field moved, but `LINC0`/`LINC1` are now an array and `ICLR` shares the interrupt fieldset
 - mspm0: bump `mspm0-metapac` for a generated-API cleanup across every register block; the call sites move but nothing the HAL programs changes
+- feat: mspm0/adc: the two sample-time comparators are set through one `set_sample_period`/`sample_period` pair taking a `SampleTimeComparator`, replacing four `scomp0`/`scomp1` methods

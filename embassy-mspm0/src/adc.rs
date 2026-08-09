@@ -126,6 +126,19 @@ pub enum SampleTimeComparator {
     Scomp1,
 }
 
+impl SampleTimeComparator {
+    /// Every comparator, in index order.
+    pub const ALL: [SampleTimeComparator; 2] = [SampleTimeComparator::Scomp0, SampleTimeComparator::Scomp1];
+
+    /// Index of this comparator in the `SCOMP` registers.
+    pub const fn index(self) -> usize {
+        match self {
+            SampleTimeComparator::Scomp0 => 0,
+            SampleTimeComparator::Scomp1 => 1,
+        }
+    }
+}
+
 /// Reference voltage (Vref) selection for the ADC channels.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -188,14 +201,14 @@ pub struct Config {
     /// Sample clock source.
     pub sample_clk: SampleClock,
 
-    /// Length of the sample period 0 in ADC sample clock cycles.
-    ///
-    /// This is used when [`SampleTimeComparator::Scomp0`] is selected when sampling.
+    /// Length of [`SampleTimeComparator::Scomp0`]'s sample period, in ADC sample clock cycles.
+    //
+    // Two fields rather than an array indexed by `SampleTimeComparator`: `Config` is taken by value
+    // and an array field of it spills to the stack, which costs 48 bytes of flash in every binary
+    // that builds an `Adc`.
     pub sample_period_0: NonZeroU16,
 
-    /// Length of the sample period 1 in ADC sample clock cycles.
-    ///
-    /// This is used when [`SampleTimeComparator::Scomp1`] is selected when sampling.
+    /// Length of [`SampleTimeComparator::Scomp1`]'s sample period, in ADC sample clock cycles.
     pub sample_period_1: NonZeroU16,
 }
 
@@ -273,32 +286,22 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         });
     }
 
-    pub fn set_scomp0(&mut self, period: NonZeroU16) {
+    /// Set one comparator's sample period, in ADC sample clock cycles.
+    ///
+    /// Panics if `period` is above [`Config::MAX_SAMPLE_PERIOD`].
+    pub fn set_sample_period(&mut self, comparator: SampleTimeComparator, period: NonZeroU16) {
         assert!(period <= Config::MAX_SAMPLE_PERIOD);
         let r = T::info().regs;
 
-        r.scomp(0).write(|w| {
+        r.scomp(comparator.index()).write(|w| {
             w.set_val(period.get());
         });
     }
 
-    pub fn scomp0(&self) -> u16 {
+    /// One comparator's sample period, in ADC sample clock cycles.
+    pub fn sample_period(&self, comparator: SampleTimeComparator) -> u16 {
         let r = T::info().regs;
-        r.scomp(0).read().val()
-    }
-
-    pub fn set_scomp1(&mut self, period: NonZeroU16) {
-        assert!(period <= Config::MAX_SAMPLE_PERIOD);
-        let r = T::info().regs;
-
-        r.scomp(1).write(|w| {
-            w.set_val(period.get());
-        });
-    }
-
-    pub fn scomp1(&self) -> u16 {
-        let r = T::info().regs;
-        r.scomp(1).read().val()
+        r.scomp(comparator.index()).read().val()
     }
 }
 
@@ -531,11 +534,11 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
             w.set_endadd(0);
         });
 
-        r.scomp(0).write(|w| {
+        r.scomp(SampleTimeComparator::Scomp0.index()).write(|w| {
             w.set_val(config.sample_period_0.get());
         });
 
-        r.scomp(1).write(|w| {
+        r.scomp(SampleTimeComparator::Scomp1.index()).write(|w| {
             w.set_val(config.sample_period_1.get());
         });
     }
