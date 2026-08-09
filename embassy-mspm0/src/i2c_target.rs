@@ -355,6 +355,15 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             // Disable target wakeup, follow TI example. (TI note: Workaround for errata I2C_ERR_04.)
             w.set_twuen(false);
             w.set_txempty_on_treq(true);
+            // What a read left unsent must not answer the next one. Set, the transmit state machine
+            // is told the FIFO is empty at every STOP, restart and timeout whether or not bytes are
+            // still in it, so the surplus is never shifted out; `flush_stale_tx_fifo` then clears it
+            // once the next read stretches the clock. SLAU846 §25.2.3.13.1.
+            //
+            // Software alone cannot do this. A flush between two commands races a controller that
+            // starts reading immediately after the STOP, and loses: only the state machine can
+            // refuse to transmit. It needs `TXEMPTY_ON_TREQ` above, or the stretch raises nothing.
+            w.set_txwait_stale_txfifo(true);
         });
 
         // Enable the I2C target mode by setting the ACTIVE bit in I2Cx.TCTR register.
@@ -440,6 +449,16 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
         self.flush_fifos(false, true);
     }
 
+    /// Discard a previous read's unsent bytes, if the peripheral says any are left.
+    ///
+    /// SLAU846 §25.2.3.13.1's step 4. `TXWAIT_STALE_TXFIFO` keeps the surplus off the wire but does
+    /// not remove it, so it stays in the way until something empties it; this is what does.
+    fn flush_stale_tx_fifo(&mut self) {
+        if self.info.regs.target(0).tsr().read().stale_txfifo() {
+            self.flush_fifos(true, false);
+        }
+    }
+
     /// The address the last command was addressed to.
     ///
     /// Worth asking only with a masked [`SecondAddress`], where the controller's address is one of a
@@ -464,8 +483,10 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
 
     /// Discard whatever is queued to transmit, blocking until it is gone.
     ///
-    /// Worth calling after a [`ReadStatus::LeftoverBytes`], which says a read ended with bytes still
-    /// queued.
+    /// Calling this after a [`ReadStatus::LeftoverBytes`] is no longer needed: the surplus cannot
+    /// reach the bus, and the next read clears it. It remains for a caller who wants the queue empty
+    /// at a moment of their own choosing — after preparing a response the controller never came back
+    /// for, say.
     pub fn flush_tx_fifo(&mut self) {
         self.flush_fifos(true, false);
     }
@@ -545,6 +566,11 @@ impl<'d> I2cTarget<'d, Async> {
         if buffer.is_empty() {
             return Err(Error::InvalidResponseBufferLength);
         }
+
+        // Before a byte of this response is queued, not after: whatever the last read did not send is
+        // still sitting in front of it, and appending to it would put this response behind the
+        // previous one's tail.
+        self.flush_stale_tx_fifo();
 
         let regs = self.info.regs;
         let fifo_size = self.info.fifo_size;
