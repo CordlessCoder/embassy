@@ -1,0 +1,39 @@
+[package]
+edition = "2024"
+name = "embassy-mspm0-l1306-rtic-min-examples"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+rtic = { version = "2", features = ["thumbv6-backend"] }
+
+# `low-power` is on and no time driver is selected, which is the whole point of this crate: nothing
+# here pulls embassy-time, embassy-time-driver or embassy-executor. `cargo tree` is the check.
+embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", default-features = false, features = ["mspm0l1306rhb", "rt", "unsafe-atomics-single-core", "low-power"] }
+
+critical-section = "1.1"
+cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = { version = "0.7.0" }
+defmt = "1.0.1"
+defmt-rtt = { version = "1.0.0", features = ["disable-blocking-mode"] }
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+panic-halt = "1.0.0"
+static_cell = "2"
+embedded-io-async = "0.7.0"
+
+[package.metadata.embassy]
+build = [
+  { target = "thumbv6m-none-eabi", artifact-dir = "out/examples/mspm0l1306-rtic-min" }
+]
+
+# What a production build uses. Sizes measured without these mean nothing — no LTO alone inflates a
+# binary this small by around 3x.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+overflow-checks = false
+incremental = false
