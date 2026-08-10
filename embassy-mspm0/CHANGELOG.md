@@ -148,3 +148,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/sync: registering the same waker again no longer takes a critical section, so interrupts stay on through the common path of every asynchronous poll
 - breaking: mspm0/uart: `Baud::solve` takes the clock source, and with it reaches the rates that need 3x oversampling — 2.67x the top of the band on every source the erratum does not bar, and from LFCLK that is what puts 4800 and 9600 in range
 - fix: mspm0/gpio: `wait_for_high` and `wait_for_low` no longer wait for a second edge when the level arrives while the wait is being armed
+- fix: mspm0/gpio: releasing a pin from a peripheral driver now clears the whole pin configuration, including the bit that connects the pad to the peripheral

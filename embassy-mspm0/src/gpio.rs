@@ -1362,13 +1362,13 @@ pub(crate) trait SealedPin {
 
     #[inline]
     fn set_as_analog(&self) {
-        let pincm = pac::IOMUX.pincm(self._pin_cm() as usize);
-
-        pincm.modify(|w| {
-            w.set_pf(DISCONNECT_PF);
-            w.set_pipu(false);
-            w.set_pipd(false);
-        });
+        // The whole register rather than a read-modify-write of three fields. `PC` is what connects the
+        // pad to the peripheral at all, and leaving it set left a dropped driver still driving the pin;
+        // `INENA`, `INV` and `HIZ1` have no business surviving either. TI's own routine is the same
+        // single store of zero, and a store is smaller than the read-modify-write it replaces.
+        pac::IOMUX
+            .pincm(self._pin_cm() as usize)
+            .write_value(pac::iomux::regs::Pincm(0));
     }
 
     #[cfg_attr(unicomm, allow(dead_code))]
