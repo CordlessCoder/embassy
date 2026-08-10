@@ -26,8 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: feature guard pins used for NRST and SWD (#5257)
 - feat: Move from GPIO waker arrays to maitake-sync wait map
 - fix: Flush the I2C controller FIFOs on the NACK/error paths, to prevent stale data
-- fix: Only block deep sleep for PD1 drivers that actually lose their configuration, not for all of them
-- fix: Hold a sleep guard across a software-triggered DMA transfer, which deep sleep would otherwise cut
 - fix: mspm0/sysctl: only block deep sleep for PD1 drivers that actually lose their configuration, not for all of them
 - fix: mspm0/dma: hold a sleep guard across a software-triggered transfer, which deep sleep would otherwise cut
 - fix: mspm0/uart: `UartTx::blocking_flush` waited on an inverted condition and returned while the transmitter was still busy
@@ -96,7 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/time-driver: hold the alarm timestamp inverted so the driver's state is zero-initialised and its 24-byte image leaves flash
 - fix: mspm0/gpio: dispatch an edge from the port's interrupt-index register instead of scanning the status bits, 44 bytes off a binary that waits on a pin
 - fix: mspm0/uart: arm the receive timeout whenever the FIFOs are on, which a trigger level above one entry requires or a partial FIFO is never delivered
-- **breaking** mspm0/uart: `Config::fifo_enable` is replaced by `Config::fifo`, an `Option<FifoThreshold>` naming how full a FIFO must be before it interrupts. It now defaults to on at half-full, which raises the rate the receiver can sustain from roughly 230400 to 921600
+- **breaking** mspm0/uart: `Config::fifo_enable` is replaced by `Config::fifo`, an `Option<FifoThreshold>` naming how full a FIFO must be before it interrupts. It now defaults to on at half-full, so the receive interrupt runs once per several bytes rather than once per byte
 - fix: mspm0/uart: a buffered async write yields once per call, so a receiver joined or selected with a long transmission is still polled during it rather than going deaf until it ends
 - fix: mspm0/uart: pend the buffered UART's interrupt by hand only when the transmit buffer was empty, as the blocking path already did, instead of on every write
 - fix: mspm0/uart: keep draining the receive FIFO past a faulty byte instead of abandoning the rest, which left the receiver further behind and turned one overrun into a run of them
@@ -111,7 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/trng: wake the waiting task without taking a critical section
 - fix: mspm0/adc: an asynchronous read now parks on the conversion interrupt instead of polling for it in a loop, freeing the CPU for the duration of a conversion
 - mspm0/i2c: wake the waiting task without taking a critical section
-- fix: mspm0/dma: an awaited transfer now completes -- the channel was configured while enabled so it ignored the transfer mode, triggered before its interrupt was armed, and never had its completion flag cleared
+- fix: mspm0/dma: an awaited transfer now completes — the channel was configured while enabled so it ignored the transfer mode, triggered before its interrupt was armed, and never had its completion flag cleared
 - mspm0/dma: wake a transfer's waiting task without taking a critical section
 - fix: mspm0/adc: `scomp1` read the `SCOMP0` sample period register instead of `SCOMP1`
 - fix: mspm0/time-driver: a repeated timer interrupt no longer shifts the clock by half the counter's range, which made a long `Timer` deadline fire late
@@ -136,8 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/mathacl: work around MATHACL_ERR_02, where the accelerator answers `sin(-pi/2)` with `+1`
 - fix: mspm0/mathacl: a division whose quotient does not fit 32 bits now reports `Error::Overflow` instead of returning a saturated result
 - feat: mspm0/mathacl: add `sin_per_unit` and `cos_per_unit`, so trigonometry can be reached without linking software floating point
-- breaking: mspm0/mathacl: `div_iq` returns an `IQType` rather than an `f32`, so a fixed-point caller stays in fixed point
-- breaking: mspm0/low-power: `Config::min_sleep` and `low_power::DEFAULT_MIN_SLEEP` exist only alongside a `time-driver-*` feature, and `low-power` no longer pulls in `embassy-time`
+- **breaking** mspm0/mathacl: `div_iq` returns an `IQType` rather than an `f32`, so a fixed-point caller stays in fixed point
+- **breaking** mspm0/low-power: `Config::min_sleep` and `low_power::DEFAULT_MIN_SLEEP` exist only alongside a `time-driver-*` feature, and `low-power` no longer pulls in `embassy-time`
 - fix: mspm0/timb: interrupt masking, status and clearing addressed the wrong bit for every counter and event but one, and panicked outright above counter 1
 - fix: mspm0/low-power: `shutdown` no longer runs into unreachable code when `WFI` returns instead of sleeping
 - fix: mspm0: `time-driver-any` no longer removes `TIMG14` from `Peripherals` on parts where the driver takes `TIMG1`
@@ -146,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/i2c: an asynchronous transfer with an empty buffer reported success without putting anything on the bus
 - fix: mspm0/i2c: a transfer is one burst fed through the FIFO rather than one FIFO load, so neither path is capped at the FIFO size any more
 - mspm0/sync: registering the same waker again no longer takes a critical section, so interrupts stay on through the common path of every asynchronous poll
-- breaking: mspm0/uart: `Baud::solve` takes the clock source, and with it reaches the rates that need 3x oversampling — 2.67x the top of the band on every source the erratum does not bar, and from LFCLK that is what puts 4800 and 9600 in range
+- **breaking** mspm0/uart: `Baud::solve` takes the clock source, and with it reaches the rates that need 3x oversampling — 2.67x the top of the band on every source the erratum does not bar, and from LFCLK that is what puts 4800 and 9600 in range
 - fix: mspm0/gpio: `wait_for_high` and `wait_for_low` no longer wait for a second edge when the level arrives while the wait is being armed
 - fix: mspm0/gpio: releasing a pin from a peripheral driver now clears the whole pin configuration, including the bit that connects the pad to the peripheral
 - fix: mspm0/uart: `Config::cts_pull` and `Config::invert_cts` are applied to the CTS pin, rather than the RTS pin's settings being used for both
@@ -161,8 +159,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/uart: fixing `Config`'s field order keeps a 192-byte memory-clear helper out of every binary that builds a UART
 - fix: mspm0/uart: a blocking write fills the transmit FIFO to the depth `Config::fifo` asks for, rather than handing over one byte at a time
 - mspm0/time-driver: a bookkeeping tick with no alarm to arm no longer rewrites the interrupt mask with the value it already held
-- breaking: mspm0/i2c-target: `I2cTarget` drops its mode parameter and its blocking constructor, which built a target with no way to receive a command
-- breaking: mspm0/i2c: `Config::check_config`, `Error::Crc` and `Error::Overrun` are gone, none of them reachable
+- **breaking** mspm0/i2c-target: `I2cTarget` drops its mode parameter and its blocking constructor, which built a target with no way to receive a command
+- **breaking** mspm0/i2c: `Config::check_config`, `Error::Crc` and `Error::Overrun` are gone, none of them reachable
 - mspm0/gpio: the port interrupt handler drops a panic path for a pin index the hardware cannot produce
 - mspm0/sync: the waiter list is ordered by the critical section that edits it, dropping three memory barriers from the wake path
 - mspm0: the doc examples for `Baud`, `ClockSel::frequency` and `clock::Config::build` were missing imports for types they name
