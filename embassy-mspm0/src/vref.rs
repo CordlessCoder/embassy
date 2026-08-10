@@ -93,6 +93,31 @@ impl Voltage {
 pub struct Config {
     /// Output voltage of the reference buffer.
     pub voltage: Voltage,
+
+    /// Clock the reference's regulation runs from.
+    ///
+    /// **The reference does nothing without one.** Left unselected it never regulates: `CTL1.READY`
+    /// stays clear for ever and every consumer reads a level that was never established.
+    ///
+    /// This decides what the reference survives, so it is the caller's to pick. [`ClockSel::BusClk`]
+    /// is the default and is what TI's own initialisation uses, but the bus clock stops in every
+    /// deep-sleep mode, so a reference that has to keep regulating across one wants
+    /// [`ClockSel::LfClk`].
+    pub clock: ClockSel,
+}
+
+/// The clock source for the reference.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ClockSel {
+    /// The bus clock. Stops in every deep-sleep mode.
+    BusClk,
+
+    /// MFCLK, 4 MHz. Off in STANDBY and below.
+    MfClk,
+
+    /// LFCLK, 32 kHz. Runs in every mode, so the reference keeps regulating across a deep sleep.
+    LfClk,
 }
 
 impl Default for Config {
@@ -100,6 +125,9 @@ impl Default for Config {
         Self {
             // The reset value, and the one an ADC measuring against a 3.3 V rail usually wants.
             voltage: Voltage::Volts2_5,
+            // What driverlib's own initialisation picks. A caller that needs the reference through a
+            // deep sleep has to say so.
+            clock: ClockSel::BusClk,
         }
     }
 }
@@ -133,6 +161,29 @@ impl<'d, T: Instance> Vref<'d, T> {
         r.gprcm().pwren().write(|w| {
             w.set_enable(true);
             w.set_key(PwrenKey::Key);
+        });
+
+        // Without a clock the reference never regulates: `CTL1.READY` stays clear for ever and
+        // nothing that selects the reference reads anything. Measured — selecting a source flips
+        // `READY` at once, on two parts. Driverlib's own init picks a source before enabling, which
+        // is what this mirrors.
+        //
+        // A source that is not running is the same failure with a different cause, so it is refused
+        // here rather than left to show up as a reference that reads nothing.
+        let running = crate::sysctl::with_clocks(|clocks| match config.clock {
+            ClockSel::BusClk => true,
+            ClockSel::MfClk => clocks.mfclk != 0,
+            ClockSel::LfClk => clocks.lfclk != 0,
+        });
+        assert!(running, "the clock source VREF was given is not running");
+
+        // Undivided. The reference regulates from this clock rather than timing anything with it, so
+        // there is nothing for a divider to buy, and driverlib leaves it at one too.
+        r.clkdiv().write(|w| w.set_ratio(0));
+        r.clksel().write(|w| match config.clock {
+            ClockSel::BusClk => w.set_busclk_sel(true),
+            ClockSel::MfClk => w.set_mfclk_sel(true),
+            ClockSel::LfClk => w.set_lfclk_sel(true),
         });
 
         // The voltage goes in before the buffer is enabled, so the reference ramps once to the level

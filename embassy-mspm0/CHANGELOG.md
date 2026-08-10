@@ -175,3 +175,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/opa: add a driver for the operational amplifier, with buffer and non-inverting PGA topologies read through its fixed internal ADC channel (#6517)
 - **breaking** mspm0/adc: hardware averaging, as `Config::averaging` for the rate and `Conversion::average` to pick which conversions use it
 - mspm0/opa: `Chopping::AdcAveraging`, the mode that needs no output filter, now that the ADC can average
+- **breaking** mspm0/vref: select a clock for the reference, which never regulated without one; `Config::clock` picks the source
