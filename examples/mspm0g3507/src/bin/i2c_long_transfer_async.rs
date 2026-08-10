@@ -13,9 +13,9 @@
 //! **It does not, and that is the result.** Measured at 100 kHz the two paths are within 0.03 ms over a
 //! 256-byte write, and the worst single byte is 84.36 us against a mean of 83.11. The refill latency
 //! fits inside the SCL-low phase of the byte already in flight, so it never becomes bus time. **The
-//! clock-stretching backpressure this design rests on is still not exercised by either path**; reaching
-//! it needs a much faster bus or a CPU under load, and until then it is a safety net that is known to be
-//! armed and not known to be tested.
+//! clock-stretching backpressure this design rests on is not exercised by either path at 100 kHz**.
+//! It has since been reached the other way, by loading the CPU so the refill cannot keep up — see
+//! `TESTING.md` C22, where the controller holds SCL low for 14.25 ms and loses nothing.
 //!
 //! # A: lengths
 //!
