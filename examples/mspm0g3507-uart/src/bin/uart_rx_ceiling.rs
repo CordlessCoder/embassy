@@ -225,6 +225,7 @@ async fn measure(rx: &mut BufferedUartRx<'_>, tick: &mut Output<'_>) -> ! {
     let mut lost = 0u32;
     let mut gaps = 0u32;
     let mut dropped = 0u32;
+    let mut faults = 0u32;
     let mut other = 0u32;
     let mut since = Instant::now();
 
@@ -265,17 +266,23 @@ async fn measure(rx: &mut BufferedUartRx<'_>, tick: &mut Output<'_>) -> ! {
             // path costs about 2.5% of the delivered rate at 1 Mbaud — the example measuring itself.
             dropped += rx.take_dropped() as u32;
 
+            // Same reasoning as above: a critical section apiece, so both are read once per line rather
+            // than on the read path. Noise, framing, parity and break — the faults that cost their own
+            // byte and nothing further, where `dropped` counts bytes lost to an overrun.
+            faults += rx.take_faults() as u32;
+
             let rate = (received as u64 * 1000 / elapsed.as_millis().max(1)) as u32;
             info!(
-                "{} B/s ({} nominal): {} received, {} lost in {} gaps, {} reported dropped, {} other{}",
+                "{} B/s ({} nominal): {} received, {} lost in {} gaps, {} reported dropped, {} line faults, {} other{}",
                 rate,
                 BAUD_RATE / 10,
                 received,
                 lost,
                 gaps,
                 dropped,
+                faults,
                 other,
-                if lost == 0 && dropped == 0 && other == 0 {
+                if lost == 0 && dropped == 0 && faults == 0 && other == 0 {
                     " -- clean"
                 } else {
                     ""
@@ -286,6 +293,7 @@ async fn measure(rx: &mut BufferedUartRx<'_>, tick: &mut Output<'_>) -> ! {
             lost = 0;
             gaps = 0;
             dropped = 0;
+            faults = 0;
             other = 0;
             since = Instant::now();
         }
