@@ -268,13 +268,12 @@ pub struct Config {
     /// If true: the `TX` is internally connected to `RX`.
     pub loop_back_enable: bool,
 
-    // TODO: Pending way to check if uart is extended
+    // Manchester coding is an extended-UART feature, and the metadata defines one `uart` block
+    // version for every instance, so nothing here can tell an extended instance from a main one.
     // /// If true: [manchester coding] is used.
     // ///
     // /// [manchester coding]: https://en.wikipedia.org/wiki/Manchester_code
     // pub manchester: bool,
-
-    // TODO: majority voting
     /// How full a FIFO must be before it raises an interrupt, or `None` to run without the FIFOs.
     ///
     /// One enable bit covers both directions, so this is one setting rather than two. Without the FIFOs
@@ -284,7 +283,6 @@ pub struct Config {
     /// [`Half`](FifoThreshold::Half) up to 921600.
     pub fifo: Option<FifoThreshold>,
 
-    // TODO: glitch suppression
     /// If true: invert TX pin signal values (V<sub>DD</sub> = 0/mark, Gnd = 1/idle).
     pub invert_tx: bool,
 
@@ -1120,7 +1118,7 @@ fn configure(
         w.set_ctsen(enable_cts);
         // oversampling is set later
         w.set_fen(config.fifo.is_some());
-        // TODO: config
+        // Majority voting and glitch suppression are both off and neither is configurable yet.
         w.set_majvote(false);
         w.set_msbfirst(matches!(config.msb_order, BitOrder::MsbFirst));
     });
@@ -1522,7 +1520,7 @@ fn busy(r: Regs) -> bool {
     }
 }
 
-// TODO: Implement when dma uart is implemented.
+// Always false: the driver never sets `DMAEN`, having no receive or transmit DMA path.
 fn dma_enabled(_r: Regs) -> bool {
     false
 }

@@ -700,7 +700,8 @@ macro_rules! impl_dma_channel {
         }
 
         impl crate::dma::ChannelInstance for crate::peripherals::$instance {
-            // TODO: For chips with multiple DMAs, pick correct instance
+            // One line for every channel: no supported chip has a second DMA, checked across all of
+            // them. A part that grows one needs the instance picked per channel here.
             type Interrupt = crate::interrupt::typelevel::DMA;
         }
     };

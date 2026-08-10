@@ -539,10 +539,11 @@ pub struct ClkOut<'d> {
 impl<'d> ClkOut<'d> {
     /// Create a new CLK_OUT instance.
     pub fn new(_peri: Peri<'d, CLK_OUT>, pin: Peri<'d, impl ClkOutPin>, source: ClkOutSource) -> Self {
-        // FIXME: Config (pull, invert, etc?)
+        // The pin only ever drives the clock out, so there is nothing to configure on it: a pull
+        // would fight the output driver and inversion would invert the clock.
         let pf = PfType::output(Pull::None, false);
-        // FIXME: Infallible operation
-        let pin = unwrap!(new_pin!(pin, pf));
+        pin.set_as_pf(pin.pf_num(), pf);
+        let pin: Peri<'d, AnyPin> = pin.into();
 
         let (en_div, div) = source.convert_div();
         let src = source.convert_src();

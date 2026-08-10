@@ -124,8 +124,16 @@ const _: () = {
     core::assert!(3u64 << (32 - 2) == 0xC000_0000);
 };
 
-/// TODO: Configurable tick rate
-/// TODO: Compensate for per part variance. This can supposedly be done with the FCC system.
+/// `embassy-time`'s clock, kept by a timer counting half its range at a time.
+///
+/// The counter is narrower than the timestamps callers get, so `period` supplies the high bits and
+/// its parity says which half the counter is in. Everything that reads the two together does so
+/// under a critical section, since a wrap between the two reads would place the timestamp a whole
+/// half-range out.
+///
+/// The tick rate is fixed at build time by the `time-driver-*` features, and nothing corrects for
+/// the oscillator's per-part error, so a long interval drifts by whatever the source is specified
+/// at.
 struct TimxDriver {
     /// Number of half-counter-range periods elapsed since boot.
     period: AtomicU32,

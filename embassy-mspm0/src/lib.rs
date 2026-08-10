@@ -17,7 +17,7 @@ pub mod dma;
 #[cfg(feature = "_executor")]
 pub mod executor;
 pub mod gpio;
-// TODO: I2C unicomm
+// A UNICOMM chip reaches I2C through that block instead, and its mode driver is not written yet.
 #[cfg(not(unicomm))]
 pub mod i2c;
 #[cfg(not(unicomm))]
@@ -39,7 +39,7 @@ pub mod timb;
 pub mod trng;
 #[cfg(unicomm)]
 pub mod unicomm;
-// TODO: UART unicomm
+// A UNICOMM chip reaches UART through that block instead, and its mode driver is not written yet.
 #[cfg(not(unicomm))]
 pub mod uart;
 #[cfg(vref)]

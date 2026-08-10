@@ -414,8 +414,9 @@ impl Config {
 
         // Pick the source from the bus speed: at or below 200 kHz MFCLK suffices, above it the bus
         // clock is needed.
+        // Nothing to check on the bus clock the way MFCLK is checked below: it is derived from the
+        // clock the core itself runs on, so a device executing this has it.
         let clock_source = if bus_speed / divider > 200_000 {
-            // TODO: check if BUSCLK enabled
             ClockSel::BusClk
         } else {
             if !pac::SYSCTL.mclkcfg().read().usemftick() {

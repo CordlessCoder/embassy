@@ -68,7 +68,8 @@ impl ClkOutSource {
             ClkOutSource::Sysosc(_) => vals::Exclksrc::Sysosc,
             ClkOutSource::UlpClk(_) => vals::Exclksrc::Ulpclk,
             ClkOutSource::LfClk(_) => vals::Exclksrc::Lfclk,
-            // FIXME: the C-series SVDs name position 3 MFCLK. It is MFPCLK on every block.
+            // The C-series SVDs name position 3 `MFCLK`; it is MFPCLK on every block, so the cfg
+            // picks the spelling rather than the meaning.
             #[cfg(mspm0_exclksrc_mfclk_name)]
             ClkOutSource::MfpClk(_) => vals::Exclksrc::Mfclk,
             #[cfg(not(mspm0_exclksrc_mfclk_name))]
@@ -77,7 +78,8 @@ impl ClkOutSource {
             ClkOutSource::Hfclk(_) => vals::Exclksrc::Hfclk,
             #[cfg(mspm0_clkout_syspllclk1)]
             ClkOutSource::SysPllClk1(_) => vals::Exclksrc::Syspllout1,
-            // FIXME: Update SVD to define _RESERVED_6 as USBFLL
+            // Position 6 is the USB FLL, which the SVDs leave reserved, so it is named as reserved
+            // here rather than by what it selects.
             #[cfg(usbfs)]
             ClkOutSource::UsbFll(_) => vals::Exclksrc::_RESERVED_6,
         }

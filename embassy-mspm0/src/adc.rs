@@ -635,7 +635,6 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
                 // TODO: Conversion function to not be repr dependent
                 w.set_vrsel(vals::Vrsel::from_bits(conversion.vrsel as u8));
                 w.set_stime(convert_stime(conversion.stime));
-                // TODO: More parameters
                 w.set_avgen(conversion.average);
                 w.set_bcsen(false);
                 w.set_trig(vals::Trig::AutoNext);
