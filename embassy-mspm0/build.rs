@@ -78,6 +78,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_gpio_port_interrupts());
     g.extend(generate_dma_channel_count());
     g.extend(generate_adc_constants(cfgs));
+    g.extend(generate_opa_adc_channels());
     g.extend(generate_trng_constants());
     g.extend(generate_vref_constants());
     g.extend(generate_clock_ceilings());
@@ -95,7 +96,7 @@ fn generate_code(cfgs: &mut CfgSet) {
 /// A family list goes stale — `trng` was gated on six families while the metadata reported seven.
 /// Add a kind here when a module starts gating on it; an undeclared cfg warns, so an omission shows
 /// up at once.
-const PERIPHERAL_KIND_CFGS: &[&str] = &["mathacl", "trng", "usbfs", "vref"];
+const PERIPHERAL_KIND_CFGS: &[&str] = &["comp", "dac", "mathacl", "opa", "trng", "usbfs", "vref"];
 
 /// Enable a cfg for each kind in [`PERIPHERAL_KIND_CFGS`] this chip actually has.
 fn peripheral_kind_cfgs(cfgs: &mut CfgSet) {
@@ -1411,6 +1412,7 @@ fn generate_peripheral_instances() -> TokenStream {
             "wwdt" => Some(quote! { impl_wwdt_instance!(#peri); }),
             "adc" => Some(quote! { impl_adc_instance!(#peri); }),
             "mathacl" => Some(quote! { impl_mathacl_instance!(#peri); }),
+            "opa" => Some(quote! { impl_opa_instance!(#peri); }),
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
             _ => None,
         };
@@ -1437,6 +1439,40 @@ fn generate_peripheral_instances() -> TokenStream {
     }
 }
 
+/// The fixed ADC channel each OPA output is internally routed to.
+///
+/// A family table because the metadata cannot answer: the datasheets publish the routing in their
+/// "ADC Channel Mapping" tables, but mspm0-data does not carry it. Checked against all four
+/// datasheets, 2026-08-10. A future OPA-bearing family panics here rather than silently losing its
+/// ADC channel impls; extend the table from that family's datasheet.
+fn generate_opa_adc_channels() -> TokenStream {
+    let mapping: &[(&str, &str, u8)] = match METADATA.family {
+        "mspm0g150x" | "mspm0g350x" => &[("OPA0", "ADC0", 13), ("OPA1", "ADC1", 13)],
+        "mspm0l130x" | "mspm0l134x" => &[("OPA0", "ADC0", 12), ("OPA1", "ADC0", 13)],
+        family => {
+            if METADATA.peripherals.iter().any(|p| p.kind == "opa") {
+                panic!("{family} has an OPA but no OPA-to-ADC channel mapping here");
+            }
+            &[]
+        }
+    };
+
+    let impls = mapping.iter().filter_map(|(opa, adc, channel)| {
+        let exists = |name| METADATA.peripherals.iter().any(|p| p.name == name);
+        if !exists(*opa) || !exists(*adc) {
+            return None;
+        }
+
+        let opa = format_ident!("{}", opa);
+        let adc = format_ident!("{}", adc);
+        Some(quote! { impl_opa_adc_channel!(#opa, #adc, #channel); })
+    });
+
+    quote! {
+        #(#impls)*
+    }
+}
+
 fn generate_pin_trait_impls() -> TokenStream {
     let mut impls = Vec::<TokenStream>::new();
 
@@ -1455,6 +1491,12 @@ fn generate_pin_trait_impls() -> TokenStream {
                 }
                 ("i2c", "SDA") => Some(quote! { impl_i2c_sda_pin!(#peri, #pin_name, #pf); }),
                 ("i2c", "SCL") => Some(quote! { impl_i2c_scl_pin!(#peri, #pin_name, #pf); }),
+                // The channel is the CFG.PSEL value selecting the pin (TRM "General OPAx Input
+                // Channels"). IN2+ is the DAC_OUT pad, reached through the DAC12 position.
+                ("opa", "IN0+") => Some(quote! { impl_opa_non_inverting_pin!(#peri, #pin_name, 1u8); }),
+                ("opa", "IN1+") => Some(quote! { impl_opa_non_inverting_pin!(#peri, #pin_name, 2u8); }),
+                ("opa", "IN2+") => Some(quote! { impl_opa_non_inverting_pin!(#peri, #pin_name, 3u8); }),
+                ("opa", "OUT") => Some(quote! { impl_opa_output_pin!(#peri, #pin_name); }),
                 ("sysctl", "CLK_OUT") => Some(quote! { impl_clk_out_pin!(#pin_name, #pf); }),
                 ("tim", "CCP0") => Some(quote! { impl_tim_pin!(#peri, #pin_name, #pf, Ch0); }),
                 ("tim", "CCP1") => Some(quote! { impl_tim_pin!(#peri, #pin_name, #pf, Ch1); }),
