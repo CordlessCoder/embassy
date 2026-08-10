@@ -138,6 +138,12 @@ impl<'d> BufferedUart<'d> {
         self.rx.take_dropped()
     }
 
+    /// Line faults the receiver has seen since this was last called. See
+    /// [`BufferedUartRx::take_faults`].
+    pub fn take_faults(&self) -> u16 {
+        self.rx.take_faults()
+    }
+
     /// Send break character.
     pub fn send_break(&mut self) {
         self.tx.send_break()
@@ -634,6 +640,12 @@ pub(crate) struct BufferedState {
     /// `rx_error` is a set of flags, so on its own it cannot say whether one byte was lost or a hundred
     /// thousand — which is exactly how a sustained overrun once read as a handful of them.
     rx_dropped: AtomicU16,
+    /// Line faults the receiver has seen since the last report, saturating.
+    ///
+    /// Noise, framing, parity and break, counted together. Overruns are `rx_dropped`, which says how
+    /// many bytes went with them; these four cost the byte they arrived on and nothing more, so a count
+    /// is the whole story.
+    rx_faults: AtomicU16,
 }
 
 // these must match bits 8..12 in RXDATA, but shifted by 8 to the right
@@ -653,6 +665,7 @@ impl BufferedState {
             tx_buf: RingBuffer::new(),
             rx_error: AtomicU8::new(0),
             rx_dropped: AtomicU16::new(0),
+            rx_faults: AtomicU16::new(0),
         }
     }
 }
@@ -725,6 +738,7 @@ impl<'d> BufferedUart<'d> {
             // Unmasked here rather than only after the first read: with a receive level above one entry,
             // a first message shorter than that level is delivered by the timeout alone.
             w.set_rtout(true);
+            arm_errors(w);
         });
 
         info.interrupt.unpend();
@@ -768,6 +782,7 @@ impl<'d> BufferedUartRx<'d> {
         info.regs.cpu_int(0).imask().modify(|w| {
             w.set_rxint(true);
             w.set_rtout(true);
+            arm_errors(w);
         });
 
         info.interrupt.unpend();
@@ -887,6 +902,20 @@ impl<'d> BufferedUartRx<'d> {
             self.state.rx_dropped.store(0, Ordering::Relaxed);
 
             dropped
+        })
+    }
+
+    /// Line faults the receiver has seen since this was last called, clearing the count.
+    ///
+    /// Noise, framing, parity and break together — the faults that cost the byte they arrived on and
+    /// nothing further. Bytes lost to an overrun are [`Self::take_dropped`], which counts bytes rather
+    /// than events. Saturates rather than wrapping, so a large value means "at least this many".
+    pub fn take_faults(&self) -> u16 {
+        critical_section::with(|_cs| {
+            let faults = self.state.rx_faults.load(Ordering::Relaxed);
+            self.state.rx_faults.store(0, Ordering::Relaxed);
+
+            faults
         })
     }
 
@@ -1068,7 +1097,7 @@ impl<'d> BufferedUartTx<'d> {
 }
 
 fn init_buffers<'d>(
-    info: &Info,
+    _info: &Info,
     state: &BufferedState,
     tx_buffer: Option<&'d mut [u8]>,
     rx_buffer: Option<&'d mut [u8]>,
@@ -1082,14 +1111,6 @@ fn init_buffers<'d>(
         let len = rx_buffer.len();
         unsafe { state.rx_buf.init(rx_buffer.as_mut_ptr(), len) };
     }
-
-    info.regs.cpu_int(0).imask().modify(|w| {
-        w.set_nerr(true);
-        w.set_frmerr(true);
-        w.set_parerr(true);
-        w.set_brkerr(true);
-        w.set_ovrerr(true);
-    });
 }
 
 fn on_interrupt(r: Regs, state: &'static BufferedState) {
@@ -1269,11 +1290,23 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
     // Errors. Gated on the lot of them together: five separate bit tests run on every entry that has no
     // error to report, which is every entry on a healthy line.
     if mis.0 & ERROR_INTERRUPTS != 0 {
-        report_errors(mis);
+        count_errors(state, mis);
     }
 
     #[cfg(feature = "_probe")]
     crate::probe::clear(handler_marker);
+}
+
+/// Unmask the error interrupts.
+///
+/// Called where the receive interrupts are armed rather than where the buffers are set up: the
+/// peripheral is reset between the two, and an unmask before it does not survive.
+fn arm_errors(w: &mut pac::uart::regs::CpuInt) {
+    w.set_nerr(true);
+    w.set_frmerr(true);
+    w.set_parerr(true);
+    w.set_brkerr(true);
+    w.set_ovrerr(true);
 }
 
 /// The error bits of `CPU_INT`, built from the setters so it cannot drift from the register.
@@ -1287,21 +1320,20 @@ const ERROR_INTERRUPTS: u32 = {
     w.0
 };
 
+/// Add this entry's line faults to the running count.
+///
+/// Counted rather than logged. These arrive at the line's fault rate, which on a noisy link at a high
+/// baud rate has been measured in the tens of thousands per second — enough that logging one apiece
+/// costs more throughput than the faults themselves, which is how a sustained overrun once hid.
+///
+/// The overrun bit is deliberately not counted here: `rx_dropped` already carries it, in bytes rather
+/// than in events.
 #[cold]
-fn report_errors(mis: pac::uart::regs::CpuInt) {
-    if mis.nerr() {
-        warn!("Noise error");
-    }
-    if mis.frmerr() {
-        warn!("Framing error");
-    }
-    if mis.parerr() {
-        warn!("Parity error");
-    }
-    if mis.brkerr() {
-        warn!("Break error");
-    }
-    if mis.ovrerr() {
-        warn!("Overrun error");
+fn count_errors(state: &BufferedState, mis: pac::uart::regs::CpuInt) {
+    let faults = u16::from(mis.nerr()) + u16::from(mis.frmerr()) + u16::from(mis.parerr()) + u16::from(mis.brkerr());
+
+    if faults != 0 {
+        let seen = state.rx_faults.load(Ordering::Relaxed);
+        state.rx_faults.store(seen.saturating_add(faults), Ordering::Relaxed);
     }
 }
