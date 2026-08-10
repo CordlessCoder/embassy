@@ -70,7 +70,7 @@ async fn main(_spawner: Spawner) -> ! {
         for chunk in 0..BURST / depth {
             let at = chunk * depth;
 
-            if let Err(e) = uart.blocking_write(&sent[at..at + depth]) {
+            if let Err(e) = uart.begin_blocking_write().write(&sent[at..at + depth]) {
                 fail += 1;
                 error!("{}: write: {}", Debug2Format(&fifo), e);
                 ok = false;

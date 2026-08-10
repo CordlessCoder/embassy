@@ -25,10 +25,11 @@
 //! Retention is confirmed two ways: the register comparison below, and a logic analyser on `PB2`
 //! showing the post-wake bytes going out correctly at 9600.
 //!
-//! The `blocking_flush` after the reply is load-bearing. `blocking_write` returns once the last byte is
-//! queued, so without it the loop reaches the next await and deep sleep cuts the frame mid-byte. That
-//! looks like the TX line glitching during sleep and is easy to mistake for the power domain dropping
-//! the pin, which is what `uart3_sleep_glitch` was written to rule out.
+//! Waiting for the shift register after the reply is load-bearing, and the guard
+//! `begin_blocking_write` hands out is what does it. Without that wait the loop reaches the next await
+//! and deep sleep cuts the frame mid-byte, which looks like the TX line glitching during sleep and is
+//! easy to mistake for the power domain dropping the pin — what `uart3_sleep_glitch` was written to
+//! rule out.
 
 #![no_std]
 #![no_main]
@@ -107,8 +108,7 @@ async fn main(_spawner: Spawner) -> ! {
     let mut led = Output::new(p.PA0, Level::High);
     led.set_inversion(true);
 
-    unwrap!(answer.blocking_write(b"boot\n"));
-    unwrap!(answer.blocking_flush());
+    unwrap!(answer.begin_blocking_write().write(b"boot\n"));
     info!("armed, going to sleep between bytes");
 
     let expected = uart3_registers();
@@ -130,12 +130,12 @@ async fn main(_spawner: Spawner) -> ! {
         }
 
         // Only observable with the return line connected; the register check above stands without it.
-        unwrap!(answer.blocking_write(b"woke"));
-        unwrap!(answer.blocking_write(&buf));
-        unwrap!(answer.blocking_write(b"\n"));
-        // `blocking_write` returns once the last byte is queued, so without this the loop sleeps again
-        // while the shift register is still going and the reply is truncated mid-byte.
-        unwrap!(answer.blocking_flush());
+        // One guard across all three, so the wait for the shift register is paid once at the end of the
+        // reply rather than after every piece of it.
+        let mut reply = answer.begin_blocking_write();
+        unwrap!(reply.write(b"woke"));
+        unwrap!(reply.write(&buf));
+        unwrap!(reply.write(b"\n"));
     }
 }
 

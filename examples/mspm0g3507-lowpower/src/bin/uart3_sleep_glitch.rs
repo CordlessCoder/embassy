@@ -100,10 +100,9 @@ async fn main(_spawner: Spawner) -> ! {
         for (case, (guard, name)) in CASES.iter().enumerate() {
             for duration in DURATIONS_MS {
                 info!("{}: {} ms, {} marker bytes", name, duration, case + 1);
-                unwrap!(uart.blocking_write(&MARKER[..case + 1]));
-                // `blocking_write` only queues; sleeping before the shift register drains cuts the
-                // marker mid-byte and is itself a source of edges on the line.
-                unwrap!(uart.blocking_flush());
+                // The guard waits for the shift register when it drops, which matters here: sleeping
+                // part-way through cuts the marker mid-byte and is itself a source of edges.
+                unwrap!(uart.begin_blocking_write().write(&MARKER[..case + 1]));
 
                 let _guard = guard.map(WakeGuard::new);
 

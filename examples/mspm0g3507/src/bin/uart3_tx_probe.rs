@@ -32,7 +32,7 @@ async fn main(_spawner: Spawner) -> ! {
     info!("transmitting on UART3/PB2 at 9600");
 
     loop {
-        unwrap!(uart.blocking_write(b"boot\n"));
+        unwrap!(uart.begin_blocking_write().write(b"boot\n"));
         Timer::after_millis(500).await;
     }
 }

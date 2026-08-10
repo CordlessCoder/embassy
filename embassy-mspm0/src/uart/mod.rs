@@ -4,10 +4,14 @@
 //!
 //! Every write here returns once the bytes are queued, not once they are on the wire. Deep sleep
 //! entered before the transmitter drains cuts the frame mid-byte, and on a PD1 instance the TX pin
-//! then sits low until the next wake. Flush before awaiting anything that can sleep.
+//! then sits low until the next wake.
 //!
 //! Nothing reports this: the bytes were accepted, and the receiver on the other end sees a framing
 //! error rather than a byte the sender can act on.
+//!
+//! [`UartTx::begin_blocking_write`] closes it: the [`TxWrite`] it hands out waits when dropped, so a
+//! caller who does nothing gets the safe behaviour. The asynchronous and buffered writes do not, and
+//! still want a flush before anything that can sleep.
 #![macro_use]
 
 mod buffered;
@@ -24,7 +28,7 @@ use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Blocking, Mode};
 use crate::pac::uart::{Uart as Regs, vals};
-use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepInfo};
+use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepInfo, SleepLevel};
 
 /// Bit times of silence after which the receiver reports a FIFO that has not reached its level.
 ///
@@ -560,35 +564,65 @@ impl<'d> UartTx<'d, Blocking> {
 }
 
 impl<'d, M: Mode> UartTx<'d, M> {
-    /// Perform a blocking UART write
+    /// Open a transmission, returning the [`TxWrite`] that queues the bytes and sees them onto the wire.
     ///
-    /// Returns once the last byte is queued, not once it has been transmitted. Call
-    /// [`Self::blocking_flush`] before anything that can deep sleep.
-    pub fn blocking_write(&mut self, buffer: &[u8]) -> Result<(), Error> {
-        let r = self.info.regs;
-
-        for &b in buffer {
-            // Wait only while there is nowhere to put the byte. Waiting for the FIFO to *empty* instead
-            // spends the depth it was configured with: one byte would be in flight at a time whatever
-            // `Config::fifo` asked for, and the call would return that much later with the rest still to
-            // send. Both bits track `CTL0.FEN`, so this reads correctly with the FIFOs off too.
-            while r.stat().read().txff() {}
-
-            // Prevent the compiler from writing to buffer too early
-            compiler_fence(Ordering::Release);
-            r.txdata().write(|w| {
-                w.set_data(b);
-            });
+    /// A write only queues: the last bytes are still in the FIFO when it returns, and on most families
+    /// still in the shift register after that. Deep sleep entered in between cuts the transmission
+    /// mid-byte with nothing reporting it, so the guard holds the chip shallow until it drains, and
+    /// **dropping it waits**.
+    ///
+    /// One write is a single expression, and the wait happens at the semicolon:
+    ///
+    /// ```ignore
+    /// tx.begin_blocking_write().write(b"hello\n")?;
+    /// ```
+    ///
+    /// A run of them keeps the guard, so the wait is paid once at the end rather than after each:
+    ///
+    /// ```ignore
+    /// let mut w = tx.begin_blocking_write();
+    /// w.write(header)?;
+    /// for chunk in body {
+    ///     w.write(chunk)?;
+    /// }
+    /// ```
+    ///
+    /// [`TxWrite::disarm`] gives up the guard without waiting.
+    pub fn begin_blocking_write(&mut self) -> TxWrite<'_, 'd, M> {
+        // Taken before any byte goes out, so the level is held for the whole time any of them is in
+        // flight rather than from whenever the last one was queued.
+        TxWrite {
+            regs: self.info.regs,
+            guard: MaybeWakeGuard::new(self.wake_floor()),
+            tx: PhantomData,
         }
+    }
 
-        Ok(())
+    /// Shallowest level to block while a transmission is in flight.
+    ///
+    /// Asked only when there is a sleep to prevent. Reading the clock is what keeps `configure`'s store
+    /// to it live, and with it the whole clock-tree lookup and its 40-byte static — measured at 168
+    /// bytes in a binary that cannot sleep at all.
+    #[cfg(feature = "low-power")]
+    fn wake_floor(&self) -> Option<SleepLevel> {
+        self.info
+            .sleep
+            .floor_for_operation(self.state.clock.load(Ordering::Relaxed))
+    }
+
+    #[cfg(not(feature = "low-power"))]
+    #[inline(always)]
+    fn wake_floor(&self) -> Option<SleepLevel> {
+        None
     }
 
     /// Block until transmission completes.
     ///
-    /// [`Self::blocking_write`] returns as soon as the last byte is queued, so deep sleep entered before
-    /// this returns cuts the transmission mid-byte. On the families affected by `UART_ERR_08` this can
-    /// only wait for the FIFO to drain, leaving the byte in the shift register still going.
+    /// [`TxWrite`] does this when it is dropped, so this is for the case where the transmitter was fed
+    /// some other way.
+    ///
+    /// On the families affected by `UART_ERR_08` this can only wait for the FIFO to drain, leaving the
+    /// byte in the shift register still going.
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
         while busy(self.info.regs) {}
         Ok(())
@@ -634,6 +668,78 @@ impl<'d, M: Mode> Drop for UartTx<'d, M> {
     }
 }
 
+/// An open transmission: bytes written through it may not have reached the wire yet.
+///
+/// Holds the chip shallow enough that the transmitter keeps running, and **waits for it to drain when
+/// dropped** — so the hazard is closed by doing nothing. Write through it to queue more under the same
+/// guard, [`Self::flush`] to wait now and see any error, or [`Self::disarm`] to abandon the bytes to
+/// whatever the device does next.
+///
+/// Not `#[must_use]`: dropping this immediately is the correct thing, not a mistake.
+pub struct TxWrite<'a, 'd, M: Mode> {
+    regs: Regs,
+    guard: MaybeWakeGuard,
+    /// Borrows the driver without holding a reference to it.
+    ///
+    /// A `&'a mut UartTx` here would give this type's drop glue a route to the whole driver, and the
+    /// compiler then cannot prove that nothing reads back the clock `configure` stores — which keeps
+    /// the clock-tree lookup and its 40-byte static alive in binaries that never ask. Measured at 164
+    /// bytes on a plain transmit binary. Only the registers are needed to finish a write.
+    tx: PhantomData<&'a mut UartTx<'d, M>>,
+}
+
+impl<'a, 'd, M: Mode> TxWrite<'a, 'd, M> {
+    /// Queue more bytes, keeping the one guard.
+    ///
+    /// This is what makes a loop of writes cost one wait rather than one per iteration.
+    pub fn write(&mut self, buffer: &[u8]) -> Result<(), Error> {
+        let r = self.regs;
+
+        for &b in buffer {
+            // Wait only while there is nowhere to put the byte. Waiting for the FIFO to *empty* instead
+            // spends the depth it was configured with: one byte would be in flight at a time whatever
+            // `Config::fifo` asked for, and the call would return that much later with the rest still to
+            // send. Both bits track `CTL0.FEN`, so this reads correctly with the FIFOs off too.
+            while r.stat().read().txff() {}
+
+            // Prevent the compiler from writing to buffer too early
+            compiler_fence(Ordering::Release);
+            r.txdata().write(|w| {
+                w.set_data(b);
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Wait for the transmitter to drain, then release the guard.
+    ///
+    /// The same wait dropping this performs, with the error visible.
+    pub fn flush(self) -> Result<(), Error> {
+        // Skips the drop below, which would otherwise wait a second time. Releasing the guard by hand
+        // is the whole of what that drop would have left to do.
+        let mut this = core::mem::ManuallyDrop::new(self);
+        while busy(this.regs) {}
+        this.guard.release();
+        Ok(())
+    }
+
+    /// Release the guard without waiting, leaving the queued bytes to take their chances.
+    ///
+    /// Deep sleep entered after this truncates whatever has not reached the wire, which is what a
+    /// blocking write did before it handed out a guard.
+    pub fn disarm(self) {
+        let mut this = core::mem::ManuallyDrop::new(self);
+        this.guard.release();
+    }
+}
+
+impl<'a, 'd, M: Mode> Drop for TxWrite<'a, 'd, M> {
+    fn drop(&mut self) {
+        while busy(self.regs) {}
+    }
+}
+
 impl<'d> Uart<'d, Blocking> {
     /// Create a new blocking bidirectional UART.
     pub fn new_blocking<T: Instance>(
@@ -673,12 +779,9 @@ impl<'d> Uart<'d, Blocking> {
 }
 
 impl<'d, M: Mode> Uart<'d, M> {
-    /// Perform a blocking write
-    ///
-    /// Returns once the last byte is queued, not once it has been transmitted. Call
-    /// [`Self::blocking_flush`] before anything that can deep sleep.
-    pub fn blocking_write(&mut self, buffer: &[u8]) -> Result<(), Error> {
-        self.tx.blocking_write(buffer)
+    /// Open a transmission. See [`UartTx::begin_blocking_write`], which this defers to.
+    pub fn begin_blocking_write(&mut self) -> TxWrite<'_, 'd, M> {
+        self.tx.begin_blocking_write()
     }
 
     /// Block until transmission complete

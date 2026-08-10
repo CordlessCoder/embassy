@@ -51,7 +51,7 @@ async fn main(_spawner: Spawner) {
         // This is because we aren't sending+receiving at the same time.
 
         let data = [0xC0, 0xDE];
-        unwrap!(uart.blocking_write(&data));
+        unwrap!(uart.begin_blocking_write().write(&data));
         assert_eq!(unwrap!(read(&mut uart)), data);
     }
 
@@ -78,7 +78,7 @@ async fn main(_spawner: Spawner) {
         // This is because we aren't sending+receiving at the same time.
 
         let data = [0xC0, 0xDE];
-        unwrap!(uart.blocking_write(&data));
+        unwrap!(uart.begin_blocking_write().write(&data));
         assert_eq!(unwrap!(read(&mut uart)), data);
     }
 
