@@ -21,16 +21,13 @@
 //!
 //! # The reference generator
 //!
-//! [`Reference`] turns the generator on and picks what feeds the DAC. `CTL2.REFSRC` has seven
-//! defined values, of which this driver exposes the four that exist on every comparator:
-//! [`ReferenceSource::Vdda`] and [`ReferenceSource::VrefModule`] run the DAC, and
-//! [`ReferenceSource::VrefModuleDirect`] bypasses it. The upper three — which include a dedicated
-//! internal reference that needs no VREF module — exist on some families and select nothing on the
-//! rest, so they are left out until the metadata can say which.
+//! [`Reference`] turns the generator on and picks what feeds the DAC. Only the sources every
+//! comparator has: the three that reach a dedicated internal reference exist on some families and
+//! select nothing on the rest.
 //!
 //! **`VrefModule` is an internal route, not the `VREF+` pin.** SLAU847 figure 16-5 labels it "From
 //! VREF Module", so it reaches the comparator on devices that never buffer their reference out to a
-//! pin. A live [`Vref`](crate::vref::Vref) is what it needs, not an external voltage.
+//! pin. A live `vref::Vref` is what it needs, not an external voltage.
 //!
 //! The DAC's output is `reference x (code + 1) / 256`, so [`DacCode::ZERO`] is one LSB above ground
 //! rather than at it. TI's own `opa_dac8_output_buffer` example computes `code = mV * 255 / ref`,
@@ -59,7 +56,6 @@ use embassy_hal_internal::{Peri, PeripheralType};
 use mspm0_metapac::comp::{Comp as Regs, vals};
 
 use crate::gpio::{AnyPin, SealedPin};
-use crate::interrupt_group::Binding;
 use crate::mode::{Async, Blocking, Mode as DriverMode};
 use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{LowPowerInstance, MaybeWakeGuard, SleepLevel};
@@ -147,8 +143,14 @@ pub enum OutputPolarity {
 
 /// What feeds the reference generator.
 ///
-/// Only the sources every comparator has. The three that exist on some families and select nothing
-/// on the rest are deliberately absent — see the module docs.
+/// A bare name runs the DAC and takes its output as the reference; a `Direct` name bypasses the DAC
+/// and uses the source itself.
+///
+/// **The three internal-reference sources do not exist everywhere.** Where a device lacks them they
+/// select no reference at all rather than failing, so [`Comp::new`] rejects them with
+/// [`ConfigError::NoInternalReference`] on those parts. The device metadata is what decides;
+/// the register-block version cannot, one of the two blocks spanning families that answer
+/// differently.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ReferenceSource {
@@ -162,7 +164,7 @@ pub enum ReferenceSource {
     ///
     /// Reaches the comparator internally, so it does not depend on the reference being buffered out
     /// to the `VREF+` pin — which most families do not do. Needs a live
-    /// [`Vref`](crate::vref::Vref).
+    /// `vref::Vref`.
     VrefModule,
 
     /// The VREF module is the reference directly, with the DAC switched off.
@@ -320,6 +322,7 @@ pub enum ConfigError {
 
     /// Hysteresis was combined with [`Config::exchange_inputs`], which `COMP_ERR_03` makes unstable.
     HysteresisWithExchangedInputs,
+
 }
 
 /// Interrupt handler.
@@ -327,13 +330,14 @@ pub struct InterruptHandler<T: Instance> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Instance> crate::interrupt_group::Handler<T::GroupSource> for InterruptHandler<T> {
-    unsafe fn on_interrupt() {
-        let r = T::regs();
-
-        // Mask rather than clear: the flag is what tells the waiting future the edge happened, and
-        // the handler has no way to hand a value over.
-        r.cpu_int(0).imask().write(|_| {});
+impl<T: Instance> InterruptHandler<T> {
+    /// Mask rather than clear: the flag is what tells the waiting future the edge happened, and the
+    /// handler has no way to hand a value over.
+    ///
+    /// Public only so the generated instance impls can reach it; there is no reason to call it.
+    #[doc(hidden)]
+    pub fn handle() {
+        T::regs().cpu_int(0).imask().write(|_| {});
         T::state().waker.wake();
     }
 }
@@ -348,6 +352,19 @@ impl State {
         Self { waker: IrqWaker::new() }
     }
 }
+
+/// Proof that this instance's interrupt is bound to its [`InterruptHandler`].
+///
+/// Which binding satisfies it is fixed per chip: the comparator is a source on an interrupt group on
+/// most, wanting [`bind_group_interrupts!`](crate::bind_group_interrupts), and the owner of an NVIC
+/// line on the rest, wanting [`bind_interrupts!`](crate::bind_interrupts). A binding written for the
+/// wrong one names a type that does not exist rather than silently linking nothing.
+///
+/// # Safety
+///
+/// Implementing this without installing the handler lets a wait park on an interrupt that reaches
+/// nothing. Use the macros.
+pub unsafe trait CompInterrupt<T: Instance> {}
 
 /// Which of the two `DACCODE` registers this driver programs.
 ///
@@ -401,7 +418,7 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
     ///
     /// What this is for is the DAC, which reaches the amplifier's input mux as well as the
     /// comparator's terminals. Pair it with
-    /// [`NonInvertingInput::dac8`](crate::opa::NonInvertingInput::dac8).
+    /// `opa::NonInvertingInput::dac8`.
     ///
     /// The comparator needs its enable time — 10 us on the parts that publish it — before the DAC's
     /// output is at the code, and [`Comp::set_dac_code`] costs a further `tdac_settle` after that.
@@ -425,7 +442,7 @@ impl<'d, T: Instance> Comp<'d, T, Async> {
         _peri: Peri<'d, T>,
         positive: Option<Peri<'d, impl PositivePin<T>>>,
         negative: Option<Peri<'d, impl NegativePin<T>>>,
-        _irq: impl Binding<T::GroupSource, InterruptHandler<T>> + 'd,
+        _irq: impl CompInterrupt<T> + 'd,
         config: Config,
     ) -> Result<Self, ConfigError> {
         Self::build(erase_positive(positive), erase_negative(negative), config)
@@ -664,10 +681,7 @@ impl<T: Instance, M: DriverMode> Drop for Comp<'_, T, M> {
 }
 
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + PeripheralType + LowPowerInstance {
-    /// The interrupt-group source this instance dispatches through.
-    type GroupSource: crate::interrupt_group::Source;
-}
+pub trait Instance: SealedInstance + PeripheralType + LowPowerInstance {}
 
 pub(crate) trait SealedInstance {
     /// Whether `COMP_ERR_03` applies: hysteresis is unstable with the inputs exchanged.
@@ -675,6 +689,7 @@ pub(crate) trait SealedInstance {
 
     /// Whether `COMP_ERR_01` applies: the output toggles in STANDBY0 with `IMSEL` at 0.
     const TOGGLES_IN_STANDBY0_ON_CHANNEL_0: bool;
+
 
     fn regs() -> Regs;
     fn state() -> &'static State;
@@ -724,7 +739,9 @@ pub trait NegativePin<T: Instance>: SealedNegativePin<T> + crate::gpio::Pin {}
 #[allow(private_bounds)]
 pub trait OutputPin<T: Instance>: SealedOutputPin<T> + crate::gpio::Pin {}
 
-macro_rules! impl_comp_instance {
+/// The half of an instance impl that does not depend on how its interrupt is dispatched.
+#[allow(unused_macros)]
+macro_rules! impl_comp_instance_common {
     ($instance:ident) => {
         impl crate::comp::SealedInstance for crate::peripherals::$instance {
             const HYSTERESIS_BREAKS_ON_EXCHANGE: bool = cfg!(comp_err_03);
@@ -740,9 +757,60 @@ macro_rules! impl_comp_instance {
                 &STATE
             }
         }
+    };
+}
 
-        impl crate::comp::Instance for crate::peripherals::$instance {
-            type GroupSource = crate::interrupt_group::$instance;
+#[allow(unused_macros)]
+macro_rules! impl_comp_instance {
+    ($instance:ident) => {
+        impl_comp_instance_common!($instance);
+
+        impl crate::comp::Instance for crate::peripherals::$instance {}
+
+        #[cfg(feature = "rt")]
+        impl crate::interrupt_group::Handler<crate::interrupt_group::$instance>
+            for crate::comp::InterruptHandler<crate::peripherals::$instance>
+        {
+            unsafe fn on_interrupt() {
+                Self::handle();
+            }
+        }
+
+        #[cfg(feature = "rt")]
+        unsafe impl<T> crate::comp::CompInterrupt<crate::peripherals::$instance> for T where
+            T: crate::interrupt_group::Binding<
+                    crate::interrupt_group::$instance,
+                    crate::comp::InterruptHandler<crate::peripherals::$instance>,
+                >
+        {
+        }
+    };
+}
+
+/// The same, for a chip where the comparator owns an NVIC line instead of sitting on a group.
+#[allow(unused_macros)]
+macro_rules! impl_comp_instance_nvic {
+    ($instance:ident, $line:ident) => {
+        impl_comp_instance_common!($instance);
+
+        impl crate::comp::Instance for crate::peripherals::$instance {}
+
+        #[cfg(feature = "rt")]
+        impl crate::interrupt::typelevel::Handler<crate::interrupt::typelevel::$line>
+            for crate::comp::InterruptHandler<crate::peripherals::$instance>
+        {
+            unsafe fn on_interrupt() {
+                Self::handle();
+            }
+        }
+
+        #[cfg(feature = "rt")]
+        unsafe impl<T> crate::comp::CompInterrupt<crate::peripherals::$instance> for T where
+            T: crate::interrupt::typelevel::Binding<
+                    crate::interrupt::typelevel::$line,
+                    crate::comp::InterruptHandler<crate::peripherals::$instance>,
+                >
+        {
         }
     };
 }

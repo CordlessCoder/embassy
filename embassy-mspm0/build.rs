@@ -1432,7 +1432,30 @@ fn generate_peripheral_instances() -> TokenStream {
                 Some(quote! { impl_opa_instance!(#peri, #ground); })
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
-            "comp" => Some(quote! { impl_comp_instance!(#peri); }),
+            "comp" => {
+                // The comparator is a source on an interrupt group on most chips and the owner of an
+                // NVIC line on the rest, exactly as the GPIO ports are, so the binding a caller has
+                // to produce differs. `interrupt.name` is the group's line where it is grouped, and
+                // the source is named after the peripheral.
+                let grouped = peripheral
+                    .interrupts
+                    .iter()
+                    .any(|interrupt| interrupt.group_iidx.is_some());
+
+                Some(if grouped {
+                    quote! { impl_comp_instance!(#peri); }
+                } else {
+                    let line = format_ident!(
+                        "{}",
+                        peripheral
+                            .interrupts
+                            .first()
+                            .expect("a COMP instance with no interrupt")
+                            .name
+                    );
+                    quote! { impl_comp_instance_nvic!(#peri, #line); }
+                })
+            }
             _ => None,
         };
 

@@ -181,5 +181,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0: return `impl Future` from the waits that only wrapped another future, saving 84-280 B and up to 48 B of RAM per binary; `Compare::wait_until` and `I2cTarget::listen` now touch their registers when called rather than when first polled
 - feat: mspm0/comp: add a comparator driver, with its 8-bit reference DAC — the only internal source an OPA has on families whose reference does not reach a pin
 - mspm0: update mspm0-metapac, which adds the comparator's per-instance internal-reference metadata
+- fix: mspm0/comp: bind the comparator's interrupt on chips where it owns an NVIC line instead of sitting on a group
 - mspm0/gpio: the `embedded_hal_async::digital::Wait` impls no longer wrap each wait in a state machine, saving 216 B in a binary that uses them
 - mspm0/sysctl: derive both sleep-floor ladders from the mode's position rather than matching each one, taking 40 B off `floor_for_operation` and off every binary that holds a sleep guard
