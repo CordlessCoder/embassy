@@ -420,17 +420,6 @@ impl Config {
             settle_cycles: settle_cycles(clocks.mclk, clock_hz),
         })
     }
-
-    /// Check the config.
-    ///
-    /// Make sure that configuration is valid and enabled by the system, writing back the clock
-    /// source that was chosen for the requested bus speed.
-    pub fn check_config(&mut self) -> Result<(), ConfigError> {
-        let resolved = self.resolve()?;
-        self.clock_source = resolved.clock_source;
-
-        Ok(())
-    }
 }
 
 /// Solve [`Config::clock_low_timeout_us`] into a `TIMEOUT_CTL.TCNTLA` load value.
@@ -667,7 +656,7 @@ impl Resolved {
     }
 }
 
-/// Serial error
+/// What an I2C transfer can fail with.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
@@ -695,12 +684,6 @@ pub enum Error {
     /// Timeout
     Timeout,
 
-    /// CRC error
-    Crc,
-
-    /// Overrun error
-    Overrun,
-
     /// Zero-length transfers are not allowed.
     ZeroLengthTransfer,
 
@@ -724,8 +707,6 @@ impl core::fmt::Display for Error {
             Self::Arbitration => "Arbitration Lost",
             Self::Nack => "ACK Not Received",
             Self::Timeout => "Request Timed Out",
-            Self::Crc => "CRC Mismatch",
-            Self::Overrun => "Buffer Overrun",
             Self::ZeroLengthTransfer => "Zero-Length Transfers are not allowed",
             Self::TransferLengthIsOverLimit => "Transfer length is over limit",
             Self::InvalidAddress => "Address too large for its addressing mode",
@@ -1916,8 +1897,6 @@ impl embedded_hal::i2c::Error for Error {
             }
             Self::NackData => embedded_hal::i2c::ErrorKind::NoAcknowledge(embedded_hal::i2c::NoAcknowledgeSource::Data),
             Self::Timeout => embedded_hal::i2c::ErrorKind::Other,
-            Self::Crc => embedded_hal::i2c::ErrorKind::Other,
-            Self::Overrun => embedded_hal::i2c::ErrorKind::Overrun,
             Self::ZeroLengthTransfer => embedded_hal::i2c::ErrorKind::Other,
             Self::TransferLengthIsOverLimit => embedded_hal::i2c::ErrorKind::Other,
             Self::InvalidAddress => embedded_hal::i2c::ErrorKind::Other,
