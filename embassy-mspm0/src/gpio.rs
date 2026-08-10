@@ -1,3 +1,21 @@
+//! General-purpose I/O.
+//!
+//! [`Input`], [`Output`], [`OutputOpenDrain`] and [`Flex`], which is all three at once. Everything
+//! except `Output` takes a mode parameter defaulting to [`Blocking`]; `Input<'d>` still names the
+//! blocking one, so code that only reads and writes pins needs no change.
+//!
+//! # Waiting on an edge
+//!
+//! The waits live on the `Async` flavour, built with `new_async` and an interrupt binding. **Every
+//! port on the chip has to be bound, not just the pin's own** — a pin's port is a run-time value, not
+//! part of its type, so nothing else can rule out a wait armed on a port with no handler installed.
+//!
+//! Which macro binds it is fixed per chip: a port is either a source on an interrupt group, wanting
+//! [`bind_group_interrupts!`](crate::bind_group_interrupts), or the owner of an NVIC line, wanting
+//! [`bind_interrupts!`](crate::bind_interrupts). There is one handler type and it implements both
+//! traits under the matching cfg, so a binding written for the wrong one names a type that does not
+//! exist rather than silently linking nothing.
+
 #![macro_use]
 
 use core::convert::Infallible;
@@ -386,9 +404,6 @@ impl<'d> Flex<'d, Async> {
 /// below takes its edge with it and the wait would otherwise block for a second one that may never come.
 /// Re-testing the level immediately after arming closes that window: either the edge is still to come
 /// and the wait proceeds, or the level is already there and the wait is over.
-///
-/// The arm is taken by value and moved into the closure rather than borrowed across the await: a borrow
-/// would need `EdgeArm` to be `Sync`, which is a much larger claim than it needs to make.
 #[cfg(feature = "rt")]
 async fn park(arm: &EdgeArm) {
     let mut armed = false;
@@ -827,7 +842,7 @@ impl<'d> Output<'d> {
 
     /// Configure the logic inversion of this pin.
     ///
-    /// Logic inversion applies to the input path of this pin.
+    /// Logic inversion applies to the output path of this pin.
     #[inline]
     pub fn set_inversion(&mut self, invert: bool) {
         self.pin.set_inversion(invert)
@@ -938,7 +953,7 @@ impl<'d, M: Mode> OutputOpenDrain<'d, M> {
 
     /// Configure the logic inversion of this pin.
     ///
-    /// Logic inversion applies to the input path of this pin.
+    /// One control serves both directions, so this inverts what the pin drives and what it reads back.
     #[inline]
     pub fn set_inversion(&mut self, invert: bool) {
         self.pin.set_inversion(invert)
@@ -987,7 +1002,7 @@ impl AnyPin {
     /// Create an [AnyPin] for a specific pin.
     ///
     /// # Safety
-    /// - `pin_port` should not in use by another driver.
+    /// - `pin_port` should not be in use by another driver.
     /// - `pin_port` must name a pin this chip has. The edge waits index their port's waiter list
     ///   without a bounds check, on the strength of this.
     #[inline]
