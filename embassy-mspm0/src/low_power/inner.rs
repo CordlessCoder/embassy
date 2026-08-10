@@ -5,11 +5,9 @@
 //! `SYSOSCCFG.{USE4MHZSTOP, DISABLESTOP}` selects the STOP sub-mode,
 //! `MCLKCFG.STOPCLKSTBY` selects the STANDBY sub-mode.
 //!
-//! Two things vary by device, both decided by the SYSCTL version in `build.rs`:
+//! One thing varies by device, decided by the SYSCTL version in `build.rs`:
 //! - `mspm0_stop1` — whether `SYSOSCCFG.USE4MHZSTOP` exists, and with it the STOP1 sub-mode where
 //!   SYSOSC drops to 4 MHz instead of stopping. Absent on the C-series and H321x.
-//! - `mspm0_stop0_clears_lfclk` — whether entering STOP0 must also clear `MCLKCFG.USELFCLK`, which
-//!   the C-series TRM adds to the sequence.
 
 use critical_section::CriticalSection;
 use pac::sysctl::vals::Dsleep;
@@ -63,9 +61,6 @@ pub unsafe fn enter_sleep(_cs: CriticalSection, mode: SleepMode) {
                 w.set_use4mhzstop(false);
                 w.set_disablestop(false);
             });
-
-            #[cfg(mspm0_stop0_clears_lfclk)]
-            sysctl.mclkcfg().modify(|w| w.set_uselfclk(false));
         }
 
         #[cfg(mspm0_stop1)]

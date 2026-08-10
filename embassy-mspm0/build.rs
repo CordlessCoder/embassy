@@ -162,12 +162,6 @@ fn errata_cfgs(cfgs: &mut CfgSet) {
 /// can share a block and still differ. What is left here are facts about the block itself: a step the
 /// C-series TRM adds to STOP0 entry, and which `RSTCAUSE.ID` variants its enum defines.
 struct SysctlCaps {
-    /// Whether entering STOP0 must also clear `MCLKCFG.USELFCLK`.
-    ///
-    /// Not field presence — `USELFCLK` exists everywhere — but a step the C-series TRM adds to the
-    /// entry sequence.
-    stop0_clears_lfclk: bool,
-
     /// Whether SYSCTL has the `SHUTDNSTORE` array, the only bytes that survive SHUTDOWN.
     ///
     /// A 4-element array at `0x1400` on every block but `h321x`.
@@ -190,7 +184,6 @@ struct SysctlCaps {
 
 impl SysctlCaps {
     const NONE: Self = Self {
-        stop0_clears_lfclk: false,
         shutdnstore: false,
         hsclk_mux: false,
         rstcause_nonpmuparity: false,
@@ -227,13 +220,11 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
 
     let caps = match version {
         "c110x" => SysctlCaps {
-            stop0_clears_lfclk: true,
             shutdnstore: true,
             ..SysctlCaps::NONE
         },
 
         "c1105_c1106" => SysctlCaps {
-            stop0_clears_lfclk: true,
             shutdnstore: true,
             hsclk_mux: true,
             ..SysctlCaps::NONE
@@ -290,7 +281,6 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
     cfgs.enable(&format!("sysctl_{version}"));
 
     for (cfg, present) in [
-        ("mspm0_stop0_clears_lfclk", caps.stop0_clears_lfclk),
         ("mspm0_shutdnstore", caps.shutdnstore),
         ("mspm0_hsclk_mux", caps.hsclk_mux),
         ("rstcause_nonpmuparity", caps.rstcause_nonpmuparity),
