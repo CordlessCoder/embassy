@@ -218,6 +218,16 @@ impl FifoThreshold {
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Config
+///
+/// `repr(C)` here is worth 200 bytes and is not decoration. Left to order these fields itself the
+/// compiler groups the single-byte ones, and since most of them default to their zero discriminant that
+/// leaves a six-byte run of zeroes for `Default` to write — which LLVM merges into one memset and then
+/// lowers to a call, pulling a 192-byte helper into every binary that builds a UART. Declaration order
+/// interleaves the fields that default to something else, so no run long enough to be worth a call forms.
+///
+/// Measured both ways: the helper goes, and no binary that builds no UART moves at all. **Reordering
+/// these fields can bring it back silently**, so check for `__aeabi_memclr` if you do.
+#[repr(C)]
 pub struct Config {
     /// UART clock source.
     pub clock_source: ClockSel,
