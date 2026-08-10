@@ -22,12 +22,6 @@
 //! The wrapper only: power, reset, and the mode select. **The four mode drivers do not exist yet**, so
 //! nothing here yet drives a bus. [`Unicomm`] is what they will be built on, and is useful on its own
 //! only to reach the registers through [`Unicomm::regs`].
-//!
-//! # Untested
-//!
-//! No board on hand has a UNICOMM instance. Every register write here comes from SLAU847, TI's
-//! `dl_unicomm.h` and the generated block; none has been executed. See
-//! `claude_context/unverified_on_silicon.md`.
 
 #![macro_use]
 

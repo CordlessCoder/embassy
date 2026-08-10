@@ -13,13 +13,6 @@
 //! datasheet startup time instead, and that is what [`Vref::new`] does wherever the erratum applies.
 //!
 //! Devices without the erratum wait on the bit, which is both faster and exact.
-//!
-//! # The startup time is a placeholder
-//!
-//! [`STARTUP_NS`] is currently one number for every device, and it is the **slowest** of them, so it
-//! is correct everywhere and wasteful on most. The real figure is per device and spans 20x — 200 us
-//! on an MSPM0G3507 against 10 us on an MSPM0C1104 — and it is asked for as R3 in
-//! `claude_context/metapac_feature_request.md`. When it lands, only [`STARTUP_NS`] changes.
 
 #![macro_use]
 
@@ -40,7 +33,7 @@ use crate::sysctl::LowPowerInstance;
 /// columns, so the figure cannot be read as the worst case — and `VREF_ERR_01`'s workaround asks for
 /// the *maximum*. It has measured sufficient on the one part checked on silicon; a board at a
 /// temperature or capacitance extreme could want more, and there is nothing here that would report
-/// it. See `claude_context/unverified_on_silicon.md`.
+/// it.
 ///
 /// **Where a datasheet gives the row under several conditions this is the slowest**, which is why the
 /// large figures look out of line: the G5187 states 20 us bare and 200 us with a 1 uF capacitor on

@@ -63,7 +63,7 @@ pub enum Error {
     /// Reachable from `div_iq` whenever the quotient exceeds the dividend's own fixed-point format,
     /// which needs no extreme inputs at all, and from `div_i32` at `i32::MIN / -1`.
     Overflow,
-    /// The accelerator did not finish an operation within [`MAX_POLLS`] reads of `STATUS.BUSY`.
+    /// The accelerator did not finish an operation within `MAX_POLLS` reads of `STATUS.BUSY`.
     ///
     /// Not reachable by a caller doing anything wrong: an operation takes at most `NUMITER` cycles,
     /// so this means the peripheral is wedged.
