@@ -33,8 +33,9 @@
 //! Without chopping the input offset (a few millivolts, multiplied by the gain) appears at the
 //! output. [`Chopping::Standard`] removes it but modulates ripple at the chop frequency onto the
 //! output, which the TRM expects an external RC filter to remove, sized per gain (SLAU846
-//! table 21-4). The hardware's third mode, ADC-assisted chopping, is not exposed: it only works
-//! during an ADC hardware-averaging conversion, which [`crate::adc`] does not yet offer.
+//! table 21-4). [`Chopping::AdcAveraging`] needs no filter, because the ADC flips the chop state
+//! between conversions and averages the pair — so it only works while the ADC is averaging this
+//! output, and nothing here can check that it is.
 //!
 //! An enabled amplifier settles within the datasheet's `tEN`, and a gain change within `tSETTLE` —
 //! single-digit microseconds each. A sample taken sooner reads the output mid-slew, so it is
@@ -71,6 +72,20 @@ pub enum Chopping {
     /// Standard chopping. Removes the input offset but modulates ripple at the chop frequency onto
     /// the output; the TRM sizes an external RC filter per gain to remove it.
     Standard,
+    /// Chopping the ADC cancels for you, leaving no ripple and needing no filter.
+    ///
+    /// The ADC toggles the chop state at the end of each conversion and averages the pair away, so
+    /// **it only works while the ADC is averaging this output**: set [`Config::averaging`] and ask
+    /// for it with [`Conversion::average`]. Nothing here can check that — the amplifier cannot see
+    /// how the ADC is configured — and with averaging off the output is chopped and never
+    /// unchopped.
+    ///
+    /// The averaged count must be even, which every [`Averaging`] setting is.
+    ///
+    /// [`Config::averaging`]: crate::adc::Config::averaging
+    /// [`Conversion::average`]: crate::adc::Conversion::average
+    /// [`Averaging`]: crate::adc::Averaging
+    AdcAveraging,
 }
 
 /// Configuration common to all OPA topologies.
@@ -281,6 +296,7 @@ impl<'d, T: Instance> Opa<'d, T> {
         let chop = match config.chopping {
             Chopping::Disabled => vals::Chop::Off,
             Chopping::Standard => vals::Chop::On,
+            Chopping::AdcAveraging => vals::Chop::Avgon,
         };
 
         Self {
