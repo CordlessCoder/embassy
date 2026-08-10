@@ -4,6 +4,5 @@
 //! A basic timer cannot stand in for it — see `build.rs`'s `TIME_DRIVER_TIMERS` — and no device needs
 //! it to, every part with a TIMB having a TIMA and a TIMG as well.
 
-#[path = "tim.rs"]
-mod driver;
-pub(crate) use driver::*;
+mod tim;
+pub(crate) use tim::*;

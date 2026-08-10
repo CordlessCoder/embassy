@@ -15,40 +15,44 @@ use crate::tim::low_level::{self, CounterOnEnable};
 use crate::tim::{Channel, ClockSel, CountingMode, General2ChannelInstance, SealedInstance, Word};
 use crate::{peripherals, tim};
 
-#[cfg(time_driver_timg0)]
-type T = peripherals::TIMG0;
-#[cfg(time_driver_timg1)]
-type T = peripherals::TIMG1;
-#[cfg(time_driver_timg2)]
-type T = peripherals::TIMG2;
-#[cfg(time_driver_timg3)]
-type T = peripherals::TIMG3;
-#[cfg(time_driver_timg4)]
-type T = peripherals::TIMG4;
-#[cfg(time_driver_timg5)]
-type T = peripherals::TIMG5;
-#[cfg(time_driver_timg6)]
-type T = peripherals::TIMG6;
-#[cfg(time_driver_timg7)]
-type T = peripherals::TIMG7;
-#[cfg(time_driver_timg8)]
-type T = peripherals::TIMG8;
-#[cfg(time_driver_timg9)]
-type T = peripherals::TIMG9;
-#[cfg(time_driver_timg10)]
-type T = peripherals::TIMG10;
-#[cfg(time_driver_timg11)]
-type T = peripherals::TIMG11;
-#[cfg(time_driver_timg12)]
-type T = peripherals::TIMG12;
-#[cfg(time_driver_timg13)]
-type T = peripherals::TIMG13;
-#[cfg(time_driver_timg14)]
-type T = peripherals::TIMG14;
-#[cfg(time_driver_tima0)]
-type T = peripherals::TIMA0;
-#[cfg(time_driver_tima1)]
-type T = peripherals::TIMA1;
+/// Emit the selected instance's type alias and its interrupt handler.
+///
+/// Exactly one `time_driver_*` cfg is ever enabled, so exactly one arm of each expands.
+/// `build.rs::TIME_DRIVER_TIMERS` is the same list and declares every cfg named here.
+macro_rules! time_driver_instances {
+    ($($peri:ident => $cfg:ident),* $(,)?) => {
+        $(
+            #[cfg($cfg)]
+            type T = peripherals::$peri;
+
+            #[cfg(all($cfg, feature = "rt"))]
+            #[interrupt]
+            fn $peri() {
+                DRIVER.on_interrupt();
+            }
+        )*
+    };
+}
+
+time_driver_instances!(
+    TIMG0 => time_driver_timg0,
+    TIMG1 => time_driver_timg1,
+    TIMG2 => time_driver_timg2,
+    TIMG3 => time_driver_timg3,
+    TIMG4 => time_driver_timg4,
+    TIMG5 => time_driver_timg5,
+    TIMG6 => time_driver_timg6,
+    TIMG7 => time_driver_timg7,
+    TIMG8 => time_driver_timg8,
+    TIMG9 => time_driver_timg9,
+    TIMG10 => time_driver_timg10,
+    TIMG11 => time_driver_timg11,
+    TIMG12 => time_driver_timg12,
+    TIMG13 => time_driver_timg13,
+    TIMG14 => time_driver_timg14,
+    TIMA0 => time_driver_tima0,
+    TIMA1 => time_driver_tima1,
+);
 
 /// Counter value type of the selected timer: `u16`, or `u32` on TIMG12/TIMG13.
 type W = <T as tim::Instance>::Word;
@@ -436,106 +440,4 @@ pub(crate) fn wake_at_least(cs: CriticalSection, ticks: u32) -> bool {
 
     // A disarmed alarm reads `u64::MAX`, which is further off than any `ticks`.
     period_end >= ticks && DRIVER.alarm_at(cs) >= now.saturating_add(ticks)
-}
-
-#[cfg(all(time_driver_timg0, feature = "rt"))]
-#[interrupt]
-fn TIMG0() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg1, feature = "rt"))]
-#[interrupt]
-fn TIMG1() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg2, feature = "rt"))]
-#[interrupt]
-fn TIMG2() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg3, feature = "rt"))]
-#[interrupt]
-fn TIMG3() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg4, feature = "rt"))]
-#[interrupt]
-fn TIMG4() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg5, feature = "rt"))]
-#[interrupt]
-fn TIMG5() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg6, feature = "rt"))]
-#[interrupt]
-fn TIMG6() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg7, feature = "rt"))]
-#[interrupt]
-fn TIMG7() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg8, feature = "rt"))]
-#[interrupt]
-fn TIMG8() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg9, feature = "rt"))]
-#[interrupt]
-fn TIMG9() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg10, feature = "rt"))]
-#[interrupt]
-fn TIMG10() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg11, feature = "rt"))]
-#[interrupt]
-fn TIMG11() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg12, feature = "rt"))]
-#[interrupt]
-fn TIMG12() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg13, feature = "rt"))]
-#[interrupt]
-fn TIMG13() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_timg14, feature = "rt"))]
-#[interrupt]
-fn TIMG14() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_tima0, feature = "rt"))]
-#[interrupt]
-fn TIMA0() {
-    DRIVER.on_interrupt();
-}
-
-#[cfg(all(time_driver_tima1, feature = "rt"))]
-#[interrupt]
-fn TIMA1() {
-    DRIVER.on_interrupt();
 }
