@@ -452,10 +452,14 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
     /// comparator's terminals. Pair it with
     /// `opa::NonInvertingInput::dac8`.
     ///
-    /// The comparator needs its enable time — 10 us on the parts that publish it — before the DAC's
-    /// output is at the code, and [`Comp::set_dac_code`] costs a further `tdac_settle` after that.
-    /// Neither is waited for here, there being nothing to wait on: both are datasheet figures with no
-    /// status bit behind them.
+    /// The comparator needs its enable time before the DAC's output is at the code, and
+    /// [`Comp::set_dac_code`] costs a further settling time after that. Neither is waited for here,
+    /// there being nothing to wait on: both are datasheet figures with no status bit behind them.
+    ///
+    /// **The enable time depends on [`Config::speed`] and on the device**, 5 to 10 us across the
+    /// families, the newer comparators being the faster ones and [`Speed::UltraLowPower`] the slower
+    /// mode. Like the reference's own startup figure it is stated rather than guaranteed — the
+    /// datasheet cell spans its MIN, TYP and MAX columns — so a margin is the caller's to add.
     pub fn new_reference_only(_peri: Peri<'d, T>, reference: Reference, config: Config) -> Result<Self, ConfigError> {
         Self::build(
             None,
@@ -676,9 +680,12 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
 
     /// Change the reference DAC's code.
     ///
-    /// Does nothing where the configured source does not run the DAC. The output settles within the
-    /// datasheet's `tdac_settle` — 1.5 us on the parts that publish it — so a comparison made sooner
-    /// is against a threshold still on its way.
+    /// Does nothing where the configured source does not run the DAC. The output settles in about
+    /// 1.5 us — a full-scale code step to within one LSB, and the same on every family — so a
+    /// comparison made sooner is against a threshold still on its way.
+    ///
+    /// That figure is the internal path, which is the one an amplifier taking this as an input sees.
+    /// Driving the DAC out on a pin is several times slower, and this driver does not do it.
     pub fn set_dac_code(&mut self, code: DacCode) {
         T::regs().ctl3().write(|w| w.set_daccode(DACCODE, code.to_bits()));
     }
