@@ -568,8 +568,11 @@ impl<'d, M: Mode> UartTx<'d, M> {
         let r = self.info.regs;
 
         for &b in buffer {
-            // Wait if there is no space
-            while !r.stat().read().txfe() {}
+            // Wait only while there is nowhere to put the byte. Waiting for the FIFO to *empty* instead
+            // spends the depth it was configured with: one byte would be in flight at a time whatever
+            // `Config::fifo` asked for, and the call would return that much later with the rest still to
+            // send. Both bits track `CTL0.FEN`, so this reads correctly with the FIFOs off too.
+            while r.stat().read().txff() {}
 
             // Prevent the compiler from writing to buffer too early
             compiler_fence(Ordering::Release);
