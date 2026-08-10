@@ -15,7 +15,10 @@
 //! pin or wiring is involved.
 //!
 //! The non-inverting input can come from an `OPAx_INy+` pin or from an internal source — see
-//! [`NonInvertingInput`].
+//! [`NonInvertingInput`]. **Which sources a device has differs per family**: the input mux positions
+//! are not the same everywhere, and an absent one connects the input to nothing rather than failing,
+//! so the amplifier reads a floating node. [`NonInvertingInput::ground`] refuses to compile where its
+//! position is absent; [`NonInvertingInput::vref`] is the `VREF+` pin and says what reaches it.
 //!
 //! # The OPA depends on SYSOSC, and nothing requests it
 //!
@@ -164,10 +167,16 @@ impl<'d, T: Instance> NonInvertingInput<'d, T> {
         Self::internal(vals::Psel::Dac8out)
     }
 
-    /// The internal voltage reference.
+    /// The `VREF+` pin node.
     ///
-    /// Only meaningful while a [`Vref`](crate::vref::Vref) is alive; with the reference off this
-    /// channel floats.
+    /// **Not the internal reference, though it is where the internal reference appears on some
+    /// devices.** The G families buffer their reference out to this pin, so a live
+    /// [`Vref`](crate::vref::Vref) is all this needs there. The C, H and L families do not: their
+    /// reference feeds the ADC and comparator internally and the pin is an input only, so this
+    /// carries whatever is applied to `VREF+` externally and nothing at all when that is nothing.
+    ///
+    /// An undriven pin does not read zero — it floats, and drifts toward a rail over seconds while
+    /// looking like a plausible measurement on the way.
     #[cfg(vref)]
     pub const fn vref() -> Self {
         Self::internal(vals::Psel::Vref)
