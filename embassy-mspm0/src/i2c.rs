@@ -1,6 +1,6 @@
 #![macro_use]
 
-use core::future;
+use core::future::{self, Future};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::Poll;
@@ -1589,6 +1589,38 @@ impl<'d> I2c<'d, Blocking> {
 }
 
 impl<'d> I2c<'d, Async> {
+    /// Run an armed burst to completion, disarming every interrupt once it ends.
+    ///
+    /// The three faults a controller reports are the same whichever direction the burst runs, so only
+    /// the FIFO-trigger and burst-done statuses reach `step`, which returns `Pending` for anything it
+    /// does not recognise.
+    fn run_burst(
+        &mut self,
+        mut step: impl FnMut(&Self, vals::CpuIntIidxStat) -> Poll<Result<(), Error>>,
+    ) -> impl Future<Output = Result<(), Error>> {
+        future::poll_fn(move |cx| {
+            // Register prior to checking the condition
+            self.state.waker.register(cx.waker());
+
+            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
+                vals::CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
+                vals::CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
+                vals::CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
+                other => step(self, other),
+            };
+
+            if !result.is_pending() {
+                self.info
+                    .regs
+                    .cpu_int(0)
+                    .imask()
+                    .write_value(i2c::regs::CpuInt::default());
+            }
+
+            result
+        })
+    }
+
     async fn write_async_internal(&mut self, addr: Address, write: &[u8], end_w_stop: bool) -> Result<(), Error> {
         self.clear_timeout();
         if write.is_empty() {
@@ -1617,41 +1649,23 @@ impl<'d> I2c<'d, Async> {
 
         self.master_write(addr, write.len(), end_w_stop)?;
 
-        let res: Result<(), Error> = future::poll_fn(|cx| {
-            use crate::i2c::vals::CpuIntIidxStat;
-            // Register prior to checking the condition
-            self.state.waker.register(cx.waker());
-
-            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
-                CpuIntIidxStat::NoIntr => Poll::Pending,
-                CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
-                CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
-                CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
-                CpuIntIidxStat::Ctxfifotrg => {
-                    sent += self.fill_tx(&write[sent..]);
+        let res = self
+            .run_burst(|this, stat| match stat {
+                vals::CpuIntIidxStat::Ctxfifotrg => {
+                    sent += this.fill_tx(&write[sent..]);
 
                     // Reading `IIDX` cleared this one, so the next wake comes from the FIFO draining
                     // again or from the burst finishing. Stop asking once there is nothing left to add.
                     if sent == write.len() {
-                        self.info.regs.cpu_int(0).imask().modify(|w| w.set_ctxfifotrg(false));
+                        this.info.regs.cpu_int(0).imask().modify(|w| w.set_ctxfifotrg(false));
                     }
 
                     Poll::Pending
                 }
-                CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
+                vals::CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
                 _ => Poll::Pending,
-            };
-
-            if !result.is_pending() {
-                self.info
-                    .regs
-                    .cpu_int(0)
-                    .imask()
-                    .write_value(i2c::regs::CpuInt::default());
-            }
-            return result;
-        })
-        .await;
+            })
+            .await;
 
         if let Err(err) = res {
             // The guard's cleanup done eagerly, so it must not run a second time.
@@ -1696,39 +1710,21 @@ impl<'d> I2c<'d, Async> {
         self.master_read(addr, read.len(), restart, false, end_w_stop)?;
 
         let mut got = 0;
-        let res: Result<(), Error> = future::poll_fn(|cx| {
-            use crate::i2c::vals::CpuIntIidxStat;
-            // Register prior to checking the condition
-            self.state.waker.register(cx.waker());
-
-            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
-                CpuIntIidxStat::NoIntr => Poll::Pending,
-                CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
-                CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
-                CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
-                CpuIntIidxStat::Crxfifotrg => {
-                    got += self.drain_rx(&mut read[got..]);
+        let res = self
+            .run_burst(|this, stat| match stat {
+                vals::CpuIntIidxStat::Crxfifotrg => {
+                    got += this.drain_rx(&mut read[got..]);
                     Poll::Pending
                 }
                 // The burst is over, so what is still in the FIFO is its tail: those bytes are ours
                 // whether or not the trigger level is reached again.
-                CpuIntIidxStat::Crxdonefg => {
-                    got += self.drain_rx(&mut read[got..]);
+                vals::CpuIntIidxStat::Crxdonefg => {
+                    got += this.drain_rx(&mut read[got..]);
                     Poll::Ready(Ok(()))
                 }
                 _ => Poll::Pending,
-            };
-
-            if !result.is_pending() {
-                self.info
-                    .regs
-                    .cpu_int(0)
-                    .imask()
-                    .write_value(i2c::regs::CpuInt::default());
-            }
-            return result;
-        })
-        .await;
+            })
+            .await;
 
         if let Err(err) = res {
             // The guard's cleanup done eagerly, so it must not run a second time.
@@ -2182,38 +2178,21 @@ impl<'d> I2c<'d, Async> {
 
         self.master_write(addr, group.total, send_stop)?;
 
-        let res: Result<(), Error> = future::poll_fn(|cx| {
-            use crate::i2c::vals::CpuIntIidxStat;
-            self.state.waker.register(cx.waker());
-
-            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
-                CpuIntIidxStat::NoIntr => Poll::Pending,
-                CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
-                CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
-                CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
-                CpuIntIidxStat::Ctxfifotrg => {
-                    sent += self.fill_tx_group(ops, group.end, &mut cur);
+        let res = self
+            .run_burst(|this, stat| match stat {
+                vals::CpuIntIidxStat::Ctxfifotrg => {
+                    sent += this.fill_tx_group(ops, group.end, &mut cur);
 
                     if sent == group.total {
-                        self.info.regs.cpu_int(0).imask().modify(|w| w.set_ctxfifotrg(false));
+                        this.info.regs.cpu_int(0).imask().modify(|w| w.set_ctxfifotrg(false));
                     }
 
                     Poll::Pending
                 }
-                CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
+                vals::CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
                 _ => Poll::Pending,
-            };
-
-            if !result.is_pending() {
-                self.info
-                    .regs
-                    .cpu_int(0)
-                    .imask()
-                    .write_value(i2c::regs::CpuInt::default());
-            }
-            return result;
-        })
-        .await;
+            })
+            .await;
 
         abort.defuse();
         res
@@ -2249,36 +2228,19 @@ impl<'d> I2c<'d, Async> {
         };
         let mut got = 0;
 
-        let res: Result<(), Error> = future::poll_fn(|cx| {
-            use crate::i2c::vals::CpuIntIidxStat;
-            self.state.waker.register(cx.waker());
-
-            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
-                CpuIntIidxStat::NoIntr => Poll::Pending,
-                CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
-                CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
-                CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
-                CpuIntIidxStat::Crxfifotrg => {
-                    got += self.drain_rx_group(ops, group.end, &mut cur);
+        let res = self
+            .run_burst(|this, stat| match stat {
+                vals::CpuIntIidxStat::Crxfifotrg => {
+                    got += this.drain_rx_group(ops, group.end, &mut cur);
                     Poll::Pending
                 }
-                CpuIntIidxStat::Crxdonefg => {
-                    got += self.drain_rx_group(ops, group.end, &mut cur);
+                vals::CpuIntIidxStat::Crxdonefg => {
+                    got += this.drain_rx_group(ops, group.end, &mut cur);
                     Poll::Ready(Ok(()))
                 }
                 _ => Poll::Pending,
-            };
-
-            if !result.is_pending() {
-                self.info
-                    .regs
-                    .cpu_int(0)
-                    .imask()
-                    .write_value(i2c::regs::CpuInt::default());
-            }
-            return result;
-        })
-        .await;
+            })
+            .await;
 
         abort.defuse();
         res?;
