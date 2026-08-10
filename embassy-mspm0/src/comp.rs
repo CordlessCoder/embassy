@@ -21,9 +21,10 @@
 //!
 //! # The reference generator
 //!
-//! [`Reference`] turns the generator on and picks what feeds the DAC. Only the sources every
-//! comparator has: the three that reach a dedicated internal reference exist on some families and
-//! select nothing on the rest.
+//! [`Reference`] turns the generator on and picks what feeds the DAC. Three of the six sources
+//! exist on every comparator; the other three reach a dedicated internal reference and exist only
+//! where the metadata says so, [`Comp::new`] refusing them elsewhere rather than letting the
+//! comparator run against a threshold that was never applied.
 //!
 //! **`VrefModule` is an internal route, not the `VREF+` pin.** SLAU847 figure 16-5 labels it "From
 //! VREF Module", so it reaches the comparator on devices that never buffer their reference out to a
@@ -172,6 +173,24 @@ pub enum ReferenceSource {
     /// **Ignored while [`Reference::sampled`] is set**, where the input is connected to the DAC
     /// whatever this says.
     VrefModuleDirect,
+
+    /// The analog supply is the reference directly, with the DAC switched off.
+    ///
+    /// Not on every device — see the type's own docs.
+    VddaDirect,
+
+    /// A dedicated internal reference feeds the DAC, and the DAC's output is the reference.
+    ///
+    /// Needs **no VREF module at all**, which is what makes it worth having: it reaches a real
+    /// voltage in modes where VREF is unavailable, and it is the only source that does.
+    ///
+    /// Not on every device — see the type's own docs.
+    Internal,
+
+    /// The dedicated internal reference directly, with the DAC switched off.
+    ///
+    /// Not on every device — see the type's own docs.
+    InternalDirect,
 }
 
 impl ReferenceSource {
@@ -180,7 +199,18 @@ impl ReferenceSource {
             ReferenceSource::Vdda => vals::Refsrc::VddaDac,
             ReferenceSource::VrefModule => vals::Refsrc::VrefDac,
             ReferenceSource::VrefModuleDirect => vals::Refsrc::Vref,
+            ReferenceSource::VddaDirect => vals::Refsrc::Vdda,
+            ReferenceSource::Internal => vals::Refsrc::IntvrefDac,
+            ReferenceSource::InternalDirect => vals::Refsrc::Intvref,
         }
+    }
+
+    /// Whether this is one of the positions only some devices implement.
+    const fn needs_internal_reference(self) -> bool {
+        matches!(
+            self,
+            ReferenceSource::VddaDirect | ReferenceSource::Internal | ReferenceSource::InternalDirect
+        )
     }
 }
 
@@ -323,6 +353,8 @@ pub enum ConfigError {
     /// Hysteresis was combined with [`Config::exchange_inputs`], which `COMP_ERR_03` makes unstable.
     HysteresisWithExchangedInputs,
 
+    /// A [`ReferenceSource`] this device does not implement, which would select no reference at all.
+    NoInternalReference,
 }
 
 /// Interrupt handler.
@@ -514,6 +546,14 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
             return Err(ConfigError::HysteresisWithExchangedInputs);
         }
 
+        // An absent position selects no reference rather than faulting, so this is refused here
+        // instead of leaving the comparator to report against a threshold that was never applied.
+        if let Some(reference) = config.reference {
+            if reference.source.needs_internal_reference() && !T::HAS_INTERNAL_REFERENCE {
+                return Err(ConfigError::NoInternalReference);
+            }
+        }
+
         let r = T::regs();
 
         r.gprcm(0).rstctl().write(|w| {
@@ -690,6 +730,8 @@ pub(crate) trait SealedInstance {
     /// Whether `COMP_ERR_01` applies: the output toggles in STANDBY0 with `IMSEL` at 0.
     const TOGGLES_IN_STANDBY0_ON_CHANNEL_0: bool;
 
+    /// Whether `CTL2.REFSRC` positions 5, 6 and 7 select a source on this instance.
+    const HAS_INTERNAL_REFERENCE: bool;
 
     fn regs() -> Regs;
     fn state() -> &'static State;
@@ -742,10 +784,11 @@ pub trait OutputPin<T: Instance>: SealedOutputPin<T> + crate::gpio::Pin {}
 /// The half of an instance impl that does not depend on how its interrupt is dispatched.
 #[allow(unused_macros)]
 macro_rules! impl_comp_instance_common {
-    ($instance:ident) => {
+    ($instance:ident, $int_vref:expr) => {
         impl crate::comp::SealedInstance for crate::peripherals::$instance {
             const HYSTERESIS_BREAKS_ON_EXCHANGE: bool = cfg!(comp_err_03);
             const TOGGLES_IN_STANDBY0_ON_CHANNEL_0: bool = cfg!(comp_err_01);
+            const HAS_INTERNAL_REFERENCE: bool = $int_vref;
 
             #[inline]
             fn regs() -> mspm0_metapac::comp::Comp {
@@ -762,8 +805,8 @@ macro_rules! impl_comp_instance_common {
 
 #[allow(unused_macros)]
 macro_rules! impl_comp_instance {
-    ($instance:ident) => {
-        impl_comp_instance_common!($instance);
+    ($instance:ident, $int_vref:expr) => {
+        impl_comp_instance_common!($instance, $int_vref);
 
         impl crate::comp::Instance for crate::peripherals::$instance {}
 
@@ -790,8 +833,8 @@ macro_rules! impl_comp_instance {
 /// The same, for a chip where the comparator owns an NVIC line instead of sitting on a group.
 #[allow(unused_macros)]
 macro_rules! impl_comp_instance_nvic {
-    ($instance:ident, $line:ident) => {
-        impl_comp_instance_common!($instance);
+    ($instance:ident, $int_vref:expr, $line:ident) => {
+        impl_comp_instance_common!($instance, $int_vref);
 
         impl crate::comp::Instance for crate::peripherals::$instance {}
 

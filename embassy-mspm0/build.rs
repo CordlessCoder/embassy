@@ -1433,6 +1433,11 @@ fn generate_peripheral_instances() -> TokenStream {
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
             "comp" => {
+                // Whether `REFSRC` 5, 6 and 7 select anything here. They come and go together, and
+                // where they are absent they select no reference at all rather than failing.
+                let comp = peripheral.comp.expect("a COMP instance with no comparator data");
+                let int_vref = comp.int_vref;
+
                 // The comparator is a source on an interrupt group on most chips and the owner of an
                 // NVIC line on the rest, exactly as the GPIO ports are, so the binding a caller has
                 // to produce differs. `interrupt.name` is the group's line where it is grouped, and
@@ -1443,7 +1448,7 @@ fn generate_peripheral_instances() -> TokenStream {
                     .any(|interrupt| interrupt.group_iidx.is_some());
 
                 Some(if grouped {
-                    quote! { impl_comp_instance!(#peri); }
+                    quote! { impl_comp_instance!(#peri, #int_vref); }
                 } else {
                     let line = format_ident!(
                         "{}",
@@ -1453,7 +1458,7 @@ fn generate_peripheral_instances() -> TokenStream {
                             .expect("a COMP instance with no interrupt")
                             .name
                     );
-                    quote! { impl_comp_instance_nvic!(#peri, #line); }
+                    quote! { impl_comp_instance_nvic!(#peri, #int_vref, #line); }
                 })
             }
             _ => None,
