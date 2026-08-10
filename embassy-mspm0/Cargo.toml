@@ -77,7 +77,7 @@ micromath = "2.0.0"
 
 # mspm0-metapac = { version = "" }
 # Fork, temporarily: the low-power metadata this crate reads only exists there until mspm0-data#40 merges upstream.
-mspm0-metapac = { git = "https://github.com/CordlessCoder/mspm0-data-generated/", tag = "mspm0-data-5124368ee62f6add74677df8550bf14fbcabae14" }
+mspm0-metapac = { git = "https://github.com/CordlessCoder/mspm0-data-generated/", tag = "mspm0-data-97115679a86c575f1c07bceb1d5007ce91809b09" }
 rand_core = "0.10"
 # MSPM0 is Cortex-M0+, which has no atomic CAS, so the read-modify-writes this crate needs have to be
 # emulated. Which way is a choice the `atomics-*` features make; one of them must be on.
@@ -89,7 +89,7 @@ quote = "1.0.47"
 
 # mspm0-metapac = { version = "", default-features = false, features = ["metadata"] }
 # Fork, temporarily: see the note on the dependency above.
-mspm0-metapac = { git = "https://github.com/CordlessCoder/mspm0-data-generated/", tag = "mspm0-data-5124368ee62f6add74677df8550bf14fbcabae14", default-features = false, features = ["metadata"] }
+mspm0-metapac = { git = "https://github.com/CordlessCoder/mspm0-data-generated/", tag = "mspm0-data-97115679a86c575f1c07bceb1d5007ce91809b09", default-features = false, features = ["metadata"] }
 
 # The host test binary links `sysctl::clocks`, which takes a critical section. Only the tests need a
 # real implementation; on target the application provides one.

@@ -6,7 +6,7 @@ use std::process::Command;
 use std::{env, fs};
 
 use common::CfgSet;
-use mspm0_metapac::metadata::{METADATA, MemoryKind, Peripheral, PowerDomain, PowerMode};
+use mspm0_metapac::metadata::{AdcInternalSource, METADATA, MemoryKind, Peripheral, PowerDomain, PowerMode};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 
@@ -623,8 +623,12 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
     let (first_name, first) = instances.next().expect("chip has no ADC instance");
 
     for (name, adc) in instances {
+        // Field by field rather than whole-struct: `internal_channels` differs between instances by
+        // design — a dual-ADC part routes each OPA to its own ADC — and comparing the struct would
+        // read that as a disagreement about the two fields this is actually about.
         assert_eq!(
-            adc, first,
+            (adc.memctl, adc.vrsel),
+            (first.memctl, first.vrsel),
             "{name} and {first_name} disagree about MEMCTL or VRSEL, so the ADC driver can no \
              longer hold them as crate-wide constants"
         );
@@ -1441,31 +1445,43 @@ fn generate_peripheral_instances() -> TokenStream {
 
 /// The fixed ADC channel each OPA output is internally routed to.
 ///
-/// A family table because the metadata cannot answer: the datasheets publish the routing in their
-/// "ADC Channel Mapping" tables, but mspm0-data does not carry it. Checked against all four
-/// datasheets, 2026-08-10. A future OPA-bearing family panics here rather than silently losing its
-/// ADC channel impls; extend the table from that family's datasheet.
+/// Which ADC and which channel differ per family — an OPA lands on channel 13 of its own ADC on the
+/// G-series and on channel 12 or 13 of the single ADC0 on the L-series — so this is read per
+/// instance rather than keyed on the OPA's name.
+///
+/// An OPA the metadata routes nowhere fails the build rather than silently losing its ADC channel,
+/// which would leave the amplifier usable and unreadable. Absence of a route is meaningful for other
+/// sources — several parts have a GPAMP and route none of it to an ADC — but every OPA reaches one.
 fn generate_opa_adc_channels() -> TokenStream {
-    let mapping: &[(&str, &str, u8)] = match METADATA.family {
-        "mspm0g150x" | "mspm0g350x" => &[("OPA0", "ADC0", 13), ("OPA1", "ADC1", 13)],
-        "mspm0l130x" | "mspm0l134x" => &[("OPA0", "ADC0", 12), ("OPA1", "ADC0", 13)],
-        family => {
-            if METADATA.peripherals.iter().any(|p| p.kind == "opa") {
-                panic!("{family} has an OPA but no OPA-to-ADC channel mapping here");
-            }
-            &[]
-        }
-    };
+    let routes: Vec<_> = METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.adc.map(|adc| (peripheral.name, adc)))
+        .flat_map(|(adc_name, adc)| {
+            adc.internal_channels.iter().filter_map(move |internal| {
+                let opa = match internal.source {
+                    AdcInternalSource::Opa0 => "OPA0",
+                    AdcInternalSource::Opa1 => "OPA1",
+                    _ => return None,
+                };
 
-    let impls = mapping.iter().filter_map(|(opa, adc, channel)| {
-        let exists = |name| METADATA.peripherals.iter().any(|p| p.name == name);
-        if !exists(*opa) || !exists(*adc) {
-            return None;
-        }
+                Some((opa, adc_name, internal.channel))
+            })
+        })
+        .collect();
 
+    for opa in METADATA.peripherals.iter().filter(|p| p.kind == "opa") {
+        assert!(
+            routes.iter().any(|(name, _, _)| *name == opa.name),
+            "{} has no ADC channel in the metadata, so nothing could read it",
+            opa.name
+        );
+    }
+
+    let impls = routes.iter().map(|(opa, adc, channel)| {
         let opa = format_ident!("{}", opa);
         let adc = format_ident!("{}", adc);
-        Some(quote! { impl_opa_adc_channel!(#opa, #adc, #channel); })
+        quote! { impl_opa_adc_channel!(#opa, #adc, #channel); }
     });
 
     quote! {
