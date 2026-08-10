@@ -139,3 +139,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - breaking: mspm0/mathacl: `div_iq` returns an `IQType` rather than an `f32`, so a fixed-point caller stays in fixed point
 - breaking: mspm0/low-power: `Config::min_sleep` and `low_power::DEFAULT_MIN_SLEEP` exist only alongside a `time-driver-*` feature, and `low-power` no longer pulls in `embassy-time`
 - fix: mspm0/timb: interrupt masking, status and clearing addressed the wrong bit for every counter and event but one, and panicked outright above counter 1
+- fix: mspm0/low-power: `shutdown` no longer runs into unreachable code when `WFI` returns instead of sleeping

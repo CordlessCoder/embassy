@@ -180,10 +180,11 @@ pub fn shutdown(_cs: CriticalSection) -> ! {
     scb.set_sleepdeep();
     cortex_m::asm::dsb();
 
-    cortex_m::asm::wfi();
-
-    // SAFETY: Setting DSLEEP to SHUTDOWN means WFI will never return.
-    unsafe { core::hint::unreachable_unchecked() }
+    // `WFI` completes without sleeping when a wake event is already pending, and a debug event counts,
+    // so it can fall through with a probe attached. Ask again rather than assume it slept.
+    loop {
+        cortex_m::asm::wfi();
+    }
 }
 
 /// Workaround for CPU_ERR_02, CPU_ERR_03, PMCU_ERR_13 - the prefetcher has at least one errata in
