@@ -4,6 +4,8 @@
 
 #![macro_use]
 
+use core::marker::PhantomData;
+
 use embassy_hal_internal::PeripheralType;
 
 use crate::Peri;
@@ -300,8 +302,10 @@ pub struct Config {
 
     /// Stop counting while the CPU is asleep, resuming from the same count on wake.
     ///
-    /// Left counting, the watchdog resets a device that sleeps past [`Self::timeout`], which is
-    /// usually desirable
+    /// Left counting, the watchdog resets a device that sleeps past [`Self::timeout`] — **but only from
+    /// the modes that keep it clocked**. The device datasheets mark it disabled in STANDBY and off in
+    /// SHUTDOWN, so from those it neither counts nor resets, whatever this says. A device that has to be
+    /// watched through a deep sleep needs something else to do the watching.
     pub stop_in_sleep: bool,
 }
 
@@ -325,14 +329,15 @@ impl Default for Config {
     }
 }
 
-pub struct Watchdog {
+pub struct Watchdog<'d> {
     regs: &'static Regs,
     config: Config,
+    _instance: PhantomData<&'d mut ()>,
 }
 
-impl Watchdog {
+impl<'d> Watchdog<'d> {
     /// Watchdog initialization.
-    pub fn new<T: Instance>(_instance: Peri<T>, config: Config) -> Self {
+    pub fn new<T: Instance>(_instance: Peri<'d, T>, config: Config) -> Self {
         // Init power for watchdog
         T::regs().gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
@@ -384,6 +389,7 @@ impl Watchdog {
         });
 
         Self {
+            _instance: PhantomData,
             regs: T::regs(),
             config,
         }

@@ -155,3 +155,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/low-power: entering STOP0 on a C-series device no longer switches MCLK off LFCLK, which the hardware preserves by itself and nothing switched back
 - fix: mspm0/sysctl: a PLL configuration whose VCO frequency overflows is reported rather than wrapping to a value that passes the range check
 - feat: mspm0/uart: `BufferedUartRx::take_faults` reports noise, framing, parity and break errors, which were detected and then discarded
+- fix: mspm0/wwdt: `Watchdog` borrows its instance for its lifetime rather than releasing it in the constructor, so a second one can no longer be built for the same peripheral
+- mspm0/wwdt: `Config::stop_in_sleep` no longer implies the watchdog resets a device that sleeps past its timeout from STANDBY, where the device disables it

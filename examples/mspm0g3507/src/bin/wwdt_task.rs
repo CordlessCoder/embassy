@@ -12,7 +12,7 @@ use embassy_time::Timer;
 use panic_halt as _;
 
 #[embassy_executor::task]
-async fn watchdog_task(wdt: Watchdog) -> ! {
+async fn watchdog_task(wdt: Watchdog<'static>) -> ! {
     wdt.run().await
 }
 
