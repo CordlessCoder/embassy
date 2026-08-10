@@ -338,7 +338,6 @@ pub struct Watchdog<'d> {
 impl<'d> Watchdog<'d> {
     /// Watchdog initialization.
     pub fn new<T: Instance>(_instance: Peri<'d, T>, config: Config) -> Self {
-        // Init power for watchdog
         T::regs().gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
             w.set_resetassert(true);
@@ -382,7 +381,6 @@ impl<'d> Watchdog<'d> {
             w.set_key(vals::Wwdtctl0Key::Key);
         });
 
-        // Set Window0 as active window
         T::regs().ctl1().write(|w| {
             w.set_winsel(vals::Winsel::Win0);
             w.set_key(vals::Wwdtctl1Key::Key);

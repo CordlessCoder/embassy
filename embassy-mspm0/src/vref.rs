@@ -188,10 +188,10 @@ impl<'d, T: Instance> Drop for Vref<'d, T> {
 /// CPU cycles that cover [`STARTUP_NS`] at `mclk`, rounded up and at least one.
 ///
 /// Only the `VREF_ERR_01` path waits by counting; everywhere else the hardware is asked.
-#[cfg(vref_err_01)]
 ///
 /// Split out so the arithmetic is checked rather than inlined into a delay call: at 80 MHz the 200 us
 /// placeholder is 16,000 cycles, which is well inside a `u32` but not inside a `u16`.
+#[cfg(vref_err_01)]
 const fn startup_cycles(mclk: u32) -> u32 {
     let mclk = if mclk == 0 { 1 } else { mclk };
 

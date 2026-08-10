@@ -135,7 +135,7 @@ pub enum StopBits {
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-/// Config Error
+/// Why a [`Uart`] could not be built or reconfigured.
 pub enum ConfigError {
     /// Rx or Tx not enabled
     RxOrTxNotEnabled,
@@ -217,7 +217,7 @@ impl FifoThreshold {
 
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-/// Config
+/// How a [`Uart`] drives its line.
 ///
 /// `repr(C)` here is worth 200 bytes and is not decoration. Left to order these fields itself the
 /// compiler groups the single-byte ones, and since most of them default to their zero discriminant that

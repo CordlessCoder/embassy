@@ -27,10 +27,19 @@ pub use clock::{ClockError, Clocks, Config as ClockConfig, MclkSource, Sysosc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SleepLevel {
+    /// SYSOSC stays at full speed. Fastest wake, highest current.
     Stop0,
+
+    /// SYSOSC limited to 4 MHz. Rounds up to [`SleepLevel::Stop2`] where the chip has no STOP1.
     Stop1,
+
+    /// SYSOSC disabled; ULPCLK runs from LFCLK. Lowest STOP current.
     Stop2,
+
+    /// Low-speed peripherals retained.
     Standby0,
+
+    /// Only a few timers, named per chip, remain clocked. Lowest wake-capable current.
     Standby1,
 }
 

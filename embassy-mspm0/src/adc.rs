@@ -650,7 +650,7 @@ const fn from_res(res: vals::Res) -> Resolution {
         vals::Res::Bit12 => Resolution::Bits12,
         vals::Res::Bit10 => Resolution::Bits10,
         vals::Res::Bit8 => Resolution::Bits8,
-        // SAFETY: The HAL will never program an invalid valid.
+        // SAFETY: The HAL will never program an invalid value.
         vals::Res::_RESERVED_3 => unsafe { unreachable_unchecked() },
     }
 }

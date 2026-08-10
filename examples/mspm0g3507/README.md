@@ -1,4 +1,4 @@
-# Examples for MSPM0M3507
+# Examples for MSPM0G3507
 
 Run individual examples with
 ```
