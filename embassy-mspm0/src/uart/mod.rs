@@ -922,7 +922,7 @@ impl Config {
     }
 
     fn cts_pf(&self) -> PfType {
-        PfType::input(self.rts_pull, self.invert_rts)
+        PfType::input(self.cts_pull, self.invert_cts)
     }
 }
 
