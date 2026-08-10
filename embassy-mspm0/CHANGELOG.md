@@ -160,3 +160,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/i2c: `embedded-hal`'s `transaction` merges consecutive operations of the same type into one addressed stretch, and no longer hangs when given two of them
 - mspm0/uart: fixing `Config`'s field order keeps a 192-byte memory-clear helper out of every binary that builds a UART
 - fix: mspm0/uart: a blocking write fills the transmit FIFO to the depth `Config::fifo` asks for, rather than handing over one byte at a time
+- mspm0/time-driver: a bookkeeping tick with no alarm to arm no longer rewrites the interrupt mask with the value it already held

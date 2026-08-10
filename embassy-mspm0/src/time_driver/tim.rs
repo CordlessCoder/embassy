@@ -136,8 +136,6 @@ struct TimxDriver {
 
 impl TimxDriver {
     fn init(&'static self, _cs: CriticalSection) {
-        // TODO: Configurable tick rate
-        //
         // Shared with the user-facing timer drivers, so the power/reset/clock sequence and the CZC/CAC/CLC
         // reserved-reset-value trap live in one place. `LOAD` comes out of this as the counter's full
         // range, which is what the period scheme wants.
@@ -238,12 +236,10 @@ impl TimxDriver {
             crate::probe::count(crate::probe::target(crate::probe::Marker::TimeDriverArm));
         }
 
-        r.cpu_int(0).imask().modify(move |w| {
-            if arming {
-                // just enable it. `set_alarm` has already set the correct CC1 val.
-                w.set_ccu(1, true);
-            }
-        });
+        if arming {
+            // Just unmask it: `set_alarm` has already written CC1.
+            r.cpu_int(0).imask().modify(|w| w.set_ccu(1, true));
+        }
     }
 
     fn on_interrupt(&self) {
@@ -390,14 +386,11 @@ impl Driver for TimxDriver {
 
     fn schedule_wake(&self, at: u64, waker: &Waker) {
         critical_section::with(|cs| {
-            let mut queue = self.queue.borrow(cs).borrow_mut();
+            // Bound to a local so the queue borrow is released before `trigger_alarm` takes its own.
+            let rearm = self.queue.borrow(cs).borrow_mut().schedule_wake(at, waker);
 
-            if queue.schedule_wake(at, waker) {
-                let mut next = queue.next_expiration(self.now());
-
-                while !self.set_alarm(cs, next) {
-                    next = queue.next_expiration(self.now());
-                }
+            if rearm {
+                self.trigger_alarm(cs);
             }
         });
     }
