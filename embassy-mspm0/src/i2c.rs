@@ -224,17 +224,22 @@ impl Default for Config {
 ///
 /// [`Timing::solve`] is a `const fn`, so a bus speed known up front costs no division on the device:
 ///
-/// ```ignore
+/// ```no_run
+/// # #![no_std]
+/// # #[panic_handler]
+/// # fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 /// use embassy_mspm0::i2c::{ClockDiv, ClockSel, Config, Timing};
 /// use embassy_mspm0::sysctl::clock;
 ///
+/// # fn main() {
 /// const CLOCK: clock::ClockSetup = clock::Config::new().build();
 /// const TIMING: Timing = match Timing::solve(&CLOCK.clocks(), ClockSel::MfClk, ClockDiv::DivBy1, 100_000) {
 ///     Some(timing) => timing,
-///     None => panic!("100 kHz is not reachable from MFCLK"),
+///     None => core::panic!("100 kHz is not reachable from MFCLK"),
 /// };
 ///
 /// let config = Config::default().with_timing(TIMING);
+/// # }
 /// ```
 ///
 /// A period only means anything against the clock it was solved for, so the source is part of the

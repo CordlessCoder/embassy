@@ -16,7 +16,10 @@ use crate::interrupt_group::Binding;
 use crate::peripherals::TRNG;
 use crate::sealed;
 use crate::sync::irq_waker::IrqWaker;
-use crate::sysctl::{LowPowerInstance, MaybeWakeGuard, WakeGuard};
+// Only the asynchronous read holds one, and that path needs an interrupt behind it.
+#[cfg(feature = "rt")]
+use crate::sysctl::WakeGuard;
+use crate::sysctl::{LowPowerInstance, MaybeWakeGuard};
 
 /// Woken by the TRNG interrupt. Reachable only through [`InterruptHandler`], so a binary that binds
 /// no handler drops it along with the handler.

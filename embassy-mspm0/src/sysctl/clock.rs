@@ -5,10 +5,12 @@
 //! `u32`, so a configuration built from constants folds at compile time:
 //!
 //! ```ignore
+//! use embassy_mspm0::sysctl::clock::{Clocks, Config, MclkSource};
+//!
 //! const CFG: Config = Config::new().with_mclk(MclkSource::Hsclk);
 //! const CLOCKS: Clocks = match CFG.resolve() {
 //!     Ok(clocks) => clocks,
-//!     Err(_) => panic!("clock configuration is out of range"),
+//!     Err(_) => core::panic!("clock configuration is out of range"),
 //! };
 //! ```
 //!
@@ -424,8 +426,14 @@ impl Config {
     /// Prefer this over [`Self::resolve`]: a [`ClockSetup`] built in a `const` carries its answers
     /// with it, so an unbuildable tree is a compile error rather than a runtime panic.
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # #![no_std]
+    /// # #[panic_handler]
+    /// # fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+    /// use embassy_mspm0::sysctl::clock::{ClockSetup, Config};
+    ///
     /// const SETUP: ClockSetup = Config::new().build();
+    /// # fn main() {}
     /// ```
     ///
     /// # Panics

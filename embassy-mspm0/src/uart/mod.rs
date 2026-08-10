@@ -62,7 +62,7 @@ impl ClockSel {
     /// `domain` from the instance rather than assuming it:
     ///
     /// ```ignore
-    /// use embassy_mspm0::sysctl::{LowPowerInstance, clock};
+    /// use embassy_mspm0::sysctl::{self, LowPowerInstance, clock};
     /// use embassy_mspm0::{peripherals, uart::ClockSel};
     ///
     /// const CLOCKS: clock::Clocks = clock::RESET_SETUP.clocks();
@@ -1158,18 +1158,23 @@ fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), Confi
 /// [`Baud::solve`] is a `const fn`, so a program whose clock and baud rate are known up front can
 /// solve at compile time and keep the search out of the binary:
 ///
-/// ```ignore
-/// use embassy_mspm0::uart::{Baud, Config};
+/// ```no_run
+/// # #![no_std]
+/// # #[panic_handler]
+/// # fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 /// use embassy_mspm0::sysctl;
+/// use embassy_mspm0::uart::{Baud, ClockSel, Config};
 ///
+/// # fn main() {
 /// // The clock tree is a constant, so its rates are too.
 /// const CLOCK: u32 = sysctl::clock::RESET_SETUP.clocks().ulpclk;
 /// const BAUD: Baud = match Baud::solve(ClockSel::MfClk, CLOCK, 9600) {
 ///     Some(baud) => baud,
-///     None => panic!("9600 baud is not reachable from this clock"),
+///     None => core::panic!("9600 baud is not reachable from this clock"),
 /// };
 ///
 /// let config = Config::default().with_baud(BAUD);
+/// # }
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1233,7 +1238,10 @@ impl Baud {
     /// off, and the IrDA register is only ever read — so this answer is exact rather than optimistic.
     /// **Adding any of them to [`Config`] means revisiting this.**
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # #![no_std]
+    /// # #[panic_handler]
+    /// # fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
     /// use embassy_mspm0::sysctl::clock;
     /// use embassy_mspm0::uart::{Baud, ClockSel};
     ///
@@ -1242,6 +1250,7 @@ impl Baud {
     ///     Some(baud) => baud,
     ///     None => core::panic!("9600 is not reachable from LFCLK"),
     /// };
+    /// # fn main() {}
     /// ```
     pub const fn solve(source: ClockSel, clock_hz: u32, baudrate: u32) -> Option<Self> {
         // `UART_ERR_03` — 3x from BUSCLK or MFCLK sets RXINT erroneously and can corrupt transmitted
