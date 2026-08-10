@@ -1421,6 +1421,10 @@ impl<'d> I2c<'d, Blocking> {
 impl<'d> I2c<'d, Async> {
     async fn write_async_internal(&mut self, addr: Address, write: &[u8], end_w_stop: bool) -> Result<(), Error> {
         self.clear_timeout();
+        if write.is_empty() {
+            return Err(Error::ZeroLengthTransfer);
+        }
+
         let _guard = self.wake_floor.map(WakeGuard::new);
         let abort = Self::abort_on_drop(self.info.regs, self.state);
 
@@ -1493,6 +1497,10 @@ impl<'d> I2c<'d, Async> {
         end_w_stop: bool,
     ) -> Result<(), Error> {
         self.clear_timeout();
+        if read.is_empty() {
+            return Err(Error::ZeroLengthTransfer);
+        }
+
         let _guard = self.wake_floor.map(WakeGuard::new);
         let abort = Self::abort_on_drop(self.info.regs, self.state);
 
