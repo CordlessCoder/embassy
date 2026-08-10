@@ -545,6 +545,12 @@ const fn settle_cycles(mclk: u32, clock_hz: u32) -> u16 {
 /// bound is still an error path rather than a hang.
 const IDLE_HALF_PERIODS: u32 = 4;
 
+/// Most bytes one burst can carry, from the width of `CCTR.CBLEN`.
+///
+/// Nothing to do with the FIFO, which is a buffer the transfer is fed through rather than the unit it
+/// moves in.
+const MAX_TRANSFER_LEN: usize = 0xFFF;
+
 /// A [`Config`] with everything the driver needs derived from it.
 ///
 /// The two cycle counts are here rather than recomputed where they are used because deriving either one
@@ -620,6 +626,9 @@ pub enum Error {
     ZeroLengthTransfer,
 
     /// Transfer length is over limit.
+    ///
+    /// A transfer is one burst, and `CCTR.CBLEN` counts it in 12 bits, so 4095 bytes is the most any
+    /// one of them can carry.
     TransferLengthIsOverLimit,
 
     /// The address does not fit the addressing mode it was given in.
@@ -1114,20 +1123,6 @@ impl<'d, M: Mode> I2c<'d, M> {
         });
     }
 
-    fn master_continue(&mut self, length: usize, send_ack_nack: bool, send_stop: bool) -> Result<(), Error> {
-        // delay between ongoing transactions, 1000 cycles
-        cortex_m::asm::delay(1000);
-
-        self.info.regs.controller(0).cctr().modify(|w| {
-            w.set_cblen(length as u16);
-            w.set_start(false);
-            w.set_ack(send_ack_nack);
-            w.set_stop(send_stop);
-        });
-
-        Ok(())
-    }
-
     fn master_read(
         &mut self,
         address: Address,
@@ -1238,6 +1233,34 @@ impl<'d, M: Mode> I2c<'d, M> {
         Ok(())
     }
 
+    /// Push what fits into the transmit FIFO, returning how many bytes went in.
+    ///
+    /// `TXFIFOCNT` counts the space left, not what is queued.
+    fn fill_tx(&self, bytes: &[u8]) -> usize {
+        let ctrl = self.info.regs.controller(0);
+        let mut sent = 0;
+
+        while sent < bytes.len() && ctrl.cfifosr().read().txfifocnt() != 0 {
+            ctrl.ctxdata().write(|w| w.set_value(bytes[sent]));
+            sent += 1;
+        }
+
+        sent
+    }
+
+    /// Take what the receive FIFO holds, returning how many bytes came out.
+    fn drain_rx(&self, into: &mut [u8]) -> usize {
+        let ctrl = self.info.regs.controller(0);
+        let mut got = 0;
+
+        while got < into.len() && ctrl.cfifosr().read().rxfifocnt() != 0 {
+            into[got] = ctrl.crxdata().read().value();
+            got += 1;
+        }
+
+        got
+    }
+
     /// Which half of the transfer went unanswered.
     ///
     /// `ADRACK` and `DATACK` are the difference between nothing being at that address and the target being
@@ -1255,23 +1278,14 @@ impl<'d, M: Mode> I2c<'d, M> {
 }
 
 impl<'d> I2c<'d, Blocking> {
-    fn master_blocking_continue(&mut self, length: usize, send_ack_nack: bool, send_stop: bool) -> Result<(), Error> {
-        self.master_continue(length, send_ack_nack, send_stop)?;
-
-        self.settle_after_start();
-
-        // Poll until the Controller process all bytes or NACK
-        while self.info.regs.controller(0).csr().read().busy() && !self.timed_out() {}
-
-        Ok(())
-    }
-
+    /// Arm a receive burst for `length` bytes and return once the address phase has settled.
+    ///
+    /// The caller drains the FIFO as the bytes arrive; this does not wait for the burst to finish.
     fn master_blocking_read(
         &mut self,
         address: Address,
         length: usize,
         restart: bool,
-        send_ack_nack: bool,
         send_stop: bool,
     ) -> Result<(), Error> {
         // unless restart, Wait for the controller to be idle,
@@ -1279,25 +1293,24 @@ impl<'d> I2c<'d, Blocking> {
             while !self.info.regs.controller(0).csr().read().idle() && !self.timed_out() {}
         }
 
-        self.master_read(address, length, restart, send_ack_nack, send_stop)?;
+        // The burst covers the whole transfer, so its last byte is the transfer's last byte and must be
+        // NACKed to release the target.
+        self.master_read(address, length, restart, false, send_stop)?;
 
         self.settle_after_start();
-
-        // Poll until the Controller process all bytes or NACK
-        while self.info.regs.controller(0).csr().read().busy() && !self.timed_out() {}
 
         Ok(())
     }
 
+    /// Arm a transmit burst for `length` bytes and return once the address phase has settled.
+    ///
+    /// The caller keeps the FIFO fed; this does not wait for the burst to finish.
     fn master_blocking_write(&mut self, address: Address, length: usize, send_stop: bool) -> Result<(), Error> {
         while !self.info.regs.controller(0).csr().read().idle() && !self.timed_out() {}
 
         self.master_write(address, length, send_stop)?;
 
         self.settle_after_start();
-
-        // Poll until the Controller writes all bytes or NACK
-        while self.info.regs.controller(0).csr().read().busy() && !self.timed_out() {}
 
         Ok(())
     }
@@ -1313,40 +1326,34 @@ impl<'d> I2c<'d, Blocking> {
         if read.is_empty() {
             return Err(Error::ZeroLengthTransfer);
         }
-        if read.len() > self.info.fifo_size {
+        if read.len() > MAX_TRANSFER_LEN {
             return Err(Error::TransferLengthIsOverLimit);
         }
 
-        let read_len = read.len();
-        let mut bytes_to_read = read_len;
-        for (number, chunk) in read.chunks_mut(self.info.fifo_size).enumerate() {
-            bytes_to_read -= chunk.len();
-            // if the current transaction is the last & end_w_stop, send stop
-            let send_stop = bytes_to_read == 0 && end_w_stop;
-            // if there are still bytes to read, send ACK
-            let send_ack_nack = bytes_to_read != 0;
+        self.master_blocking_read(address, read.len(), restart, end_w_stop)?;
 
-            if number == 0 {
-                self.master_blocking_read(
-                    address,
-                    chunk.len().min(self.info.fifo_size),
-                    restart,
-                    send_ack_nack,
-                    send_stop,
-                )?
-            } else {
-                self.master_blocking_continue(chunk.len(), send_ack_nack, send_stop)?;
-            }
-
+        // One burst for the whole transfer, drained as it arrives. The controller stretches SCL while
+        // the FIFO is full (SLAU846 25.2.3.8), so falling behind costs bus time rather than bytes.
+        let mut got = 0;
+        while got < read.len() {
             if let Err(err) = self.check_error() {
                 self.recover_after(err);
                 return Err(err);
             }
 
-            for byte in chunk {
-                *byte = self.info.regs.controller(0).crxdata().read().value();
+            got += self.drain_rx(&mut read[got..]);
+
+            // Nothing left to come and nothing left to take: the burst ended early without setting a
+            // status bit to say why.
+            if got < read.len()
+                && !self.info.regs.controller(0).csr().read().busy()
+                && self.info.regs.controller(0).cfifosr().read().rxfifocnt() == 0
+            {
+                self.recover_after(Error::Bus);
+                return Err(Error::Bus);
             }
         }
+
         Ok(())
     }
 
@@ -1355,32 +1362,40 @@ impl<'d> I2c<'d, Blocking> {
         if write.is_empty() {
             return Err(Error::ZeroLengthTransfer);
         }
-        if write.len() > self.info.fifo_size {
+        if write.len() > MAX_TRANSFER_LEN {
             return Err(Error::TransferLengthIsOverLimit);
         }
 
-        let mut bytes_to_send = write.len();
-        for (number, chunk) in write.chunks(self.info.fifo_size).enumerate() {
-            for byte in chunk {
-                let ctrl0 = self.info.regs.controller(0).ctxdata();
-                ctrl0.write(|w| w.set_value(*byte));
-            }
+        // Prime the FIFO before arming, the order TI's own examples use, then keep it fed. The
+        // controller stretches SCL while the FIFO is empty (SLAU846 25.2.3.8), so falling behind costs
+        // bus time rather than bytes.
+        let mut sent = self.fill_tx(write);
 
-            // if the current transaction is the last & end_w_stop, send stop
-            bytes_to_send -= chunk.len();
-            let send_stop = end_w_stop && bytes_to_send == 0;
+        self.master_blocking_write(address, write.len(), end_w_stop)?;
 
-            if number == 0 {
-                self.master_blocking_write(address, chunk.len(), send_stop)?;
-            } else {
-                self.master_blocking_continue(chunk.len(), false, send_stop)?;
-            }
-
+        while sent < write.len() {
             if let Err(err) = self.check_error() {
                 self.recover_after(err);
                 return Err(err);
             }
+
+            // The burst stopped with bytes still to hand over, and no status bit says why.
+            if !self.info.regs.controller(0).csr().read().busy() {
+                self.recover_after(Error::Bus);
+                return Err(Error::Bus);
+            }
+
+            sent += self.fill_tx(&write[sent..]);
         }
+
+        // The last bytes are queued but not yet on the wire.
+        while self.info.regs.controller(0).csr().read().busy() && !self.timed_out() {}
+
+        if let Err(err) = self.check_error() {
+            self.recover_after(err);
+            return Err(err);
+        }
+
         Ok(())
     }
 
@@ -1388,6 +1403,8 @@ impl<'d> I2c<'d, Blocking> {
     //  Blocking public API
 
     /// Blocking read.
+    ///
+    /// `read` may hold between one and 4095 bytes.
     pub fn blocking_read(&mut self, address: impl Into<Address>, read: &mut [u8]) -> Result<(), Error> {
         let address = Address::checked(address)?;
         self.blocking_wait_bus_free()?;
@@ -1395,6 +1412,8 @@ impl<'d> I2c<'d, Blocking> {
     }
 
     /// Blocking write.
+    ///
+    /// `write` may hold between one and 4095 bytes.
     pub fn blocking_write(&mut self, address: impl Into<Address>, write: &[u8]) -> Result<(), Error> {
         let address = Address::checked(address)?;
         self.blocking_wait_bus_free()?;
@@ -1402,6 +1421,8 @@ impl<'d> I2c<'d, Blocking> {
     }
 
     /// Blocking write, restart, read.
+    ///
+    /// Each buffer may hold between one and 4095 bytes.
     pub fn blocking_write_read(
         &mut self,
         address: impl Into<Address>,
@@ -1424,67 +1445,72 @@ impl<'d> I2c<'d, Async> {
         if write.is_empty() {
             return Err(Error::ZeroLengthTransfer);
         }
+        if write.len() > MAX_TRANSFER_LEN {
+            return Err(Error::TransferLengthIsOverLimit);
+        }
 
         let _guard = self.wake_floor.map(WakeGuard::new);
         let abort = Self::abort_on_drop(self.info.regs, self.state);
 
-        let ctrl = self.info.regs.controller(0);
+        // Prime the FIFO before arming, then let the trigger interrupt top it up. The controller
+        // stretches SCL while the FIFO is empty (SLAU846 25.2.3.8), so a late refill costs bus time
+        // rather than bytes.
+        let mut sent = self.fill_tx(write);
 
-        let mut bytes_to_send = write.len();
-        for (number, chunk) in write.chunks(self.info.fifo_size).enumerate() {
-            self.info.regs.cpu_int(0).imask().modify(|w| {
-                w.set_carblost(true);
-                w.set_cnack(true);
-                w.set_timeouta(true);
-                w.set_ctxdone(true);
-            });
+        self.info.regs.cpu_int(0).imask().modify(|w| {
+            w.set_carblost(true);
+            w.set_cnack(true);
+            w.set_timeouta(true);
+            w.set_ctxdone(true);
+            // Nothing to top up when the whole transfer already fits.
+            w.set_ctxfifotrg(sent < write.len());
+        });
 
-            for byte in chunk {
-                ctrl.ctxdata().write(|w| w.set_value(*byte));
-            }
+        self.master_write(addr, write.len(), end_w_stop)?;
 
-            // if the current transaction is the last & end_w_stop, send stop
-            bytes_to_send -= chunk.len();
-            let send_stop = end_w_stop && bytes_to_send == 0;
+        let res: Result<(), Error> = future::poll_fn(|cx| {
+            use crate::i2c::vals::CpuIntIidxStat;
+            // Register prior to checking the condition
+            self.state.waker.register(cx.waker());
 
-            if number == 0 {
-                self.master_write(addr, chunk.len(), send_stop)?;
-            } else {
-                self.master_continue(chunk.len(), false, send_stop)?;
-            }
+            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
+                CpuIntIidxStat::NoIntr => Poll::Pending,
+                CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
+                CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
+                CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
+                CpuIntIidxStat::Ctxfifotrg => {
+                    sent += self.fill_tx(&write[sent..]);
 
-            let res: Result<(), Error> = future::poll_fn(|cx| {
-                use crate::i2c::vals::CpuIntIidxStat;
-                // Register prior to checking the condition
-                self.state.waker.register(cx.waker());
+                    // Reading `IIDX` cleared this one, so the next wake comes from the FIFO draining
+                    // again or from the burst finishing. Stop asking once there is nothing left to add.
+                    if sent == write.len() {
+                        self.info.regs.cpu_int(0).imask().modify(|w| w.set_ctxfifotrg(false));
+                    }
 
-                let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
-                    CpuIntIidxStat::NoIntr => Poll::Pending,
-                    CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
-                    CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
-                    CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
-                    CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
-                    _ => Poll::Pending,
-                };
-
-                if !result.is_pending() {
-                    self.info
-                        .regs
-                        .cpu_int(0)
-                        .imask()
-                        .write_value(i2c::regs::CpuInt::default());
+                    Poll::Pending
                 }
-                return result;
-            })
-            .await;
+                CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
+                _ => Poll::Pending,
+            };
 
-            if let Err(err) = res {
-                // The guard's cleanup done eagerly, so it must not run a second time.
-                self.recover_after(err);
-                abort.defuse();
-                return Err(err);
+            if !result.is_pending() {
+                self.info
+                    .regs
+                    .cpu_int(0)
+                    .imask()
+                    .write_value(i2c::regs::CpuInt::default());
             }
+            return result;
+        })
+        .await;
+
+        if let Err(err) = res {
+            // The guard's cleanup done eagerly, so it must not run a second time.
+            self.recover_after(err);
+            abort.defuse();
+            return Err(err);
         }
+
         abort.defuse();
         Ok(())
     }
@@ -1500,69 +1526,75 @@ impl<'d> I2c<'d, Async> {
         if read.is_empty() {
             return Err(Error::ZeroLengthTransfer);
         }
+        if read.len() > MAX_TRANSFER_LEN {
+            return Err(Error::TransferLengthIsOverLimit);
+        }
 
         let _guard = self.wake_floor.map(WakeGuard::new);
         let abort = Self::abort_on_drop(self.info.regs, self.state);
 
-        let read_len = read.len();
+        self.info.regs.cpu_int(0).imask().modify(|w| {
+            w.set_carblost(true);
+            w.set_cnack(true);
+            w.set_timeouta(true);
+            w.set_crxdone(true);
+            w.set_crxfifotrg(true);
+        });
 
-        let mut bytes_to_read = read_len;
-        for (number, chunk) in read.chunks_mut(self.info.fifo_size).enumerate() {
-            bytes_to_read -= chunk.len();
-            // if the current transaction is the last & end_w_stop, send stop
-            let send_stop = bytes_to_read == 0 && end_w_stop;
-            // if there are still bytes to read, send ACK
-            let send_ack_nack = bytes_to_read != 0;
+        // One burst for the whole transfer, so its last byte is the transfer's last byte and is NACKed
+        // to release the target. The FIFO is drained as it fills; the controller stretches SCL while it
+        // is full (SLAU846 25.2.3.8), so a late drain costs bus time rather than bytes.
+        self.master_read(addr, read.len(), restart, false, end_w_stop)?;
 
-            self.info.regs.cpu_int(0).imask().modify(|w| {
-                w.set_carblost(true);
-                w.set_cnack(true);
-                w.set_timeouta(true);
-                w.set_crxdone(true);
-            });
+        let mut got = 0;
+        let res: Result<(), Error> = future::poll_fn(|cx| {
+            use crate::i2c::vals::CpuIntIidxStat;
+            // Register prior to checking the condition
+            self.state.waker.register(cx.waker());
 
-            if number == 0 {
-                self.master_read(addr, chunk.len(), restart, send_ack_nack, send_stop)?
-            } else {
-                self.master_continue(chunk.len(), send_ack_nack, send_stop)?;
-            }
-
-            let res: Result<(), Error> = future::poll_fn(|cx| {
-                use crate::i2c::vals::CpuIntIidxStat;
-                // Register prior to checking the condition
-                self.state.waker.register(cx.waker());
-
-                let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
-                    CpuIntIidxStat::NoIntr => Poll::Pending,
-                    CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
-                    CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
-                    CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
-                    CpuIntIidxStat::Crxdonefg => Poll::Ready(Ok(())),
-                    _ => Poll::Pending,
-                };
-
-                if !result.is_pending() {
-                    self.info
-                        .regs
-                        .cpu_int(0)
-                        .imask()
-                        .write_value(i2c::regs::CpuInt::default());
+            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
+                CpuIntIidxStat::NoIntr => Poll::Pending,
+                CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
+                CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
+                CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
+                CpuIntIidxStat::Crxfifotrg => {
+                    got += self.drain_rx(&mut read[got..]);
+                    Poll::Pending
                 }
-                return result;
-            })
-            .await;
+                // The burst is over, so what is still in the FIFO is its tail: those bytes are ours
+                // whether or not the trigger level is reached again.
+                CpuIntIidxStat::Crxdonefg => {
+                    got += self.drain_rx(&mut read[got..]);
+                    Poll::Ready(Ok(()))
+                }
+                _ => Poll::Pending,
+            };
 
-            if let Err(err) = res {
-                // The guard's cleanup done eagerly, so it must not run a second time.
-                self.recover_after(err);
-                abort.defuse();
-                return Err(err);
+            if !result.is_pending() {
+                self.info
+                    .regs
+                    .cpu_int(0)
+                    .imask()
+                    .write_value(i2c::regs::CpuInt::default());
             }
+            return result;
+        })
+        .await;
 
-            for byte in chunk {
-                *byte = self.info.regs.controller(0).crxdata().read().value();
-            }
+        if let Err(err) = res {
+            // The guard's cleanup done eagerly, so it must not run a second time.
+            self.recover_after(err);
+            abort.defuse();
+            return Err(err);
         }
+
+        if got < read.len() {
+            // The burst ended without delivering everything and no status bit says why.
+            self.recover_after(Error::Bus);
+            abort.defuse();
+            return Err(Error::Bus);
+        }
+
         abort.defuse();
         Ok(())
     }
