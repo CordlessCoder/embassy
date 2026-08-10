@@ -1088,7 +1088,9 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
 
         let feature = format!("time-driver-{}", name.to_lowercase());
 
-        if singleton.name.contains(selected_timer) {
+        // Compare the stripped name whole: `TIMG14` contains `TIMG1`, and a substring match hides it
+        // from `Peripherals` wherever the auto-pick lands on `TIMG1`.
+        if name == selected_timer {
             singleton.cfg = Some(quote! { #[cfg(not(any(feature = "time-driver-any", feature = #feature)))] });
         } else {
             singleton.cfg = Some(quote! { #[cfg(not(feature = #feature))] });
