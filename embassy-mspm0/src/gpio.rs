@@ -331,7 +331,9 @@ impl<'d> Flex<'d, Async> {
             return;
         }
 
-        self.wait_for_rising_edge().await
+        // Not `wait_for_rising_edge`: this promises a level, so the wait has to survive the pin going
+        // high between the test above and the edge detector being armed. `park` re-tests it there.
+        self.wait_inner(Edge::Rising, Some(true)).await
     }
 
     /// Wait until the pin is low. If it is already low, return immediately.
@@ -341,31 +343,31 @@ impl<'d> Flex<'d, Async> {
             return;
         }
 
-        self.wait_for_falling_edge().await
+        self.wait_inner(Edge::Falling, Some(false)).await
     }
 
     /// Wait for the pin to undergo a transition from low to high.
     #[inline]
     pub fn wait_for_rising_edge(&mut self) -> impl Future<Output = ()> {
-        self.wait_inner(Edge::Rising)
+        self.wait_inner(Edge::Rising, None)
     }
 
     /// Wait for the pin to undergo a transition from high to low.
     #[inline]
     pub fn wait_for_falling_edge(&mut self) -> impl Future<Output = ()> {
-        self.wait_inner(Edge::Falling)
+        self.wait_inner(Edge::Falling, None)
     }
 
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
     #[inline]
     pub fn wait_for_any_edge(&mut self) -> impl Future<Output = ()> {
-        self.wait_inner(Edge::Any)
+        self.wait_inner(Edge::Any, None)
     }
 
-    async fn wait_inner(&mut self, edge: Edge) {
+    async fn wait_inner(&mut self, edge: Edge, settled_high: Option<bool>) {
         // Not armed here: `park` arms from inside its first poll, where the waker exists, so that the
         // registration and the unmask are one critical section and no edge can land between them.
-        let arm = EdgeArm::new(self.pin.block(), self.pin.pin_port(), edge);
+        let arm = EdgeArm::new(self.pin.block(), self.pin.pin_port(), edge, settled_high);
 
         park(&arm).await;
     }
@@ -373,9 +375,17 @@ impl<'d> Flex<'d, Async> {
 
 /// Park until the interrupt reports the edge, arming the pin on the first poll.
 ///
-/// The interrupt clears `outstanding`, so that is the completion test rather than the status bit. Nothing
-/// is checked before arming because there is nothing to check: the edge that completes this wait is by
-/// definition one that arrives after the pin is unmasked.
+/// The interrupt clears `outstanding`, so that is the completion test rather than the status bit.
+///
+/// `settled_high` is what separates a level wait from an edge wait. An edge wait passes [`None`]: the
+/// edge that completes it is by definition one that arrives after the pin is unmasked, so there is
+/// nothing to check before arming. A level wait passes the level it is waiting for, because it promises
+/// something else — that it returns once the pin *is* at that level, however it got there.
+///
+/// **Arming clears the edge status**, so a level that arrives between the caller's own test and the arm
+/// below takes its edge with it and the wait would otherwise block for a second one that may never come.
+/// Re-testing the level immediately after arming closes that window: either the edge is still to come
+/// and the wait proceeds, or the level is already there and the wait is over.
 ///
 /// The arm is taken by value and moved into the closure rather than borrowed across the await: a borrow
 /// would need `EdgeArm` to be `Sync`, which is a much larger claim than it needs to make.
@@ -387,6 +397,12 @@ async fn park(arm: &EdgeArm) {
         if !armed {
             arm.arm(cx.waker());
             armed = true;
+
+            if let Some(high) = arm.settled_high {
+                if arm.is_high() == high {
+                    return Poll::Ready(());
+                }
+            }
 
             return Poll::Pending;
         }
@@ -456,11 +472,25 @@ struct EdgeArm {
     /// flash against eight of RAM per waiting task.
     bit: u8,
     port: u8,
+    /// The level a level wait is settling for, or [`None`] for an edge wait.
+    ///
+    /// Here rather than in [`park`]'s future because `bit` and `port` leave padding before `waiter`,
+    /// so this rides along free; in the future it grew the task frame for every edge wait too.
+    settled_high: Option<bool>,
     waiter: Waiter<EdgeWait>,
 }
 
 #[cfg(feature = "rt")]
 impl EdgeArm {
+    /// Whether the pin reads high right now.
+    ///
+    /// [`park`] uses this to close the window between a caller testing the level and the edge detector
+    /// being armed.
+    #[inline]
+    fn is_high(&self) -> bool {
+        self.block.din31_0().read().dio(self.bit as usize)
+    }
+
     /// Describe a wait without touching the hardware. [`EdgeArm::arm`] is what starts it.
     ///
     /// Nothing here may be observable, because this value is returned by move: until it has come to rest
@@ -469,11 +499,12 @@ impl EdgeArm {
     /// **Both of this type's `unsafe` assumptions are established here**, and neither field is written
     /// again: the `% 32` is what lets [`EdgeArm::bit`] promise a bit in range, and the `/ 32` of a pin
     /// this chip has is what lets [`EdgeArm::waiters`] index the port array without a check.
-    fn new(block: gpio::Gpio, pin_port: u8, edge: Edge) -> Self {
+    fn new(block: gpio::Gpio, pin_port: u8, edge: Edge, settled_high: Option<bool>) -> Self {
         Self {
             block,
             bit: pin_port % 32,
             port: pin_port / 32,
+            settled_high,
             waiter: Waiter::new(EdgeWait {
                 bit: pin_port % 32,
                 edge,
