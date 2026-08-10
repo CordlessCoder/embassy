@@ -596,7 +596,11 @@ impl Config {
                 return Err(ClockError::PllReferenceOutOfRange);
             }
 
-            let vco = loop_in * pll.qdiv as u32;
+            // `qdiv` is a field the caller fills in, and a runtime `try_build` reaches here with it
+            // unchecked: a plausible reference and a large multiplier wrap rather than being rejected.
+            let Some(vco) = loop_in.checked_mul(pll.qdiv as u32) else {
+                return Err(ClockError::PllVcoOutOfRange);
+            };
             if vco < VCO_MIN_HZ || vco > VCO_MAX_HZ {
                 return Err(ClockError::PllVcoOutOfRange);
             }

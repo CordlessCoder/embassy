@@ -153,3 +153,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/adc: `Adc::new_blocking` can be called without naming the mode
 - fix: mspm0/i2c: dropping an `I2c` releases its pins, as every other pin-owning driver already did
 - fix: mspm0/low-power: entering STOP0 on a C-series device no longer switches MCLK off LFCLK, which the hardware preserves by itself and nothing switched back
+- fix: mspm0/sysctl: a PLL configuration whose VCO frequency overflows is reported rather than wrapping to a value that passes the range check
