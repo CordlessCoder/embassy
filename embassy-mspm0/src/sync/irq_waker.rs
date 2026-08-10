@@ -74,14 +74,17 @@ impl IrqWaker {
         // under the read. The handler only reads it too.
         let stored = unsafe { &*self.waker.as_ptr() };
         let parked = match stored {
-            Some(stored) if stored.will_wake(waker) => None,
+            Some(stored) if stored.will_wake(waker) => return,
             // Cloned before the section: a `Waker`'s clone is someone else's code and has no business
             // running with interrupts off.
-            _ => Some(waker.clone()),
+            _ => waker.clone(),
         };
 
+        // Nothing above this line writes, so the section covers the one store and no more. Returning
+        // early on the common path — the same waker, already stored — keeps interrupts on through it.
+        //
         // The displaced waker is bound out here because its drop is someone else's code as well.
-        let _displaced = critical_section::with(|_cs| parked.and_then(|parked| self.waker.replace(Some(parked))));
+        let _displaced = critical_section::with(|_cs| self.waker.replace(Some(parked)));
     }
 
     /// Wake whoever is registered, from the interrupt, with no lock.

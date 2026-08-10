@@ -145,3 +145,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/mathacl: `IQType::to_reg` encoded every negative whole number one too small, so a result fed back into `div_iq` was wrong
 - fix: mspm0/i2c: an asynchronous transfer with an empty buffer reported success without putting anything on the bus
 - fix: mspm0/i2c: a transfer is one burst fed through the FIFO rather than one FIFO load, so neither path is capped at the FIFO size any more
+- mspm0/sync: registering the same waker again no longer takes a critical section, so interrupts stay on through the common path of every asynchronous poll
