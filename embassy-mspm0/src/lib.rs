@@ -16,18 +16,19 @@ pub mod adc;
 pub mod dma;
 #[cfg(feature = "_executor")]
 pub mod executor;
+pub mod flash;
 pub mod gpio;
 // A UNICOMM chip reaches I2C through that block instead, and its mode driver is not written yet.
+#[cfg(comp)]
+pub mod comp;
+#[cfg(crc)]
+pub mod crc;
 #[cfg(not(unicomm))]
 pub mod i2c;
 #[cfg(not(unicomm))]
 pub mod i2c_target;
 #[cfg(feature = "low-power")]
 pub mod low_power;
-#[cfg(comp)]
-pub mod comp;
-#[cfg(crc)]
-pub mod crc;
 #[cfg(mathacl)]
 pub mod mathacl;
 #[cfg(opa)]

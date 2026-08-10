@@ -82,6 +82,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_opa_adc_channels());
     g.extend(generate_trng_constants());
     g.extend(generate_vref_constants());
+    g.extend(generate_flash_geometry());
     g.extend(generate_clock_ceilings());
     g.extend(clock_tree);
 
@@ -167,6 +168,7 @@ const ERRATA_CFGS: &[&str] = &[
     "COMP_ERR_01",
     "COMP_ERR_03",
     "COMP_ERR_05",
+    "FLASH_ERR_06",
     "GPIO_ERR_01",
     "MATHACL_ERR_02",
     "UART_ERR_03",
@@ -216,6 +218,11 @@ struct SysctlCaps {
     /// peripheral.
     clkout_hfclk: bool,
     clkout_syspllclk1: bool,
+
+    /// Whether SYSCTL has `SECCFG.SECSTATUS.FLBANKSWP`, which says the two MAIN banks are running
+    /// swapped. Only the multi-bank blocks have it, and only there can the flash a sector number
+    /// names differ from the flash its protection bit names.
+    flash_bank_swap: bool,
 }
 
 impl SysctlCaps {
@@ -227,6 +234,7 @@ impl SysctlCaps {
         rstcause_flashecc: false,
         clkout_hfclk: false,
         clkout_syspllclk1: false,
+        flash_bank_swap: false,
     };
 }
 
@@ -270,6 +278,7 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             rstcause_nonpmuparity: true,
             rstcause_flashecc: true,
             clkout_hfclk: true,
+            flash_bank_swap: true,
             ..SysctlCaps::NONE
         },
 
@@ -297,6 +306,7 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             rstcause_wwdt1: true,
             clkout_hfclk: true,
             clkout_syspllclk1: true,
+            flash_bank_swap: true,
             ..SysctlCaps::NONE
         },
 
@@ -311,6 +321,7 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             rstcause_wwdt1: true,
             clkout_hfclk: true,
             clkout_syspllclk1: true,
+            flash_bank_swap: true,
             ..SysctlCaps::NONE
         },
 
@@ -329,6 +340,7 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
         ("rstcause_flashecc", caps.rstcause_flashecc),
         ("mspm0_clkout_hfclk", caps.clkout_hfclk),
         ("mspm0_clkout_syspllclk1", caps.clkout_syspllclk1),
+        ("mspm0_flash_bank_swap", caps.flash_bank_swap),
     ] {
         cfgs.declare(cfg);
         if present {
@@ -689,6 +701,72 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
         /// `fADCCLK`, the range the clock selected by `CLKCFG.SAMPCLK` must stay within.
         pub const ADC_CLK_MIN_HZ: u32 = #min;
         pub const ADC_CLK_MAX_HZ: u32 = #max;
+    }
+}
+
+/// Emit the MAIN flash geometry and the width of each sector-protection register.
+///
+/// Every one of these is per device rather than per family. The sector size is 1024 everywhere so
+/// far and is still read rather than assumed, because a driverlib constant stated once for the whole
+/// portfolio is what the `vref()` trap was made of.
+///
+/// The protection widths are not a presence flag: where `CMDWEPROTA` is absent the unprotect step
+/// moves to `CMDWEPROTB` at eight sectors per bit rather than going away, and skipping it fails the
+/// first erase at run time with nothing refusing to build.
+fn generate_flash_geometry() -> TokenStream {
+    let Some(flash) = METADATA.peripherals.iter().find_map(|peripheral| peripheral.flashctl) else {
+        return TokenStream::new();
+    };
+
+    let region = METADATA
+        .memory
+        .iter()
+        .find(|region| region.kind == MemoryKind::Flash && region.name == "FLASH")
+        .unwrap_or_else(|| panic!("{} has a FLASHCTL and no FLASH region", METADATA.name));
+
+    assert_eq!(
+        region.address, 0,
+        "MAIN flash is somewhere other than 0, so an offset is no longer an address"
+    );
+
+    // Every current device programs one 64-bit flash word per command, the G518x included: its 128
+    // is the controller's widest *multi-word* program, and its own datasheet still states a 64-bit
+    // flash word. `CMDBYTEN` in this register block is eight data bits plus one ECC bit, which is
+    // the same statement from the other side.
+    assert!(
+        flash.word_bytes == 8 || flash.word_bytes == 16,
+        "{} has a {}-byte flash word, which the driver has never seen",
+        METADATA.name,
+        flash.word_bytes,
+    );
+
+    assert_eq!(
+        flash.weprotc_bits, 0,
+        "{} implements CMDWEPROTC, which the unprotect step does not reach",
+        METADATA.name,
+    );
+
+    let size = region.size;
+    let sector_bytes = flash.sector_bytes;
+    let has_ecc = flash.has_ecc;
+    let weprota_bits = flash.weprota_bits;
+    let weprotb_bits = flash.weprotb_bits;
+
+    quote! {
+        /// Size of the MAIN flash region, in bytes.
+        pub const FLASH_SIZE: u32 = #size;
+
+        /// Erase granularity, in bytes.
+        pub const FLASH_SECTOR_SIZE: u32 = #sector_bytes;
+
+        /// Whether the flash stores eight ECC bits alongside every 64-bit word.
+        pub const FLASH_HAS_ECC: bool = #has_ecc;
+
+        /// Implemented bits in `CMDWEPROTA`, one sector each. Zero where the register is absent.
+        pub const FLASH_WEPROTA_BITS: u8 = #weprota_bits;
+
+        /// Implemented bits in `CMDWEPROTB`, eight sectors each.
+        pub const FLASH_WEPROTB_BITS: u8 = #weprotb_bits;
     }
 }
 
@@ -1479,6 +1557,7 @@ fn generate_peripheral_instances() -> TokenStream {
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
             "crc" => Some(quote! { impl_crc_instance!(#peri); }),
+            "flashctl" => Some(quote! { impl_flash_instance!(#peri); }),
             "comp" => {
                 // Whether `REFSRC` 5, 6 and 7 select anything here. They come and go together, and
                 // where they are absent they select no reference at all rather than failing.
