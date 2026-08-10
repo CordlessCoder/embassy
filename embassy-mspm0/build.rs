@@ -55,6 +55,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     peripheral_name_cfgs(cfgs);
     errata_cfgs(cfgs);
     sysctl_version_cfgs(cfgs);
+    crc_version_cfgs(cfgs);
     let clock_tree = clock_tree_cfgs(cfgs);
 
     let mut singletons = get_singletons(cfgs);
@@ -96,7 +97,7 @@ fn generate_code(cfgs: &mut CfgSet) {
 /// A family list goes stale — `trng` was gated on six families while the metadata reported seven.
 /// Add a kind here when a module starts gating on it; an undeclared cfg warns, so an omission shows
 /// up at once.
-const PERIPHERAL_KIND_CFGS: &[&str] = &["comp", "dac", "mathacl", "opa", "trng", "usbfs", "vref"];
+const PERIPHERAL_KIND_CFGS: &[&str] = &["comp", "crc", "dac", "mathacl", "opa", "trng", "usbfs", "vref"];
 
 /// Enable a cfg for each kind in [`PERIPHERAL_KIND_CFGS`] this chip actually has.
 fn peripheral_kind_cfgs(cfgs: &mut CfgSet) {
@@ -107,6 +108,36 @@ fn peripheral_kind_cfgs(cfgs: &mut CfgSet) {
             cfgs.enable(kind);
         }
     }
+}
+
+/// The CRC register blocks, which differ in what they can compute rather than only in layout.
+///
+/// `16` is 16-bit with a fixed polynomial, `v1` adds a 32-bit mode, and `p` adds a programmable
+/// polynomial. Which a chip has does not follow its family, so the driver gates on this and never on
+/// the part — and the instance is variously `CRC`, `CRC0` or `CRCP0`, so it cannot be found by name
+/// either.
+const CRC_VERSION_CFGS: &[&str] = &["crc_16", "crc_p", "crc_v1"];
+
+/// Enable the cfg for whichever CRC block this chip has, if any.
+fn crc_version_cfgs(cfgs: &mut CfgSet) {
+    cfgs.declare_all(CRC_VERSION_CFGS);
+
+    let Some(version) = METADATA
+        .peripherals
+        .iter()
+        .find(|peripheral| peripheral.kind == "crc")
+        .and_then(|peripheral| peripheral.version)
+    else {
+        return;
+    };
+
+    let cfg = format!("crc_{version}");
+    assert!(
+        CRC_VERSION_CFGS.contains(&cfg.as_str()),
+        "unrecognised CRC block `{version}`: the driver has to be taught what it can compute"
+    );
+
+    cfgs.enable(cfg);
 }
 
 /// Peripheral *instances* a driver gates on, where the kind is not specific enough.
@@ -1447,6 +1478,7 @@ fn generate_peripheral_instances() -> TokenStream {
                 Some(quote! { impl_opa_instance!(#peri, #ground); #cascade })
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
+            "crc" => Some(quote! { impl_crc_instance!(#peri); }),
             "comp" => {
                 // Whether `REFSRC` 5, 6 and 7 select anything here. They come and go together, and
                 // where they are absent they select no reference at all rather than failing.

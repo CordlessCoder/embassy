@@ -26,6 +26,8 @@ pub mod i2c_target;
 pub mod low_power;
 #[cfg(comp)]
 pub mod comp;
+#[cfg(crc)]
+pub mod crc;
 #[cfg(mathacl)]
 pub mod mathacl;
 #[cfg(opa)]
