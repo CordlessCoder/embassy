@@ -1,6 +1,9 @@
-//! MATHACL
+//! MATHACL, the math accelerator.
 //!
-//! This HAL implements mathematical calculations performed by the CPU.
+//! Division, trigonometry and coordinate conversion in hardware, so a core with no divider and no
+//! floating-point unit does not have to link one. Every entry point takes and returns [`IQType`],
+//! fixed point in the format the registers use; the `f32` wrappers are a convenience that costs the
+//! caller a soft-float library.
 
 #![macro_use]
 
@@ -22,6 +25,9 @@ use crate::sysctl::MaybeWakeGuard;
 #[cfg(test)]
 const ERROR_TOLERANCE: f32 = 0.00001;
 
+/// How many bits of the result the accelerator iterates for, one per cycle.
+///
+/// The count is the cost: [`Precision::High`] takes 31 cycles and [`Precision::Low`] one.
 pub enum Precision {
     High = 31,
     Medium = 15,
@@ -68,9 +74,14 @@ pub enum Error {
     /// Not reachable by a caller doing anything wrong: an operation takes at most `NUMITER` cycles,
     /// so this means the peripheral is wedged.
     Timeout,
+    /// The angle was outside the accepted range.
     ValueInWrongRange,
+    /// Refused before the accelerator saw it, which reports sooner than `STATUS.ERR` and keeps
+    /// `MATHACL_ERR_01`'s reset-to-recover out of reach.
     DivideByZero,
+    /// The two operands of a division are in different fixed-point formats.
     FaultIQTypeFormat,
+    /// A value could not be put into the fixed-point format asked for.
     IQTypeError(IQTypeError),
 }
 
@@ -87,7 +98,6 @@ pub struct Mathacl<'d> {
 impl<'d> Mathacl<'d> {
     /// Mathacl initialization.
     pub fn new<T: Instance>(_instance: Peri<'d, T>) -> Self {
-        // Init power
         T::regs().gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
             w.set_resetassert(true);
@@ -99,7 +109,7 @@ impl<'d> Mathacl<'d> {
             w.set_key(vals::PwrenKey::Key);
         });
 
-        // init delay, 16 cycles
+        // Init delay from the M0 examples by TI in CCStudio (16 cycles)
         cortex_m::asm::delay(16);
 
         Self {
@@ -230,16 +240,20 @@ impl<'d> Mathacl<'d> {
             .to_f32())
     }
 
-    /// Calsulates trigonometric sine operation in the range [-1,1) with a give precision.
+    /// Sine of `rad`, which must be in `[-PI, PI]`.
+    ///
+    /// Takes and returns `f32`, so it links a soft-float library on a core with no FPU;
+    /// [`Mathacl::sin_per_unit`] is the same operation in the units the hardware wants.
     pub fn sin(&mut self, rad: f32, precision: Precision) -> Result<f32, Error> {
         self.sincos(rad, precision, true)
     }
 
-    /// Calsulates trigonometric cosine operation in the range [-1,1) with a give precision.
+    /// Cosine of `rad`, which must be in `[-PI, PI]`. See [`Mathacl::sin`] on the `f32` cost.
     pub fn cos(&mut self, rad: f32, precision: Precision) -> Result<f32, Error> {
         self.sincos(rad, precision, false)
     }
 
+    /// Signed division, reporting a zero divisor rather than dividing by it.
     pub fn div_i32(&mut self, dividend: i32, divisor: i32) -> Result<i32, Error> {
         if divisor == 0 {
             return Err(Error::DivideByZero);
@@ -261,6 +275,7 @@ impl<'d> Mathacl<'d> {
         Ok(self.regs.res1().read() as i32)
     }
 
+    /// Unsigned division, reporting a zero divisor rather than dividing by it.
     pub fn div_u32(&mut self, dividend: u32, divisor: u32) -> Result<u32, Error> {
         if divisor == 0 {
             return Err(Error::DivideByZero);
@@ -341,12 +356,14 @@ macro_rules! impl_mathacl_instance {
     };
 }
 
-/// Error type for Mathacl operations.
+/// Why a value could not be held in the fixed-point format asked for.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum IQTypeError {
+    /// A negative value was asked for in an unsigned format.
     FaultySignParameter,
+    /// The integer part needs more bits than the format leaves for it.
     IntPartIsTrimmed,
 }
 
@@ -356,6 +373,12 @@ impl From<IQTypeError> for Error {
     }
 }
 
+/// A 32-bit fixed-point number, with the integer and fractional widths chosen per value.
+///
+/// This is the accelerator's own format, so a caller that stays in it links no soft-float at all.
+/// The register layout is **two's complement**, which [`IQType::from_reg`] is the authority on — a
+/// hand-written constant read as sign-and-magnitude decodes to one LSB rather than to the value it
+/// looks like.
 #[derive(Debug, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct IQType {
@@ -367,8 +390,10 @@ pub struct IQType {
     f_data: u32,
 }
 
-/// IQType implements 32-bit fixed point numbers with configurable integer and fractional parts.
 impl IQType {
+    /// Decode a result register, `i_bits` of which are the integer part.
+    ///
+    /// A `signed` value spends one bit on the sign and holds the rest in two's complement.
     pub fn from_reg(data: u32, i_bits: u8, signed: bool) -> Result<Self, IQTypeError> {
         let negative = signed && ((1u32 << 31) & data != 0);
 
@@ -394,7 +419,7 @@ impl IQType {
         };
         let mut f_data = data & f_mask;
 
-        // if negative, do 2’s compliment
+        // if negative, do 2’s complement
         if negative {
             i_data = !i_data & i_mask;
             f_data = (!f_data & f_mask) + 1;
@@ -410,6 +435,8 @@ impl IQType {
         })
     }
 
+    /// Convert from `f32`, which is what pulls a soft-float library in. Prefer [`IQType::from_reg`]
+    /// where the value is already fixed point.
     pub fn from_f32(data: f32, i_bits: u8, signed: bool) -> Result<Self, IQTypeError> {
         let negative = data < 0.0;
 
@@ -441,6 +468,7 @@ impl IQType {
         })
     }
 
+    /// Convert to `f32`. See [`IQType::from_f32`] on what that costs.
     pub fn to_f32(&self) -> f32 {
         let mut value = (self.i_data as f32) + (self.f_data as f32) / (1u32 << self.f_bits as u8) as f32;
         if self.negative {
@@ -449,6 +477,7 @@ impl IQType {
         return value;
     }
 
+    /// Encode for an operand register, in the two's-complement layout [`IQType::from_reg`] describes.
     pub fn to_reg(&self) -> u32 {
         // `f_data` can be one past its field, carrying into the integer part: `from_reg` two's
         // complements the fraction on its own, and `from_f32` rounds it up. Add the two rather than
@@ -460,7 +489,7 @@ impl IQType {
         };
         res = res.wrapping_add(self.f_data);
 
-        // if negative, do 2’s compliment
+        // if negative, do 2’s complement
         if self.negative {
             res = res.wrapping_neg();
         }
