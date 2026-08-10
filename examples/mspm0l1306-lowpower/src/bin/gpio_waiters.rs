@@ -20,6 +20,7 @@
 //! | case | what it proves |
 //! |---|---|
 //! | `two waiters` | the interrupt's search and the drop's removal both get past a node that is not theirs |
+//! | `both at once` | two pins pending before the handler runs, which it takes one entry each to reach |
 //! | `wrong direction` | an edge the other way leaves the wait standing, and the wait still completes later |
 //! | `dropped in flight` | a wait dropped with its interrupt already raised corrupts nothing |
 //!
@@ -30,7 +31,7 @@
 //!
 //! # What a pass looks like
 //!
-//! Three `ok` lines and nothing else. Every failure prints what it expected and stops that case — a hang
+//! Four `ok` lines and nothing else. Every failure prints what it expected and stops that case — a hang
 //! is also a failure, and means a wake that never arrived.
 
 #![no_std]
@@ -101,6 +102,40 @@ async fn expect_wake(case: &str, future: impl Future<Output = ()>) -> bool {
 /// Poll `future` exactly once, whatever it answers.
 async fn poll_once(mut future: Pin<&mut impl Future<Output = ()>>) -> Poll<()> {
     poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await
+}
+
+/// Two pins pending before the handler can run, which is the case a handler that takes one pin per
+/// entry has to reach through the NVIC rather than through its own loop.
+///
+/// One `ISET` write raises both, so the second is already latched when the first is dispatched. A
+/// handler that returns after one pin depends on `MIS` still being set to keep the line asserted; if
+/// that were wrong, the second wait would never complete and nothing else here would notice.
+async fn both_at_once(driven: &mut Flex<'static, Async>, other: &mut Input<'static, Async>) {
+    let mut first = pin!(driven.wait_for_any_edge());
+    let mut second = pin!(other.wait_for_any_edge());
+
+    if poll_once(first.as_mut()).await.is_ready() || poll_once(second.as_mut()).await.is_ready() {
+        error!("both at once: a wait completed before anything was injected");
+        return;
+    }
+
+    pac::GPIOA.cpu_int().iset().write(|w| {
+        w.set_dio(DRIVEN_BIT, true);
+        w.set_dio(OTHER_BIT, true);
+    });
+
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
+
+    if !expect_wake("both at once (first)", first).await {
+        return;
+    }
+
+    if !expect_wake("both at once (second)", second).await {
+        return;
+    }
+
+    info!("both at once: ok");
 }
 
 /// Wake one of two pins that are being awaited at once, and check that only that one wakes.
@@ -287,6 +322,7 @@ async fn main(_spawner: Spawner) -> ! {
     info!("gpio_waiters: PA16 driven, PA17 input, both idle high");
 
     two_waiters(&mut driven, &mut other).await;
+    both_at_once(&mut driven, &mut other).await;
     wrong_direction(&mut driven).await;
     dropped_in_flight(&mut driven, &mut other).await;
 

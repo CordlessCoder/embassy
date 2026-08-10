@@ -65,6 +65,9 @@ use panic_halt as _;
 /// edge by the level the pin settled at, and a rising edge has to find it high.
 const WAKE_BIT: usize = 7;
 
+/// `PB2`, the second pin of the `entry x2` pair. Only ever raised through `ISET`, never driven.
+const PAIR_BIT: usize = 2;
+
 /// Wakes per case. Enough for the minimum to be the uncontended path rather than luck.
 const WAKES: u32 = 64;
 
@@ -86,6 +89,21 @@ fn elapsed(from: u32, to: u32) -> u32 {
 /// suspiciously expensive poll.
 fn inject() {
     pac::GPIOB.cpu_int().iset().write(|w| w.set_dio(WAKE_BIT, true));
+
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
+}
+
+/// Raise both pins' interrupts in one write, so both are pending before the handler can run.
+///
+/// The `isb` does not retire until every pending interrupt has been taken, and a handler that returns
+/// with the line still asserted is tail-chained rather than returning to thread mode — so what this
+/// brackets is both pins dispatched, however many entries that took.
+fn inject_pair() {
+    pac::GPIOB.cpu_int().iset().write(|w| {
+        w.set_dio(WAKE_BIT, true);
+        w.set_dio(PAIR_BIT, true);
+    });
 
     cortex_m::asm::dsb();
     cortex_m::asm::isb();
@@ -233,7 +251,34 @@ async fn main(spawner: Spawner) -> ! {
     let executor = dispatch.min.saturating_sub(entry.min + poll.min);
     info!("of which the executor hand-off is {} cycles", executor);
 
-    two_waiters(input, Input::new_async(p.PB2, Pull::Up, Irqs)).await;
+    // What two pins pending at once costs. This is where a handler that takes one pin per entry pays
+    // back what it saves on the single-pin case, the second pin arriving through the NVIC rather than
+    // through a loop — so the two numbers together are the whole trade.
+    let mut second = Input::new_async(p.PB2, Pull::Up, Irqs);
+    let mut pair = Spread::new(overhead);
+
+    for _ in 0..WAKES {
+        let mut a = pin!(input.wait_for_rising_edge());
+        let mut b = pin!(second.wait_for_rising_edge());
+
+        if poll_once(a.as_mut()).await.is_ready() || poll_once(b.as_mut()).await.is_ready() {
+            error!("a wait completed before the interrupts were raised");
+            continue;
+        }
+
+        let armed = SYST::get_current();
+        inject_pair();
+        let handled = SYST::get_current();
+
+        a.await;
+        b.await;
+
+        pair.add(elapsed(armed, handled));
+    }
+
+    pair.report("entry x2", mclk);
+
+    two_waiters(input, second).await;
 
     loop {
         embassy_time::Timer::after_secs(60).await;

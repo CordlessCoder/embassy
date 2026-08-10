@@ -1470,9 +1470,8 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
         markers
     };
 
-    // One snapshot for all of them: the status bit carries no direction, so the level a pin settled
-    // at is the only thing an edge can be classified by. Taken before the loop, so every pin in this
-    // handler is classified against the same instant.
+    // The level a pin settled at is the only thing an edge can be classified by, the status bit carrying
+    // no direction.
     //
     // A volatile read survives dead-code elimination, so where nothing classifies edges it is skipped
     // rather than read and ignored.
@@ -1484,16 +1483,21 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
 
     // `IIDX` answers "which pin, and clear it" in one read, which is what the hardware is for: SLAU846
     // 9.3.10 has it return the lowest set *enabled* status bit, clear that bit in `RIS` and `MIS`, and
-    // present the next one, reading zero when none are left. That is this loop's condition, its index
-    // and its `ICLR` write all at once, and it costs no bit scan — `u32::trailing_zeros` has no
-    // instruction behind it on ARMv6-M and lowers to a multiply and a 32-byte table.
-    loop {
+    // present the next one, reading zero when none are left. So it is the index and the `ICLR` write at
+    // once, and it costs no bit scan — `u32::trailing_zeros` has no instruction behind it on ARMv6-M and
+    // lowers to a multiply and a 32-byte table.
+    //
+    // **One pin per entry.** Clearing `MIS` is what deasserts the line, so while any pin is still
+    // pending the NVIC re-enters this handler rather than a loop here going round again. Which is
+    // cheaper depends on how many pins are pending at once, and one is the case that matters: with a
+    // loop, every wake pays a second `IIDX` read to be told there is nothing left.
+    'dispatch: {
         // Taken as bits rather than through the generated enum: the index is what is wanted, the enum
         // has a variant per pin, and zero-means-none is the register's own definition.
         let stat = gpio.cpu_int().iidx().read().stat().to_bits();
 
         if stat == 0 {
-            break;
+            break 'dispatch;
         }
 
         // Indices are one-based, zero having been spent on "nothing pending".
@@ -1518,7 +1522,7 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
             && DETECT_BOTH_EDGES
             && !waiter.state.edge.accepts(level.dio(bit))
         {
-            continue;
+            break 'dispatch;
         }
 
         #[cfg(feature = "_probe")]

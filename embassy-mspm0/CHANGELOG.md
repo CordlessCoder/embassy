@@ -164,3 +164,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/gpio: the port interrupt handler drops a panic path for a pin index the hardware cannot produce
 - mspm0/sync: the waiter list is ordered by the critical section that edits it, dropping three memory barriers from the wake path
 - mspm0: the doc examples for `Baud`, `ClockSel::frequency` and `clock::Config::build` were missing imports for types they name
+- mspm0/gpio: the port interrupt handler takes one pin per entry and lets the NVIC re-enter it, which shortens every wake
