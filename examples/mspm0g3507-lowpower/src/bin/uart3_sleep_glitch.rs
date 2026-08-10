@@ -62,7 +62,11 @@ const MARKER: [u8; CASES.len()] = [0x55; CASES.len()];
 /// domain is taken from the instance rather than assumed.
 const CLOCKS: clock::Clocks = clock::RESET_SETUP.clocks();
 const UART3_DOMAIN: PowerDomain = <peripherals::UART3 as LowPowerInstance>::SLEEP.power_domain;
-const BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART3_DOMAIN), 9600) {
+const BAUD: Baud = match Baud::solve(
+    ClockSel::BusClk,
+    ClockSel::BusClk.frequency(&CLOCKS, UART3_DOMAIN),
+    9600,
+) {
     Some(baud) => baud,
     None => core::panic!("9600 baud is not reachable from the bus clock"),
 };

@@ -186,7 +186,11 @@ async fn main(_spawner: Spawner) -> ! {
     info!("{} bytes per case, blocks of {}", BYTES, BLOCK);
 
     for &rate in RATES {
-        let Some(baud) = Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART1_DOMAIN), rate) else {
+        let Some(baud) = Baud::solve(
+            ClockSel::BusClk,
+            ClockSel::BusClk.frequency(&CLOCKS, UART1_DOMAIN),
+            rate,
+        ) else {
             warn!("{} baud is not reachable from the bus clock, skipping", rate);
             continue;
         };

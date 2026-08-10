@@ -9,12 +9,12 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_mspm0::sysctl::clock;
-use embassy_mspm0::uart::{Baud, Config, Uart};
+use embassy_mspm0::uart::{Baud, ClockSel, Config, Uart};
 use panic_halt as _;
 
 /// The UART runs from MFCLK under the default clock tree, so its rate is a constant and the
 /// baud divider can be solved now rather than searched for on the device.
-const BAUD: Baud = match Baud::solve(clock::RESET_SETUP.clocks().mfclk, 115200) {
+const BAUD: Baud = match Baud::solve(ClockSel::MfClk, clock::RESET_SETUP.clocks().mfclk, 115200) {
     Some(baud) => baud,
     None => core::panic!("this baud rate is not reachable from MFCLK"),
 };

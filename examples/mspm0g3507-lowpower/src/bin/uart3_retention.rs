@@ -57,13 +57,21 @@ const BAUD: u32 = 9600;
 const CLOCKS: clock::Clocks = clock::RESET_SETUP.clocks();
 
 const UART3_DOMAIN: PowerDomain = <peripherals::UART3 as LowPowerInstance>::SLEEP.power_domain;
-const ANSWER_BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART3_DOMAIN), BAUD) {
+const ANSWER_BAUD: Baud = match Baud::solve(
+    ClockSel::BusClk,
+    ClockSel::BusClk.frequency(&CLOCKS, UART3_DOMAIN),
+    BAUD,
+) {
     Some(baud) => baud,
     None => core::panic!("this baud rate is not reachable from UART3's bus clock"),
 };
 
 const UART1_DOMAIN: PowerDomain = <peripherals::UART1 as LowPowerInstance>::SLEEP.power_domain;
-const WAKE_BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART1_DOMAIN), BAUD) {
+const WAKE_BAUD: Baud = match Baud::solve(
+    ClockSel::BusClk,
+    ClockSel::BusClk.frequency(&CLOCKS, UART1_DOMAIN),
+    BAUD,
+) {
     Some(baud) => baud,
     None => core::panic!("this baud rate is not reachable from UART1's bus clock"),
 };

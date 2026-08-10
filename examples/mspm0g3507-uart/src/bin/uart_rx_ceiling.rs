@@ -115,7 +115,11 @@ const BAUD_RATE: u32 = 460_800;
 
 /// Solved against the bus clock rather than MFCLK: at 32 MHz the divider has the resolution to hit the
 /// higher rates, where 4 MHz does not.
-const BAUD: Baud = match Baud::solve(ClockSel::BusClk.frequency(&CLOCKS, UART1_DOMAIN), BAUD_RATE) {
+const BAUD: Baud = match Baud::solve(
+    ClockSel::BusClk,
+    ClockSel::BusClk.frequency(&CLOCKS, UART1_DOMAIN),
+    BAUD_RATE,
+) {
     Some(baud) => baud,
     None => core::panic!("this baud rate is not reachable from the bus clock"),
 };

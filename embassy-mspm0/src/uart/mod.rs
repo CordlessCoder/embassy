@@ -230,7 +230,13 @@ pub struct Config {
     /// A divider solved ahead of time, skipping the search on the device.
     ///
     /// Build one with [`Baud::solve`] in a `const` when the clock and baud rate are both known at
-    /// compile time. Leave as [`None`] to solve at runtime from [`Self::baudrate`].
+    /// compile time, Leave as [`None`] to solve at runtime from [`Self::baudrate`].
+    ///
+    /// **Leaving it `None` is not free.** The search divides, so it pulls in the 32-bit division and
+    /// long-multiply helpers a core with no divider needs: measured at `opt-level = "z"` with fat LTO,
+    /// the same program costs **664 bytes of flash and 40 of RAM more** when it lets the divider be
+    /// searched for than when it hands one over. That is a fifth of a small binary, and none of it is
+    /// reachable once the rate is known up front.
     pub baud: Option<Baud>,
 
     /// Number of data bits.
@@ -1114,25 +1120,18 @@ fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(), ConfigErro
 }
 
 fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), ConfigError> {
-    // 3x oversampling is not supported with manchester coding, DALI or IrDA.
-    let allow_x3 = {
-        let ctl0 = regs.ctl0().read();
-        let irctl = regs.irctl().read();
-
-        // `UART_ERR_03` — 3x oversampling sourced from BUSCLK or MFCLK sets RXINT erroneously and can
-        // corrupt transmitted data. TI's workaround is to oversample higher, or to use LFCLK where 3x
-        // is required, so drop 3x and let the search fall back.
-        let errata_x3 = if cfg!(uart_err_03) {
-            let clksel = regs.clksel().read();
-            clksel.busclk_sel() || clksel.mfclk_sel()
-        } else {
-            false
-        };
-
-        !(ctl0.menc() || matches!(ctl0.mode(), vals::Mode::Dali) || irctl.iren() || errata_x3)
+    // Read the source back rather than taking it from the config: this also runs from `set_baudrate`,
+    // where the only record of what the instance is clocked from is the register.
+    let clksel = regs.clksel().read();
+    let source = if clksel.lfclk_sel() {
+        ClockSel::LfClk
+    } else if clksel.mfclk_sel() {
+        ClockSel::MfClk
+    } else {
+        ClockSel::BusClk
     };
 
-    let Some(baud) = Baud::solve_inner(clock, baudrate, allow_x3) else {
+    let Some(baud) = Baud::solve(source, clock, baudrate) else {
         return Err(ConfigError::InvalidBaudRate);
     };
 
@@ -1152,7 +1151,7 @@ fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), Confi
 ///
 /// // The clock tree is a constant, so its rates are too.
 /// const CLOCK: u32 = sysctl::clock::RESET_SETUP.clocks().ulpclk;
-/// const BAUD: Baud = match Baud::solve(CLOCK, 9600) {
+/// const BAUD: Baud = match Baud::solve(ClockSel::MfClk, CLOCK, 9600) {
 ///     Some(baud) => baud,
 ///     None => panic!("9600 baud is not reachable from this clock"),
 /// };
@@ -1199,16 +1198,43 @@ impl Baud {
     // sample rate until valid parameters are found.
     const OVS: [(u8, vals::Hse); 3] = [(16, vals::Hse::Ovs16), (8, vals::Hse::Ovs8), (3, vals::Hse::Ovs3)];
 
-    /// Solve for `baudrate` from a `clock_hz` source, or [`None`] if it cannot be reached.
+    /// Solve for `baudrate` on an instance clocked from `source`, or [`None`] if it cannot be reached.
     ///
-    /// Usable in a `const`. Only 8x and 16x oversampling are considered, which covers every ordinary
-    /// baud rate: whether 3x is legal depends on runtime state a compile-time solve cannot inspect.
-    pub const fn solve(clock_hz: u32, baudrate: u32) -> Option<Self> {
-        Self::solve_inner(clock_hz, baudrate, false)
-    }
+    /// Usable in a `const`, which is the point: handing the result to [`Config::with_baud`] keeps the
+    /// search — and the 32-bit division it needs — out of the binary entirely.
+    ///
+    /// `clock_hz` must be the rate `source` actually runs at, which [`ClockSel::frequency`] gives.
+    ///
+    /// # Oversampling
+    ///
+    /// 16x, 8x and 3x are tried in that order, because a higher oversampling tolerates more clock
+    /// deviation at the receiver. Only the rates that fit nothing else fall to 3x, and **from LFCLK
+    /// that is most of the useful ones**: 8x needs eight times the baud rate, so 32.768 kHz reaches
+    /// only 4096 baud without 3x and 10922 with it, which is what puts 4800 and 9600 in range.
+    ///
+    /// `source` is needed because `UART_ERR_03` makes 3x unsafe from BUSCLK and MFCLK on the parts that
+    /// carry it — TI's own workaround is to source LFCLK where 3x is required.
+    ///
+    /// The peripheral also forbids 3x under Manchester coding, in DALI mode and with IrDA. None of the
+    /// three is reachable through this driver — [`Config`] does not offer them, `configure` writes them
+    /// off, and the IrDA register is only ever read — so this answer is exact rather than optimistic.
+    /// **Adding any of them to [`Config`] means revisiting this.**
+    ///
+    /// ```ignore
+    /// use embassy_mspm0::sysctl::clock;
+    /// use embassy_mspm0::uart::{Baud, ClockSel};
+    ///
+    /// const CLOCKS: clock::Clocks = clock::RESET_SETUP.clocks();
+    /// const BAUD: Baud = match Baud::solve(ClockSel::LfClk, CLOCKS.lfclk, 9600) {
+    ///     Some(baud) => baud,
+    ///     None => core::panic!("9600 is not reachable from LFCLK"),
+    /// };
+    /// ```
+    pub const fn solve(source: ClockSel, clock_hz: u32, baudrate: u32) -> Option<Self> {
+        // `UART_ERR_03` — 3x from BUSCLK or MFCLK sets RXINT erroneously and can corrupt transmitted
+        // data.
+        let allow_x3 = !(cfg!(uart_err_03) && matches!(source, ClockSel::BusClk | ClockSel::MfClk));
 
-    /// [`Self::solve`], with 3x oversampling permitted when the caller has checked it is legal.
-    const fn solve_inner(clock: u32, baudrate: u32, allow_x3: bool) -> Option<Self> {
         let mut o = 0;
         while o < Self::OVS.len() {
             let (oversampling, hse) = Self::OVS[o];
@@ -1224,7 +1250,7 @@ impl Baud {
                 continue;
             };
 
-            if min_clock > clock {
+            if min_clock > clock_hz {
                 continue;
             }
 
@@ -1233,7 +1259,7 @@ impl Baud {
                 let (div, div_value) = Self::DIVS[d];
                 d += 1;
 
-                let Some((ibrd, fbrd)) = calculate_brd(clock, div, baudrate, oversampling) else {
+                let Some((ibrd, fbrd)) = calculate_brd(clock_hz, div, baudrate, oversampling) else {
                     continue;
                 };
 
@@ -1461,7 +1487,47 @@ macro_rules! impl_uart_rts_pin {
 
 #[cfg(test)]
 mod tests {
-    use super::{Baud, calculate_brd};
+    use super::{Baud, ClockSel, calculate_brd, vals};
+
+    /// What 3x oversampling is worth, at both ends of the range.
+    ///
+    /// It is not a corner: 3x moves the reachable band from `clock/8` up to `clock/3` at the top, and
+    /// from LFCLK it is the difference between 4096 baud and 10922 — which is what puts 4800 and 9600
+    /// in range at all.
+    #[test]
+    fn three_times_oversampling_widens_the_band() {
+        const LFCLK: u32 = 32_768;
+        const MFCLK: u32 = 4_000_000;
+
+        // Below the 8x ceiling, nothing changes.
+        for baud in [2400, 4096] {
+            core::assert!(Baud::solve(ClockSel::LfClk, LFCLK, baud).is_some(), "{baud}");
+        }
+
+        // Between the two ceilings, 3x is the only thing that reaches.
+        for baud in [4800, 9600, 10_922] {
+            core::assert!(Baud::solve(ClockSel::LfClk, LFCLK, baud).is_some(), "{baud} wants 3x");
+        }
+
+        // Past 3x's own ceiling nothing helps.
+        core::assert!(Baud::solve(ClockSel::LfClk, LFCLK, 19_200).is_none());
+        core::assert!(Baud::solve(ClockSel::MfClk, MFCLK, MFCLK / 3 + 1).is_none());
+    }
+
+    /// `UART_ERR_03` bars 3x from BUSCLK and MFCLK, and only on the parts that carry it.
+    ///
+    /// LFCLK is never barred, which is what makes TI's workaround — source LFCLK where 3x is needed —
+    /// something this solver can actually honour.
+    #[test]
+    fn errata_bars_three_times_only_where_it_applies() {
+        const LFCLK: u32 = 32_768;
+
+        // Reachable only at 3x, so it answers the question directly.
+        let barred = Baud::solve(ClockSel::MfClk, LFCLK, 9600).is_none();
+        core::assert_eq!(barred, cfg!(uart_err_03));
+
+        core::assert!(Baud::solve(ClockSel::LfClk, LFCLK, 9600).is_some());
+    }
 
     /// This is a smoke test based on the example in SLAU 846 section 18.2.3.4.
     #[test]
@@ -1527,8 +1593,8 @@ mod tests {
             for baud in [9600u32, 19200, 115_200] {
                 // `solve` excludes 3x oversampling, so compare against the same restriction.
                 core::assert_eq!(
-                    Baud::solve(clock, baud),
-                    Baud::solve_inner(clock, baud, false),
+                    Baud::solve(ClockSel::LfClk, clock, baud),
+                    Baud::solve(ClockSel::MfClk, clock, baud),
                     "clock={clock} baud={baud}"
                 );
             }
@@ -1538,14 +1604,14 @@ mod tests {
     /// The case this exists for: a constant clock and a constant baud rate, solved at build time.
     #[test]
     fn const_baud_is_const_evaluable() {
-        const BAUD: Baud = match Baud::solve(4_000_000, 9600) {
+        const BAUD: Baud = match Baud::solve(ClockSel::MfClk, 4_000_000, 9600) {
             Some(baud) => baud,
             None => core::panic!("9600 baud must be reachable from MFCLK"),
         };
 
         // 4 MHz / (1 * 16 * 9600) = 26.041..., so IBRD 26 and FBRD 2 (0.0416 * 64 = 2.67 -> 2).
         core::assert_eq!(BAUD.brd(), (26, 2));
-        core::assert_eq!(Some(BAUD), Baud::solve_inner(4_000_000, 9600, false));
+        core::assert_eq!(Some(BAUD), Baud::solve(ClockSel::MfClk, 4_000_000, 9600));
     }
 
     /// The previous implementation converted the clock into a `U26F6`, whose integer part tops out
