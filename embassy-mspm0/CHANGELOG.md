@@ -170,3 +170,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/wwdt: a `Watchdog` left to count through sleep now blocks the modes the hardware disables it in, rather than quietly stopping in them
 - mspm0/wwdt: dropping a `Watchdog` stops it and gives the instance back, where before the counter ran on with nothing petting it
 - mspm0/tim: moving a `SimplePwm` no longer calls `memcpy`, which cost 616 bytes in a build with `low-power` on
+- mspm0/i2c: document that a transfer onto a bus whose SCL is held low never returns unless `Config::clock_low_timeout_us` is set

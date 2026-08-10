@@ -16,6 +16,20 @@
 //! and marks the peripheral dirty, and **the next transfer pays**: it resets the controller first,
 //! which is the only thing that clears `BUSBSY`. A target still holding SDA down survives that and is
 //! reported as [`Error::BusStuck`], which [`I2c::recover_stuck_bus`] will try to clear.
+//!
+//! # A bus that cannot clock
+//!
+//! A target holding **SDA** low is caught before anything waits on it, and comes back as
+//! [`Error::BusStuck`] from either path.
+//!
+//! A bus held low on **SCL** is the other failure, and it is the one nothing detects: a controller
+//! stretching legitimately holds SCL low too, so the two are indistinguishable from a register. Nothing
+//! bounds a transfer against it except [`Config::clock_low_timeout_us`], which is `None` by default —
+//! so **a transfer onto such a bus never returns**, blocking or asynchronous.
+//!
+//! That default is deliberate. Only the caller knows how long its slowest target may legitimately hold
+//! SCL, and a timeout picked here would fail those buses instead. Set one on any bus whose targets are
+//! not trusted to keep clocking.
 
 #![macro_use]
 
@@ -216,6 +230,9 @@ pub struct Config {
     /// A transfer that hits it fails with [`Error::Timeout`]. The peripheral does the counting, so it
     /// bounds a blocking transfer too. `None` by default, because a bus whose targets legitimately
     /// stretch for longer would start failing — pick it from the slowest target, not from the bus speed.
+    ///
+    /// **`None` means a transfer onto a bus that cannot clock never returns**, on either path. Nothing
+    /// else can bound one: a target holding SCL down is indistinguishable from one stretching.
     ///
     /// Representable only in steps of `8320 / clock_hz` seconds, 2 to 255 of them: **520 µs to 66 ms
     /// from a 32 MHz functional clock, 4.2 ms to 530 ms from MFCLK**. Outside that range is a
