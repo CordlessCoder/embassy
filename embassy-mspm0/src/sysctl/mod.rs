@@ -67,15 +67,26 @@ impl SleepLevel {
 
 /// An operating mode, ordered from shallowest to deepest.
 ///
-/// Coarser than [`SleepLevel`], being the granularity the datasheets use: `Stop` covers STOP0/1/2 and
-/// `Standby` both STANDBY modes.
+/// The sub-modes are the granularity the datasheets answer at, and the difference is load-bearing: a
+/// windowed watchdog is usable in STANDBY0 and not in STANDBY1, which a single `Standby` could not say.
+///
+/// **RUN and SLEEP are deliberately not split.** RUN1/RUN2 and SLEEP1/SLEEP2 are clock-source policies
+/// rather than depths — RUN2 runs the CPU with SYSOSC off and the *deeper* SLEEP0 turns it back on — so
+/// a peripheral can be unusable in RUN2 and usable in SLEEP0, and no total order can express that.
+///
+/// Two things that look like gaps and are not: **`Stop2` never appears in the metadata**, because STOP2
+/// disables SYSOSC so a peripheral either stops by STOP1 or runs from LFCLK and reaches STANDBY; and
+/// **not every family has STOP1**, so `>= Stop1` is not a synonym for "deeper than STOP0".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PowerMode {
     Run,
     Sleep,
-    Stop,
-    Standby,
+    Stop0,
+    Stop1,
+    Stop2,
+    Standby0,
+    Standby1,
 
     /// Nothing but the `SHUTDNSTORE` bytes in SYSCTL survives this.
     Shutdown,
@@ -118,11 +129,15 @@ impl SleepInfo {
     /// An unknown [`Self::usable_through`] reads as no constraint, the datasheet tables being unable to
     /// resolve some instances.
     pub const fn floor_to_stay_usable(&self) -> Option<SleepLevel> {
+        // The shallowest level to block is the one *past* the deepest the instance is usable in, so
+        // since the sub-mode split this is a step down the same ladder rather than a bucketing.
         match self.usable_through {
-            // Usable in STANDBY, or the datasheet does not say. Nothing to add.
-            Some(PowerMode::Standby | PowerMode::Shutdown) | None => None,
-            // Usable in STOP but not STANDBY.
-            Some(PowerMode::Stop) => Some(SleepLevel::Standby0),
+            // Usable to the bottom, or the datasheet does not say. Nothing to add.
+            Some(PowerMode::Standby1 | PowerMode::Shutdown) | None => None,
+            Some(PowerMode::Standby0) => Some(SleepLevel::Standby1),
+            Some(PowerMode::Stop2) => Some(SleepLevel::Standby0),
+            Some(PowerMode::Stop1) => Some(SleepLevel::Stop2),
+            Some(PowerMode::Stop0) => Some(SleepLevel::Stop1),
             // Not usable below SLEEP, so no deep sleep at all.
             Some(PowerMode::Run | PowerMode::Sleep) => Some(SleepLevel::Stop0),
         }
@@ -146,10 +161,12 @@ impl SleepInfo {
     /// re-enables them on exit, so only losing the configuration registers needs anything done about it.
     pub const fn floor_to_keep_configured(&self) -> Option<SleepLevel> {
         match self.retained_through {
-            // Retained through STANDBY, or in a domain where nothing disables it.
-            Some(PowerMode::Standby | PowerMode::Shutdown) | None => None,
-            // Retained through STOP but not STANDBY.
-            Some(PowerMode::Stop) => Some(SleepLevel::Standby0),
+            // Retained to the bottom, or in a domain where nothing disables it.
+            Some(PowerMode::Standby1 | PowerMode::Shutdown) | None => None,
+            Some(PowerMode::Standby0) => Some(SleepLevel::Standby1),
+            Some(PowerMode::Stop2) => Some(SleepLevel::Standby0),
+            Some(PowerMode::Stop1) => Some(SleepLevel::Stop2),
+            Some(PowerMode::Stop0) => Some(SleepLevel::Stop1),
             // Not retained by any deep-sleep mode.
             Some(PowerMode::Run | PowerMode::Sleep) => Some(SleepLevel::Stop0),
         }
@@ -242,7 +259,7 @@ const _: () = {
 
 // Boundary checks for `SleepLevel::stricter`, `floor_to_stay_usable` and `floor_for_operation`.
 const _: () = {
-    use SleepLevel::{Standby0, Standby1, Stop0, Stop2};
+    use SleepLevel::{Standby0, Standby1, Stop0, Stop1, Stop2};
 
     core::assert!(matches!(SleepLevel::stricter(None, None), None));
     core::assert!(matches!(SleepLevel::stricter(Some(Standby1), None), Some(Standby1)));
@@ -262,24 +279,35 @@ const _: () = {
     }
 
     core::assert!(matches!(usable(None).floor_to_stay_usable(), None));
-    core::assert!(matches!(usable(Some(PowerMode::Standby)).floor_to_stay_usable(), None));
+    core::assert!(matches!(usable(Some(PowerMode::Standby1)).floor_to_stay_usable(), None));
+
+    // The one the sub-mode split exists for: usable in STANDBY0 blocks only the deeper STANDBY1, where
+    // a single `Standby` value used to force this all the way down to blocking STANDBY0 as well.
     core::assert!(matches!(
-        usable(Some(PowerMode::Stop)).floor_to_stay_usable(),
-        Some(Standby0)
+        usable(Some(PowerMode::Standby0)).floor_to_stay_usable(),
+        Some(Standby1)
+    ));
+    core::assert!(matches!(
+        usable(Some(PowerMode::Stop1)).floor_to_stay_usable(),
+        Some(Stop2)
+    ));
+    core::assert!(matches!(
+        usable(Some(PowerMode::Stop0)).floor_to_stay_usable(),
+        Some(Stop1)
     ));
     core::assert!(matches!(
         usable(Some(PowerMode::Sleep)).floor_to_stay_usable(),
         Some(Stop0)
     ));
 
-    // An LFCLK-clocked instance the datasheet only supports to STOP takes the usability floor, not the
-    // clock one; a fast-clocked instance usable to STANDBY takes the clock floor instead.
+    // An LFCLK-clocked instance the datasheet only supports to STOP1 takes the usability floor, not the
+    // clock one; a fast-clocked instance usable to the bottom takes the clock floor instead.
     core::assert!(matches!(
-        usable(Some(PowerMode::Stop)).floor_for_operation(32_768),
-        Some(Standby0)
+        usable(Some(PowerMode::Stop1)).floor_for_operation(32_768),
+        Some(Stop2)
     ));
     core::assert!(matches!(
-        usable(Some(PowerMode::Standby)).floor_for_operation(32_000_000),
+        usable(Some(PowerMode::Standby1)).floor_for_operation(32_000_000),
         Some(Stop0)
     ));
 
@@ -295,12 +323,16 @@ const _: () = {
 
     // Being in PD1 costs nothing by itself, only losing the configuration does.
     core::assert!(matches!(
-        retained(PowerDomain::Pd1, Some(PowerMode::Standby)).floor_to_keep_configured(),
+        retained(PowerDomain::Pd1, Some(PowerMode::Standby1)).floor_to_keep_configured(),
         None
     ));
     core::assert!(matches!(
-        retained(PowerDomain::Pd1, Some(PowerMode::Stop)).floor_to_keep_configured(),
-        Some(Standby0)
+        retained(PowerDomain::Pd1, Some(PowerMode::Standby0)).floor_to_keep_configured(),
+        Some(Standby1)
+    ));
+    core::assert!(matches!(
+        retained(PowerDomain::Pd1, Some(PowerMode::Stop1)).floor_to_keep_configured(),
+        Some(Stop2)
     ));
     core::assert!(matches!(
         retained(PowerDomain::Pd1, Some(PowerMode::Sleep)).floor_to_keep_configured(),

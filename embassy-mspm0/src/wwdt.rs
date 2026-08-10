@@ -3,34 +3,26 @@
 //! A windowed watchdog: petting it too early is a violation as much as petting it too late, so a task
 //! stuck in a tight loop is caught as well as one that has stopped.
 //!
-//! # It does not watch a sleeping device, and that is a hardware limitation
+//! # It stops in STANDBY1, so it blocks it
 //!
-//! **The watchdog is disabled in STANDBY and off in SHUTDOWN**, per the device datasheets, which mark
-//! it `DIS` where `TIMG2`/`TIMG4` read `OPT`. It does not count there and it cannot reset the device,
-//! whatever [`Config::stop_in_sleep`] says.
+//! **The watchdog is usable down to STANDBY0 and stops in STANDBY1**, which unclocks PD0 — on 16 of the
+//! 18 families; on MSPM0C1105/C1106 and MSPM0H321x it reaches STANDBY1 as well. That is the datasheet's
+//! own per-mode answer, and the driver takes it from the chip metadata rather than assuming.
 //!
-//! **This is not a clocking problem, which is what makes it disappointing.** The counter runs from
-//! LFCLK, and LFCLK is still running in STANDBY1 — the timers that wake a device from the deepest sleep
-//! run from it. The peripheral is switched off anyway. So the one part a low-power design most needs
-//! supervised, the long sleep, is the one part this cannot supervise.
+//! A [`Watchdog`] built with `stop_in_sleep` left `false` — the default, meaning "keep counting while
+//! the CPU is asleep" — **holds a sleep guard blocking whatever the metadata says it cannot count in**.
+//! Deep sleep cannot then disarm it without saying so. On most parts that costs the deepest mode only:
+//! such an application reaches STANDBY0 and not STANDBY1.
 //!
-//! What this driver does about it: a [`Watchdog`] built with `stop_in_sleep` left `false` — the default,
-//! meaning "keep counting while the CPU is asleep" — **holds a sleep guard that blocks STANDBY and
-//! SHUTDOWN for as long as it exists**. Deep sleep cannot then silently disarm it. The cost is real and
-//! is the point: such an application reaches STOP2 and no deeper.
+//! Set `stop_in_sleep` to `true` and no guard is taken. That configuration asks the watchdog to pause
+//! while the CPU sleeps, which is what the hardware does anyway, so the two agree and every level stays
+//! reachable. **It also means nothing is watching during the sleep.**
 //!
-//! Set `stop_in_sleep` to `true` and the guard is not taken. That configuration asks the watchdog to
-//! pause while the CPU sleeps, which is what the hardware does in STANDBY regardless, so the two agree
-//! and every sleep level stays reachable. **It also means nothing is watching during the sleep.**
-//!
-//! **To supervise a device across a deep sleep**, either use a timer that survives it — one whose
-//! `clocked_in_standby1` metadata is true — and have it wake the device rather than reset it, or use
-//! the IWDT on a part that has one.
-//!
-//! The **IWDT is a different peripheral** (TRM chapter 38, where this is chapter 39) and it does run in
-//! STANDBY0, though not under the STANDBY1 policy, where only two timers and the RTC are clocked. This
-//! HAL does not drive it and the metapac generates no register block for it, so it is a thing to reach
-//! for on a part that has one, not something available here.
+//! **To be watched in STANDBY1 too**, use the IWDT on a part that has one: a different peripheral (TRM
+//! chapter 38, where this is chapter 39), usable through STANDBY1 on all three families that carry it.
+//! This HAL does not drive it and the metapac generates no register block for it. Failing that, a timer
+//! that survives the depth — `clocked_in_standby1` — can wake the device, though a timer supervises
+//! nothing by itself.
 //!
 //! # Stopping it
 //!
@@ -346,9 +338,9 @@ pub struct Config {
     /// deliver what `false` promises from every mode — see the module docs.
     ///
     /// - `false`, the default and the hardware's: keep counting through sleep. [`Watchdog`] then holds
-    ///   a sleep guard for its whole life, so the device cannot reach STANDBY or SHUTDOWN, where the
-    ///   watchdog is disabled and would stop watching without saying so. STOP0 through STOP2 stay
-    ///   reachable and the watchdog counts through all of them.
+    ///   a sleep guard for its whole life, blocking the modes this instance's metadata says it is not
+    ///   usable in — STANDBY1 on most parts, nothing at all on the two families that reach it. Every
+    ///   mode left reachable is one the watchdog counts through.
     /// - `true`: pause while asleep and resume from the same count. No guard, every sleep level
     ///   reachable, and **nothing supervises the device while it sleeps**.
     pub stop_in_sleep: bool,
@@ -436,10 +428,10 @@ impl<'d> Watchdog<'d> {
             w.set_key(vals::Wwdtctl1Key::Key);
         });
 
-        // The datasheet's own answer for this instance rather than a constant here: `usable_through`
-        // is `Stop`, so the floor comes out at STANDBY0 and STOP stays reachable. A watchdog asked to
-        // stop in sleep wants no floor at all — the hardware stopping it in STANDBY is then the
-        // behaviour, not a surprise.
+        // The datasheet's own answer for this instance rather than a constant here: `usable_through` is
+        // `Standby0` on most parts, so the floor comes out at STANDBY1 and everything shallower stays
+        // reachable. A watchdog asked to stop in sleep wants no floor at all — the hardware stopping it
+        // is then the behaviour, not a surprise.
         let floor = if config.stop_in_sleep {
             None
         } else {

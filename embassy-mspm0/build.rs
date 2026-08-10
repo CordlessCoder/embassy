@@ -707,7 +707,9 @@ fn check_sram_retention() {
     };
 
     assert!(
-        ram.retained_through >= PowerMode::Standby,
+        // STANDBY1, not STANDBY0: `low_power::sleep` will enter the deeper one, and RAM retained only
+        // through STANDBY0 would lose `.data` there. The two were one value before the sub-mode split.
+        ram.retained_through >= PowerMode::Standby1,
         "{}'s RAM is only retained through {:?}, so deep sleep would lose .data and .bss",
         METADATA.name,
         ram.retained_through,
@@ -1300,11 +1302,16 @@ fn power_mode_tokens(mode: Option<PowerMode>) -> TokenStream {
         Some(mode) => {
             let variant = format_ident!(
                 "{}",
+                // Exhaustive on purpose: a new sub-mode should stop the build here rather than be
+                // silently dropped into the wrong bucket.
                 match mode {
                     PowerMode::Run => "Run",
                     PowerMode::Sleep => "Sleep",
-                    PowerMode::Stop => "Stop",
-                    PowerMode::Standby => "Standby",
+                    PowerMode::Stop0 => "Stop0",
+                    PowerMode::Stop1 => "Stop1",
+                    PowerMode::Stop2 => "Stop2",
+                    PowerMode::Standby0 => "Standby0",
+                    PowerMode::Standby1 => "Standby1",
                     PowerMode::Shutdown => "Shutdown",
                 }
             );
