@@ -450,30 +450,19 @@ impl IQType {
     }
 
     pub fn to_reg(&self) -> u32 {
-        let mut res: u32 = 0;
-
-        let total_bits: u8 = if self.signed { 31 } else { 32 };
-
-        let max_mask = if self.signed { 0x7FFFFFFF } else { 0xFFFFFFFF };
-        let (i_mask, f_mask) = if self.i_bits == 0 {
-            (0, max_mask)
-        } else if self.i_bits == total_bits {
-            (max_mask, 0)
+        // `f_data` can be one past its field, carrying into the integer part: `from_reg` two's
+        // complements the fraction on its own, and `from_f32` rounds it up. Add the two rather than
+        // masking and OR-ing them, which drops the carry and encodes a whole number one too small.
+        let mut res = if self.i_bits == 0 {
+            0
         } else {
-            ((1u32 << self.i_bits) - 1, (1u32 << self.f_bits) - 1)
+            self.i_data << self.f_bits
         };
-
-        if self.i_bits > 0 {
-            res = self.i_data << self.f_bits & (i_mask << self.f_bits);
-        }
-
-        if self.f_bits > 0 {
-            res = (self.f_data & f_mask) | res;
-        }
+        res = res.wrapping_add(self.f_data);
 
         // if negative, do 2’s compliment
         if self.negative {
-            res = !res + 1;
+            res = res.wrapping_neg();
         }
         res
     }

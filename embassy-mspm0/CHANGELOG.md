@@ -142,3 +142,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/low-power: `shutdown` no longer runs into unreachable code when `WFI` returns instead of sleeping
 - fix: mspm0: `time-driver-any` no longer removes `TIMG14` from `Peripherals` on parts where the driver takes `TIMG1`
 - fix: mspm0/uart: `set_baudrate` drained the transmitter after disabling it, which never finishes with bytes still queued
+- fix: mspm0/mathacl: `IQType::to_reg` encoded every negative whole number one too small, so a result fed back into `div_iq` was wrong
