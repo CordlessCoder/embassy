@@ -2,7 +2,7 @@
 
 use core::future::{self, Future};
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 
 use embassy_embedded_hal::SetConfig;
@@ -933,8 +933,6 @@ impl<'d, M: Mode> I2c<'d, M> {
             w.set_cblen(0);
         });
 
-        self.state.clock.store(resolved.clock_hz, Ordering::Relaxed);
-
         self.wake_floor = resolved.wake_floor(&self.info.sleep);
 
         self.info.regs.controller(0).ctpr().write(|w| w.set_tpr(resolved.tpr));
@@ -946,19 +944,10 @@ impl<'d, M: Mode> I2c<'d, M> {
             w.set_tcntla(resolved.clock_low_timeout.unwrap_or_default());
         });
 
-        // Set Tx Fifo threshold, follow TI example
-        self.info
-            .regs
-            .controller(0)
-            .cfifoctl()
-            .write(|w| w.set_txtrig(vals::CfifoctlTxtrig::Empty));
-        // Set Rx Fifo threshold, follow TI example
-        self.info
-            .regs
-            .controller(0)
-            .cfifoctl()
-            .write(|w| w.set_rxtrig(vals::CfifoctlRxtrig::Level1));
-        // Enable controller clock stretching, follow TI example
+        self.info.regs.controller(0).cfifoctl().write(|w| {
+            w.set_txtrig(vals::CfifoctlTxtrig::Empty);
+            w.set_rxtrig(vals::CfifoctlRxtrig::Level1);
+        });
 
         self.info.regs.controller(0).ccr().modify(|w| {
             w.set_clkstretch(true);
@@ -1202,22 +1191,13 @@ impl<'d, M: Mode> I2c<'d, M> {
         });
     }
 
-    fn master_read(
-        &mut self,
-        address: Address,
-        length: usize,
-        restart: bool,
-        send_ack_nack: bool,
-        send_stop: bool,
-    ) -> Result<(), Error> {
+    fn master_read(&mut self, address: Address, length: usize, restart: bool, send_ack_nack: bool, send_stop: bool) {
         if restart {
             // not the first transaction, delay 1000 cycles
             cortex_m::asm::delay(1000);
         }
 
-        // Set START and prepare to receive bytes into
-        // `buffer`. The START bit can be set even if the bus
-        // is BUSY or I2C is in slave mode.
+        // START may be set even while the bus is busy or the peripheral is in target mode.
         self.info.regs.controller(0).csa().modify(|w| {
             w.set_taddr(address.addr());
             w.set_cmode(address.mode());
@@ -1231,11 +1211,9 @@ impl<'d, M: Mode> I2c<'d, M> {
             w.set_start(true);
             w.set_stop(send_stop);
         });
-
-        Ok(())
     }
 
-    fn master_write(&mut self, address: Address, length: usize, send_stop: bool) -> Result<(), Error> {
+    fn master_write(&mut self, address: Address, length: usize, send_stop: bool) {
         // Start transfer of length amount of bytes
         self.info.regs.controller(0).csa().modify(|w| {
             w.set_taddr(address.addr());
@@ -1248,8 +1226,6 @@ impl<'d, M: Mode> I2c<'d, M> {
             w.set_start(true);
             w.set_stop(send_stop);
         });
-
-        Ok(())
     }
 
     /// Wait out `I2C_ERR_13` before reading `CSR` after starting a transfer.
@@ -1432,7 +1408,7 @@ impl<'d> I2c<'d, Blocking> {
 
         // The burst covers the whole transfer, so its last byte is the transfer's last byte and must be
         // NACKed to release the target.
-        self.master_read(address, length, restart, false, send_stop)?;
+        self.master_read(address, length, restart, false, send_stop);
 
         self.settle_after_start();
 
@@ -1457,7 +1433,7 @@ impl<'d> I2c<'d, Blocking> {
             while !self.info.regs.controller(0).csr().read().idle() && !self.timed_out() {}
         }
 
-        self.master_write(address, length, send_stop)?;
+        self.master_write(address, length, send_stop);
 
         self.settle_after_start();
 
@@ -1647,7 +1623,7 @@ impl<'d> I2c<'d, Async> {
             w.set_ctxfifotrg(sent < write.len());
         });
 
-        self.master_write(addr, write.len(), end_w_stop)?;
+        self.master_write(addr, write.len(), end_w_stop);
 
         let res = self
             .run_burst(|this, stat| match stat {
@@ -1707,7 +1683,7 @@ impl<'d> I2c<'d, Async> {
         // One burst for the whole transfer, so its last byte is the transfer's last byte and is NACKed
         // to release the target. The FIFO is drained as it fills; the controller stretches SCL while it
         // is full (SLAU846 25.2.3.8), so a late drain costs bus time rather than bytes.
-        self.master_read(addr, read.len(), restart, false, end_w_stop)?;
+        self.master_read(addr, read.len(), restart, false, end_w_stop);
 
         let mut got = 0;
         let res = self
@@ -2176,7 +2152,7 @@ impl<'d> I2c<'d, Async> {
             w.set_ctxfifotrg(sent < group.total);
         });
 
-        self.master_write(addr, group.total, send_stop)?;
+        self.master_write(addr, group.total, send_stop);
 
         let res = self
             .run_burst(|this, stat| match stat {
@@ -2220,7 +2196,7 @@ impl<'d> I2c<'d, Async> {
             w.set_crxfifotrg(true);
         });
 
-        self.master_read(addr, group.total, restart, false, send_stop)?;
+        self.master_read(addr, group.total, restart, false, send_stop);
 
         let mut cur = GroupCursor {
             op: group.start,
@@ -2345,8 +2321,6 @@ pub(crate) struct Info {
 }
 
 pub(crate) struct State {
-    /// The clock rate of the I2C. This might be configured.
-    pub(crate) clock: AtomicU32,
     /// Woken by [`InterruptHandler`], which is the only waker side: the handler is bound per
     /// instance, and the driver owns the instance for as long as it can wait on it.
     pub(crate) waker: IrqWaker,
@@ -2446,7 +2420,6 @@ macro_rules! impl_i2c_instance {
                 use crate::interrupt::typelevel::Interrupt;
 
                 static STATE: State = State {
-                    clock: core::sync::atomic::AtomicU32::new(0),
                     waker: crate::sync::irq_waker::IrqWaker::new(),
                     abandoned: core::sync::atomic::AtomicBool::new(false),
                 };

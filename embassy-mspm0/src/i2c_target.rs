@@ -5,7 +5,6 @@
 
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::sync::atomic::Ordering;
 use core::task::Poll;
 
 use embassy_embedded_hal::SetConfig;
@@ -124,8 +123,8 @@ pub struct I2cTarget<'d, M: Mode> {
 
     /// The clock source, divider and rate this instance was configured for.
     ///
-    /// Derived once, when the configuration arrives, so `init` programs the registers and
-    /// [`State::clock`] from one answer rather than re-deriving its own.
+    /// Derived once, when the configuration arrives, so `init` programs the registers from one
+    /// answer rather than re-deriving its own.
     resolved: i2c::Resolved,
 
     target_config: i2c_target::Config,
@@ -297,10 +296,6 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             }
         }
 
-        regs.target(0).tctr().modify(|w| {
-            w.set_active(false);
-        });
-
         // Init power for I2C
         regs.gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
@@ -346,8 +341,6 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
                 w.set_oar2_mask(second.mask);
             }
         });
-
-        self.state.clock.store(resolved.clock_hz, Ordering::Relaxed);
 
         regs.target(0).tctr().modify(|w| {
             w.set_gencall(target_config.general_call);
