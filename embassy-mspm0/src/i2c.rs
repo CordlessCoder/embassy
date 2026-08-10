@@ -1935,6 +1935,17 @@ impl<'d> embedded_hal_async::i2c::I2c<embedded_hal::i2c::TenBitAddress> for I2c<
     }
 }
 
+impl<'d, M: Mode> Drop for I2c<'d, M> {
+    fn drop(&mut self) {
+        // Only the pins. A controller has no legal way to stand down mid-burst — a STOP-only command is
+        // refused until the transaction finishes (SLAU846 table 25-10) and nothing reports when that is —
+        // so releasing the pads is what takes this instance off the bus. Whatever the peripheral is still
+        // doing reaches nothing, and the next `I2c::new` on this instance resets it before configuring.
+        self.scl.as_ref().map(|x| x.set_as_disconnected());
+        self.sda.as_ref().map(|x| x.set_as_disconnected());
+    }
+}
+
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
     _i2c: PhantomData<T>,
