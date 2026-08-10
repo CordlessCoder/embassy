@@ -1,6 +1,39 @@
-//! Window Watchdog Timer (WWDT) driver.
+//! Window Watchdog Timer (WWDT).
 //!
-//! This HAL implements a basic window watchdog timer with handles.
+//! A windowed watchdog: petting it too early is a violation as much as petting it too late, so a task
+//! stuck in a tight loop is caught as well as one that has stopped.
+//!
+//! # It does not watch a sleeping device, and that is a hardware limitation
+//!
+//! **The watchdog is disabled in STANDBY and off in SHUTDOWN**, per the device datasheets, which mark
+//! it `DIS` where `TIMG2`/`TIMG4` read `OPT`. It does not count there and it cannot reset the device,
+//! whatever [`Config::stop_in_sleep`] says.
+//!
+//! **This is not a clocking problem, which is what makes it disappointing.** The counter runs from
+//! LFCLK, and LFCLK is still running in STANDBY1 — the timers that wake a device from the deepest sleep
+//! run from it. The peripheral is switched off anyway. So the one part a low-power design most needs
+//! supervised, the long sleep, is the one part this cannot supervise.
+//!
+//! What this driver does about it: a [`Watchdog`] built with `stop_in_sleep` left `false` — the default,
+//! meaning "keep counting while the CPU is asleep" — **holds a sleep guard that blocks STANDBY and
+//! SHUTDOWN for as long as it exists**. Deep sleep cannot then silently disarm it. The cost is real and
+//! is the point: such an application reaches STOP2 and no deeper.
+//!
+//! Set `stop_in_sleep` to `true` and the guard is not taken. That configuration asks the watchdog to
+//! pause while the CPU sleeps, which is what the hardware does in STANDBY regardless, so the two agree
+//! and every sleep level stays reachable. **It also means nothing is watching during the sleep.**
+//!
+//! **To supervise a device across a deep sleep, use a timer that survives it** — one whose
+//! `clocked_in_standby1` metadata is true — and have it wake the device rather than reset it.
+//!
+//! # Stopping it
+//!
+//! Dropping a [`Watchdog`] stops it and releases the guard. `WWDTCTL0` is write protected once the
+//! watchdog is running and writing it is itself a violation, so the peripheral reset is what does this;
+//! it is the only way out short of resetting the device.
+//!
+//! Keep the handle alive for as long as the watchdog should be watching — [`core::mem::forget`] it if
+//! that is for ever.
 
 #![macro_use]
 
@@ -11,6 +44,7 @@ use embassy_hal_internal::PeripheralType;
 use crate::Peri;
 use crate::pac::wwdt::{Wwdt as Regs, vals};
 use crate::pac::{self};
+use crate::sysctl::{LowPowerInstance, MaybeWakeGuard};
 
 /// Possible watchdog timeout values.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -302,10 +336,15 @@ pub struct Config {
 
     /// Stop counting while the CPU is asleep, resuming from the same count on wake.
     ///
-    /// Left counting, the watchdog resets a device that sleeps past [`Self::timeout`] — **but only from
-    /// the modes that keep it clocked**. The device datasheets mark it disabled in STANDBY and off in
-    /// SHUTDOWN, so from those it neither counts nor resets, whatever this says. A device that has to be
-    /// watched through a deep sleep needs something else to do the watching.
+    /// **This field decides whether the watchdog blocks deep sleep**, because the hardware cannot
+    /// deliver what `false` promises from every mode — see the module docs.
+    ///
+    /// - `false`, the default and the hardware's: keep counting through sleep. [`Watchdog`] then holds
+    ///   a sleep guard for its whole life, so the device cannot reach STANDBY or SHUTDOWN, where the
+    ///   watchdog is disabled and would stop watching without saying so. STOP0 through STOP2 stay
+    ///   reachable and the watchdog counts through all of them.
+    /// - `true`: pause while asleep and resume from the same count. No guard, every sleep level
+    ///   reachable, and **nothing supervises the device while it sleeps**.
     pub stop_in_sleep: bool,
 }
 
@@ -333,11 +372,16 @@ pub struct Watchdog<'d> {
     regs: &'static Regs,
     config: Config,
     _instance: PhantomData<&'d mut ()>,
+
+    /// Blocks the sleep levels the watchdog is disabled in, unless the caller asked it to stop in
+    /// sleep. Held for the driver's whole life, because a watchdog is only worth anything while it is
+    /// counting. See the module docs.
+    _sleep_guard: MaybeWakeGuard,
 }
 
 impl<'d> Watchdog<'d> {
     /// Watchdog initialization.
-    pub fn new<T: Instance>(_instance: Peri<'d, T>, config: Config) -> Self {
+    pub fn new<T: Instance + LowPowerInstance>(_instance: Peri<'d, T>, config: Config) -> Self {
         T::regs().gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
             w.set_resetassert(true);
@@ -386,10 +430,21 @@ impl<'d> Watchdog<'d> {
             w.set_key(vals::Wwdtctl1Key::Key);
         });
 
+        // The datasheet's own answer for this instance rather than a constant here: `usable_through`
+        // is `Stop`, so the floor comes out at STANDBY0 and STOP stays reachable. A watchdog asked to
+        // stop in sleep wants no floor at all — the hardware stopping it in STANDBY is then the
+        // behaviour, not a surprise.
+        let floor = if config.stop_in_sleep {
+            None
+        } else {
+            <T as LowPowerInstance>::SLEEP.floor_to_stay_usable()
+        };
+
         Self {
             _instance: PhantomData,
             regs: T::regs(),
             config,
+            _sleep_guard: MaybeWakeGuard::new(floor),
         }
     }
 
@@ -423,6 +478,38 @@ impl<'d> Watchdog<'d> {
             embassy_time::Timer::after(interval).await;
             self.pet();
         }
+    }
+}
+
+/// Stops the watchdog and gives its instance back.
+///
+/// **A stopped watchdog is watching nothing**, so dropping the handle is a real decision and not
+/// bookkeeping. It is the right default here for two reasons: it is what every other driver in this HAL
+/// does with its peripheral, and without it dropping the handle would release the sleep guard while the
+/// counter kept running — arming a reset for whenever the device next woke with nobody petting it.
+///
+/// **To make the watchdog un-stoppable, do not let the handle drop**: [`core::mem::forget`] it, or keep
+/// it for the life of the program. A watchdog that a stray scope exit can switch off is not the thing a
+/// safety case wants, and this API cannot tell the two uses apart.
+impl Drop for Watchdog<'_> {
+    fn drop(&mut self) {
+        // The peripheral reset is the only way out. `WWDTCTL0` becomes write protected the moment the
+        // watchdog is enabled, and writing it after that is itself a violation (SLAU846 §39.2.1), so the
+        // configuration registers cannot turn it off — they can only reset the device.
+        //
+        // Measured: the reset alone stops a running watchdog, which then survives well past its timeout.
+        self.regs.gprcm(0).rstctl().write(|w| {
+            w.set_resetstkyclr(true);
+            w.set_resetassert(true);
+            w.set_key(vals::ResetKey::Key);
+        });
+
+        // Not what stops it — the reset above did that. This leaves the instance as `init` found it, so
+        // a later `new` starts from the same place the first one did.
+        self.regs.gprcm(0).pwren().write(|w| {
+            w.set_enable(false);
+            w.set_key(vals::PwrenKey::Key);
+        });
     }
 }
 
