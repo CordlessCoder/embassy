@@ -405,10 +405,10 @@ impl<'d> Flex<'d, Async> {
 /// Re-testing the level immediately after arming closes that window: either the edge is still to come
 /// and the wait proceeds, or the level is already there and the wait is over.
 #[cfg(feature = "rt")]
-async fn park(arm: &EdgeArm) {
+fn park(arm: &EdgeArm) -> impl Future<Output = ()> {
     let mut armed = false;
 
-    poll_fn(|cx| {
+    poll_fn(move |cx| {
         if !armed {
             arm.arm(cx.waker());
             armed = true;
@@ -436,7 +436,6 @@ async fn park(arm: &EdgeArm) {
 
         Poll::Pending
     })
-    .await;
 }
 
 /// Whether `GPIO_ERR_01` applies, which forces both directions to be detected.
@@ -750,32 +749,32 @@ impl<'d, M: Mode> Input<'d, M> {
 impl<'d> Input<'d, Async> {
     /// Wait until the pin is high. If it is already high, return immediately.
     #[inline]
-    pub async fn wait_for_high(&mut self) {
-        self.pin.wait_for_high().await
+    pub fn wait_for_high(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_high()
     }
 
     /// Wait until the pin is low. If it is already low, return immediately.
     #[inline]
-    pub async fn wait_for_low(&mut self) {
-        self.pin.wait_for_low().await
+    pub fn wait_for_low(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_low()
     }
 
     /// Wait for the pin to undergo a transition from low to high.
     #[inline]
-    pub async fn wait_for_rising_edge(&mut self) {
-        self.pin.wait_for_rising_edge().await
+    pub fn wait_for_rising_edge(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_rising_edge()
     }
 
     /// Wait for the pin to undergo a transition from high to low.
     #[inline]
-    pub async fn wait_for_falling_edge(&mut self) {
-        self.pin.wait_for_falling_edge().await
+    pub fn wait_for_falling_edge(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_falling_edge()
     }
 
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
     #[inline]
-    pub async fn wait_for_any_edge(&mut self) {
-        self.pin.wait_for_any_edge().await
+    pub fn wait_for_any_edge(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_any_edge()
     }
 }
 
@@ -964,32 +963,32 @@ impl<'d, M: Mode> OutputOpenDrain<'d, M> {
 impl<'d> OutputOpenDrain<'d, Async> {
     /// Wait until the pin is high. If it is already high, return immediately.
     #[inline]
-    pub async fn wait_for_high(&mut self) {
-        self.pin.wait_for_high().await
+    pub fn wait_for_high(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_high()
     }
 
     /// Wait until the pin is low. If it is already low, return immediately.
     #[inline]
-    pub async fn wait_for_low(&mut self) {
-        self.pin.wait_for_low().await
+    pub fn wait_for_low(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_low()
     }
 
     /// Wait for the pin to undergo a transition from low to high.
     #[inline]
-    pub async fn wait_for_rising_edge(&mut self) {
-        self.pin.wait_for_rising_edge().await
+    pub fn wait_for_rising_edge(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_rising_edge()
     }
 
     /// Wait for the pin to undergo a transition from high to low.
     #[inline]
-    pub async fn wait_for_falling_edge(&mut self) {
-        self.pin.wait_for_falling_edge().await
+    pub fn wait_for_falling_edge(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_falling_edge()
     }
 
     /// Wait for the pin to undergo any transition, i.e low to high OR high to low.
     #[inline]
-    pub async fn wait_for_any_edge(&mut self) {
-        self.pin.wait_for_any_edge().await
+    pub fn wait_for_any_edge(&mut self) -> impl Future<Output = ()> {
+        self.pin.wait_for_any_edge()
     }
 }
 

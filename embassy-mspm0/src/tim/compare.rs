@@ -329,10 +329,10 @@ impl<W: Word> CompareChannel<'_, W> {
     /// Wait for the counter to reach the compare value.
     ///
     /// Cancelling leaves an already-fired match pending, so the next call returns immediately.
-    pub async fn wait_for_compare(&mut self) {
+    pub fn wait_for_compare(&mut self) -> impl Future<Output = ()> {
         let event = self.event();
 
-        poll_fn(|cx| {
+        poll_fn(move |cx| {
             self.waker.register(cx.waker());
 
             if low_level::is_pending(self.regs, event) {
@@ -345,14 +345,16 @@ impl<W: Word> CompareChannel<'_, W> {
 
             Poll::Pending
         })
-        .await
     }
 
     /// Set the compare value and wait for the counter to reach it.
-    pub async fn wait_until(&mut self, value: W) {
+    ///
+    /// The value is written when this is called rather than when the future is first polled, so a
+    /// future built and dropped without awaiting still leaves it programmed.
+    pub fn wait_until(&mut self, value: W) -> impl Future<Output = ()> {
         self.set_compare(value);
         self.clear();
-        self.wait_for_compare().await;
+        self.wait_for_compare()
     }
 
     /// Whether a match is waiting to be acknowledged.

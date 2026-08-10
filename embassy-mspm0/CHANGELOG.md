@@ -178,3 +178,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking** mspm0/vref: select a clock for the reference, which never regulated without one; `Config::clock` picks the source
 - mspm0/sysctl: the G518x parts get their own SYSCTL block, and CLK_OUT names the MFPCLK and USB FLL sources rather than working around two SVD misnamings
 - **breaking** mspm0/opa: `NonInvertingInput::ground` refuses to compile on devices whose input mux has no ground position, where it used to select nothing and read a floating node
+- mspm0: return `impl Future` from the waits that only wrapped another future, saving 84-280 B and up to 48 B of RAM per binary; `Compare::wait_until` and `I2cTarget::listen` now touch their registers when called rather than when first polled

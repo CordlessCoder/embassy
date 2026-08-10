@@ -381,10 +381,10 @@ impl<W: Word> CaptureChannel<'_, W> {
     /// Wait for the next capture and return the counter value it recorded.
     ///
     /// One capture register per channel, so a further edge before this returns overwrites the value.
-    pub async fn wait_for_capture(&mut self) -> W {
+    pub fn wait_for_capture(&mut self) -> impl Future<Output = W> {
         let event = Event::CaptureOrCompareUp(self.channel);
 
-        poll_fn(|cx| {
+        poll_fn(move |cx| {
             self.waker.register(cx.waker());
 
             if low_level::is_pending(self.regs, event) {
@@ -398,7 +398,6 @@ impl<W: Word> CaptureChannel<'_, W> {
 
             Poll::Pending
         })
-        .await
     }
 
     /// Whether a capture is waiting to be read.

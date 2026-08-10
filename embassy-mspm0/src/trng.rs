@@ -243,8 +243,8 @@ impl<'d, D: SecurityMarker> Trng<'d, D> {
     /// As with the [`synchronous`](TryRng) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
     #[cfg(feature = "rt")]
     #[inline(always)]
-    pub async fn async_read_u32(&mut self) -> Result<u32, Error> {
-        self.inner.async_read_u32().await
+    pub fn async_read_u32(&mut self) -> impl Future<Output = Result<u32, Error>> {
+        self.inner.async_read_u32()
     }
 
     /// Asynchronously read a 64-bit random value from the TRNG.
@@ -254,8 +254,8 @@ impl<'d, D: SecurityMarker> Trng<'d, D> {
     /// As with the [`synchronous`](TryRng) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
     #[cfg(feature = "rt")]
     #[inline(always)]
-    pub async fn async_read_u64(&mut self) -> Result<u64, Error> {
-        self.inner.async_read_u64().await
+    pub fn async_read_u64(&mut self) -> impl Future<Output = Result<u64, Error>> {
+        self.inner.async_read_u64()
     }
 
     /// Asynchronously fill `dest` with random bytes from the TRNG.
@@ -268,8 +268,8 @@ impl<'d, D: SecurityMarker> Trng<'d, D> {
     /// When an error condition occurs, the buffer may be partially filled.
     #[cfg(feature = "rt")]
     #[inline(always)]
-    pub async fn async_read_bytes(&mut self, dest: &mut [u8]) -> Result<(), Error> {
-        self.inner.async_read_bytes(dest).await
+    pub fn async_read_bytes(&mut self, dest: &mut [u8]) -> impl Future<Output = Result<(), Error>> {
+        self.inner.async_read_bytes(dest)
     }
 }
 

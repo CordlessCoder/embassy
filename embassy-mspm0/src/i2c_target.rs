@@ -429,7 +429,10 @@ impl<'d> I2cTarget<'d> {
     }
     /// Wait asynchronously for commands from an I2C controller.
     /// `buffer` is provided in case controller does a 'write', 'write read', or 'general call' and is unused for 'read'.
-    pub async fn listen(&mut self, buffer: &mut [u8]) -> Result<Command, Error> {
+    ///
+    /// The receive FIFO trigger level is programmed when this is called rather than when the future
+    /// is first polled.
+    pub fn listen(&mut self, buffer: &mut [u8]) -> impl Future<Output = Result<Command, Error>> {
         let regs = self.info.regs;
 
         let mut len = 0;
@@ -440,7 +443,7 @@ impl<'d> I2cTarget<'d> {
         });
 
         self.wait_on(
-            |me| {
+            move |me| {
                 // Check if address matches the General Call address (0x00)
                 let is_gencall = regs.target(0).tsr().read().addrmatch() == 0;
 
@@ -482,7 +485,7 @@ impl<'d> I2cTarget<'d> {
                 }
                 result
             },
-            |_me| {
+            move |_me| {
                 regs.cpu_int(0).imask().write(|_| {});
                 regs.cpu_int(0).imask().modify(|w| {
                     w.set_tgencall(true);
@@ -492,7 +495,6 @@ impl<'d> I2cTarget<'d> {
                 });
             },
         )
-        .await
     }
 
     /// Respond to an I2C controller 'read' command, asynchronously.
@@ -578,12 +580,12 @@ impl<'d> I2cTarget<'d> {
     /// If not, `g` is called once(to eg enable the required interrupts).
     /// The waker will always be registered prior to calling `f`.
     #[inline(always)]
-    async fn wait_on<F, U, G>(&mut self, mut f: F, mut g: G) -> U
+    fn wait_on<F, U, G>(&mut self, mut f: F, mut g: G) -> impl Future<Output = U>
     where
         F: FnMut(&mut Self) -> Poll<U>,
         G: FnMut(&mut Self),
     {
-        poll_fn(|cx| {
+        poll_fn(move |cx| {
             // Register prior to checking the condition
             self.state.waker.register(cx.waker());
             let r = f(self);
@@ -594,7 +596,6 @@ impl<'d> I2cTarget<'d> {
 
             r
         })
-        .await
     }
 }
 

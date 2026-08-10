@@ -471,14 +471,14 @@ impl embedded_io_async::ErrorType for BufferedUartTx<'_> {
 }
 
 impl embedded_io_async::Read for BufferedUart<'_> {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.rx.read(buf).await
+    fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Self::Error>> {
+        self.rx.read_inner(buf)
     }
 }
 
 impl embedded_io_async::Read for BufferedUartRx<'_> {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.read_inner(buf).await
+    fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Self::Error>> {
+        self.read_inner(buf)
     }
 }
 
@@ -495,8 +495,8 @@ impl embedded_io_async::ReadReady for BufferedUartRx<'_> {
 }
 
 impl embedded_io_async::BufRead for BufferedUart<'_> {
-    async fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
-        self.rx.fill_buf().await
+    fn fill_buf(&mut self) -> impl Future<Output = Result<&[u8], Self::Error>> {
+        self.rx.fill_buf_inner()
     }
 
     fn consume(&mut self, amt: usize) {
@@ -505,8 +505,8 @@ impl embedded_io_async::BufRead for BufferedUart<'_> {
 }
 
 impl embedded_io_async::BufRead for BufferedUartRx<'_> {
-    async fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
-        self.fill_buf_inner().await
+    fn fill_buf(&mut self) -> impl Future<Output = Result<&[u8], Self::Error>> {
+        self.fill_buf_inner()
     }
 
     fn consume(&mut self, amt: usize) {
@@ -515,22 +515,22 @@ impl embedded_io_async::BufRead for BufferedUartRx<'_> {
 }
 
 impl embedded_io_async::Write for BufferedUart<'_> {
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.tx.write_inner(buf).await
+    fn write(&mut self, buf: &[u8]) -> impl Future<Output = Result<usize, Self::Error>> {
+        self.tx.write_inner(buf)
     }
 
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.tx.flush_inner().await
+    fn flush(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        self.tx.flush_inner()
     }
 }
 
 impl embedded_io_async::Write for BufferedUartTx<'_> {
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.write_inner(buf).await
+    fn write(&mut self, buf: &[u8]) -> impl Future<Output = Result<usize, Self::Error>> {
+        self.write_inner(buf)
     }
 
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.flush_inner().await
+    fn flush(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        self.flush_inner()
     }
 }
 
@@ -794,7 +794,7 @@ impl<'d> BufferedUartRx<'d> {
         Ok(())
     }
 
-    async fn read_inner(&self, buf: &mut [u8]) -> Result<usize, Error> {
+    fn read_inner(&self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Error>> {
         poll_fn(move |cx| {
             let state = self.state;
 
@@ -805,7 +805,6 @@ impl<'d> BufferedUartRx<'d> {
             state.rx_waker.register(cx.waker());
             Poll::Pending
         })
-        .await
     }
 
     fn blocking_read_inner(&self, buffer: &mut [u8]) -> Result<usize, Error> {
@@ -971,7 +970,7 @@ impl<'d> BufferedUartTx<'d> {
         Ok(this)
     }
 
-    async fn write_inner(&self, buf: &[u8]) -> Result<usize, Error> {
+    fn write_inner(&self, buf: &[u8]) -> impl Future<Output = Result<usize, Error>> {
         // Whether this call has already let the rest of the task run. Local to the call, so a transfer
         // that starts on an idle transmitter is not delayed by it.
         let mut yielded = false;
@@ -1030,7 +1029,6 @@ impl<'d> BufferedUartTx<'d> {
 
             Poll::Ready(Ok(n))
         })
-        .await
     }
 
     fn blocking_write_inner(&self, buffer: &[u8]) -> Result<usize, Error> {
