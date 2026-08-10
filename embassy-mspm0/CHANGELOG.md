@@ -183,5 +183,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0: update mspm0-metapac, which adds the comparator's per-instance internal-reference metadata
 - feat: mspm0/comp: add the three internal-reference sources, refused on devices whose comparator has none
 - fix: mspm0/comp: bind the comparator's interrupt on chips where it owns an NVIC line instead of sitting on a group
+- mspm0: update mspm0-metapac, which adds the comparator's enable and DAC settling times per device
+- feat: mspm0/comp: wait out the comparator's enable time and the DAC's settling, so a threshold is good when the call returns
 - mspm0/gpio: the `embedded_hal_async::digital::Wait` impls no longer wrap each wait in a state machine, saving 216 B in a binary that uses them
 - mspm0/sysctl: derive both sleep-floor ladders from the mode's position rather than matching each one, taking 40 B off `floor_for_operation` and off every binary that holds a sleep guard

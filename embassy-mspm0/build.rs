@@ -1438,6 +1438,13 @@ fn generate_peripheral_instances() -> TokenStream {
                 let comp = peripheral.comp.expect("a COMP instance with no comparator data");
                 let int_vref = comp.int_vref;
 
+                // Datasheet timings with no status bit behind them, so the driver waits them out.
+                // `None` where the family's datasheet has no such row; a zero wait is the honest
+                // answer there, the alternative being a number invented in the HAL.
+                let enable_fast_ns = comp.enable_fast_ns.unwrap_or(0);
+                let enable_ulp_ns = comp.enable_ulp_ns.unwrap_or(0);
+                let dac_settle_ns = comp.dac_settle_ns.unwrap_or(0);
+
                 // The comparator is a source on an interrupt group on most chips and the owner of an
                 // NVIC line on the rest, exactly as the GPIO ports are, so the binding a caller has
                 // to produce differs. `interrupt.name` is the group's line where it is grouped, and
@@ -1448,7 +1455,7 @@ fn generate_peripheral_instances() -> TokenStream {
                     .any(|interrupt| interrupt.group_iidx.is_some());
 
                 Some(if grouped {
-                    quote! { impl_comp_instance!(#peri, #int_vref); }
+                    quote! { impl_comp_instance!(#peri, #int_vref, #enable_fast_ns, #enable_ulp_ns, #dac_settle_ns); }
                 } else {
                     let line = format_ident!(
                         "{}",
@@ -1458,7 +1465,7 @@ fn generate_peripheral_instances() -> TokenStream {
                             .expect("a COMP instance with no interrupt")
                             .name
                     );
-                    quote! { impl_comp_instance_nvic!(#peri, #int_vref, #line); }
+                    quote! { impl_comp_instance_nvic!(#peri, #int_vref, #enable_fast_ns, #enable_ulp_ns, #dac_settle_ns, #line); }
                 })
             }
             _ => None,

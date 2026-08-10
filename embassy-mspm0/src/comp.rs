@@ -37,6 +37,13 @@
 //!
 //! # Errata this driver acts on
 //!
+//! # Two waits with nothing to wait on
+//!
+//! Neither the comparator's enable time nor the reference DAC's settling has a status bit behind it,
+//! so both are blocking delays taken from the device's own datasheet figures. That makes
+//! [`Comp::new`] and [`Comp::set_dac_code`] slower than the register writes they perform, and it is
+//! why a threshold is trustworthy the moment either returns.
+//!
 //! - **`COMP_ERR_05`** — enabling the comparator raises both edge interrupts, so the first
 //!   [`Comp::wait_for_edge`] would return without an edge. The flags are cleared after enabling.
 //! - **`COMP_ERR_03`** — hysteresis is unstable with the inputs exchanged. The pair is rejected.
@@ -385,6 +392,36 @@ impl State {
     }
 }
 
+/// CPU cycles covering `ns` at `mclk`, rounded up, and zero for zero.
+///
+/// Derived from MCLK because it is a busy-wait on the CPU, and MCLK is the CPU clock in RUN. Split
+/// out so the arithmetic is checked rather than buried in a delay call — a factor-of-1000 slip here
+/// is the one error no build would catch, and the same helper in `vref.rs` is where that was learnt.
+const fn wait_cycles(mclk: u32, ns: u32) -> u32 {
+    if ns == 0 {
+        return 0;
+    }
+
+    // In `u64` because 80 MHz times 10 us overflows a `u32` before the division brings it back.
+    let cycles = (mclk as u64 * ns as u64).div_ceil(1_000_000_000);
+
+    if cycles == 0 { 1 } else { cycles as u32 }
+}
+
+// The unit conversion in `wait_cycles` is the one error here no build would catch: too large and the
+// constructor is merely slow, too small and it hands back a comparator that is not ready, which reads
+// as an inaccurate threshold rather than as a fault.
+const _: () = {
+    // At 1 GHz a cycle is a nanosecond, so the conversion is the identity and any unit slip shows.
+    core::assert!(wait_cycles(1_000_000_000, 10_000) == 10_000);
+    // Rounds up rather than truncating, and never waits zero for a real figure.
+    core::assert!(wait_cycles(1, 1) == 1);
+    // A clock this actually runs at, against the arithmetic done the other way round.
+    core::assert!(wait_cycles(32_000_000, 10_000) == 320);
+    // An absent datasheet row waits nothing at all, rather than one cycle.
+    core::assert!(wait_cycles(32_000_000, 0) == 0);
+};
+
 /// Proof that this instance's interrupt is bound to its [`InterruptHandler`].
 ///
 /// Which binding satisfies it is fixed per chip: the comparator is a source on an interrupt group on
@@ -452,14 +489,14 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
     /// comparator's terminals. Pair it with
     /// `opa::NonInvertingInput::dac8`.
     ///
-    /// The comparator needs its enable time before the DAC's output is at the code, and
-    /// [`Comp::set_dac_code`] costs a further settling time after that. Neither is waited for here,
-    /// there being nothing to wait on: both are datasheet figures with no status bit behind them.
+    /// Blocks for the comparator's enable time, so the DAC's output is at the code when this
+    /// returns. Nothing reports readiness — there is no status bit — so the datasheet figure is
+    /// waited out, and which of the two applies is decided by [`Config::speed`] rather than by the
+    /// caller. It is 5 to 10 us across the families, the newer comparators being the faster.
     ///
-    /// **The enable time depends on [`Config::speed`] and on the device**, 5 to 10 us across the
-    /// families, the newer comparators being the faster ones and [`Speed::UltraLowPower`] the slower
-    /// mode. Like the reference's own startup figure it is stated rather than guaranteed — the
-    /// datasheet cell spans its MIN, TYP and MAX columns — so a margin is the caller's to add.
+    /// **Stated rather than guaranteed.** The datasheet cell spans its MIN, TYP and MAX columns, the
+    /// same shape as the voltage reference's startup figure, so a board at a temperature or supply
+    /// extreme could want longer and nothing here would report it.
     pub fn new_reference_only(_peri: Peri<'d, T>, reference: Reference, config: Config) -> Result<Self, ConfigError> {
         Self::build(
             None,
@@ -627,6 +664,15 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
 
         r.ctl1().modify(|w| w.set_enable(true));
 
+        // Nothing reports when the comparator is ready -- there is no status bit -- so the datasheet
+        // figure is waited out instead. Which of the two applies is decided by the mode this driver
+        // just programmed, so the caller does not have to know.
+        let enable_ns = match config.speed {
+            Speed::Fast => T::ENABLE_FAST_NS,
+            Speed::UltraLowPower => T::ENABLE_ULP_NS,
+        };
+        cortex_m::asm::delay(wait_cycles(crate::sysctl::clocks().mclk, enable_ns));
+
         // `COMP_ERR_05`: enabling raises both edge flags, so without this the first wait returns
         // immediately on an edge that never happened. Harmless where the erratum does not apply --
         // nothing has been armed yet, so there is nothing to lose.
@@ -680,14 +726,15 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
 
     /// Change the reference DAC's code.
     ///
-    /// Does nothing where the configured source does not run the DAC. The output settles in about
-    /// 1.5 us — a full-scale code step to within one LSB, and the same on every family — so a
-    /// comparison made sooner is against a threshold still on its way.
+    /// Blocks for the DAC's settling time, so the threshold is at the new code when this returns —
+    /// about 1.5 us, a full-scale step to within one LSB. Writes the register either way; the code
+    /// simply drives nothing where the configured source bypasses the DAC.
     ///
-    /// That figure is the internal path, which is the one an amplifier taking this as an input sees.
-    /// Driving the DAC out on a pin is several times slower, and this driver does not do it.
+    /// The figure is the internal path, which is what the comparator and an amplifier sampling the
+    /// DAC both see. Driving it out to a pin is several times slower, and this driver does not.
     pub fn set_dac_code(&mut self, code: DacCode) {
         T::regs().ctl3().write(|w| w.set_daccode(DACCODE, code.to_bits()));
+        cortex_m::asm::delay(wait_cycles(crate::sysctl::clocks().mclk, T::DAC_SETTLE_NS));
     }
 
     /// The code the reference DAC is programmed with.
@@ -740,6 +787,15 @@ pub(crate) trait SealedInstance {
     /// Whether `CTL2.REFSRC` positions 5, 6 and 7 select a source on this instance.
     const HAS_INTERNAL_REFERENCE: bool;
 
+    /// Enable time in [`Speed::Fast`], nanoseconds, or 0 where the datasheet has no such row.
+    const ENABLE_FAST_NS: u32;
+
+    /// Enable time in [`Speed::UltraLowPower`], nanoseconds, or 0 where there is no such row.
+    const ENABLE_ULP_NS: u32;
+
+    /// Reference DAC settling after a code change, nanoseconds, or 0 where there is no such row.
+    const DAC_SETTLE_NS: u32;
+
     fn regs() -> Regs;
     fn state() -> &'static State;
 }
@@ -791,11 +847,14 @@ pub trait OutputPin<T: Instance>: SealedOutputPin<T> + crate::gpio::Pin {}
 /// The half of an instance impl that does not depend on how its interrupt is dispatched.
 #[allow(unused_macros)]
 macro_rules! impl_comp_instance_common {
-    ($instance:ident, $int_vref:expr) => {
+    ($instance:ident, $int_vref:expr, $enable_fast:expr, $enable_ulp:expr, $dac_settle:expr) => {
         impl crate::comp::SealedInstance for crate::peripherals::$instance {
             const HYSTERESIS_BREAKS_ON_EXCHANGE: bool = cfg!(comp_err_03);
             const TOGGLES_IN_STANDBY0_ON_CHANNEL_0: bool = cfg!(comp_err_01);
             const HAS_INTERNAL_REFERENCE: bool = $int_vref;
+            const ENABLE_FAST_NS: u32 = $enable_fast;
+            const ENABLE_ULP_NS: u32 = $enable_ulp;
+            const DAC_SETTLE_NS: u32 = $dac_settle;
 
             #[inline]
             fn regs() -> mspm0_metapac::comp::Comp {
@@ -812,8 +871,8 @@ macro_rules! impl_comp_instance_common {
 
 #[allow(unused_macros)]
 macro_rules! impl_comp_instance {
-    ($instance:ident, $int_vref:expr) => {
-        impl_comp_instance_common!($instance, $int_vref);
+    ($instance:ident, $int_vref:expr, $enable_fast:expr, $enable_ulp:expr, $dac_settle:expr) => {
+        impl_comp_instance_common!($instance, $int_vref, $enable_fast, $enable_ulp, $dac_settle);
 
         impl crate::comp::Instance for crate::peripherals::$instance {}
 
@@ -840,8 +899,8 @@ macro_rules! impl_comp_instance {
 /// The same, for a chip where the comparator owns an NVIC line instead of sitting on a group.
 #[allow(unused_macros)]
 macro_rules! impl_comp_instance_nvic {
-    ($instance:ident, $int_vref:expr, $line:ident) => {
-        impl_comp_instance_common!($instance, $int_vref);
+    ($instance:ident, $int_vref:expr, $enable_fast:expr, $enable_ulp:expr, $dac_settle:expr, $line:ident) => {
+        impl_comp_instance_common!($instance, $int_vref, $enable_fast, $enable_ulp, $dac_settle);
 
         impl crate::comp::Instance for crate::peripherals::$instance {}
 
