@@ -1086,15 +1086,18 @@ fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(), ConfigErro
 
     info.interrupt.disable();
 
+    // Wait for end of transmission per suggestion in SLAU 845 section 18.3.28. It has to happen while
+    // the transmitter still runs: disabling completes only the character already in the shift register
+    // (SLAU846 table 24-41), so anything left in the FIFO stays there and a wait after the disable
+    // never finishes.
+    while busy(r) {}
+
     // Programming baud rate requires that the peripheral is disabled
     critical_section::with(|_cs| {
         r.ctl0().modify(|w| {
             w.set_enable(false);
         });
     });
-
-    // Wait for end of transmission per suggestion in SLAU 845 section 18.3.28
-    while !r.stat().read().txfe() {}
 
     set_baudrate_inner(r, clock, baudrate)?;
 
