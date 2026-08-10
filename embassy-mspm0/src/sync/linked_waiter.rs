@@ -166,7 +166,10 @@ impl<T> WaiterList<T> {
     /// method here dereferences the nodes it walks past, so this promise is what makes them safe.
     pub(crate) unsafe fn link(&self, waiter: &Waiter<T>, _cs: CriticalSection<'_>) {
         waiter.next.set(NonNull::new(self.head.load(Ordering::Relaxed)));
-        self.head.store(ptr::from_ref(waiter).cast_mut(), Ordering::Release);
+        // Relaxed, not Release: the token says interrupts are masked, so the waker side cannot observe
+        // the list between the two stores, and leaving the critical section is itself a barrier. See
+        // the module docs — the same single-core argument the non-atomic `Waker` read rests on.
+        self.head.store(ptr::from_ref(waiter).cast_mut(), Ordering::Relaxed);
     }
 
     /// Take `waiter` back off the list, wherever in it the node happens to be.
@@ -183,7 +186,7 @@ impl<T> WaiterList<T> {
         if self.head.load(Ordering::Relaxed) == me.as_ptr() {
             self.head.store(
                 waiter.next.get().map_or(ptr::null_mut(), NonNull::as_ptr),
-                Ordering::Release,
+                Ordering::Relaxed,
             );
 
             return;
@@ -212,7 +215,9 @@ impl<T> WaiterList<T> {
     ///
     /// Only the list's one waker side may call this, so that no task can be editing the list.
     pub(crate) unsafe fn find(&self, wanted: impl Fn(&T) -> bool) -> Option<&Waiter<T>> {
-        let mut node = NonNull::new(self.head.load(Ordering::Acquire));
+        // Relaxed for the reason `link`'s store is: one core, and every edit ran to completion with
+        // interrupts masked before this handler could start.
+        let mut node = NonNull::new(self.head.load(Ordering::Relaxed));
 
         while let Some(current) = node {
             // SAFETY: nodes leave the list before they are dropped, and the caller cannot be interrupting
