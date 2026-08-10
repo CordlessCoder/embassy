@@ -24,6 +24,8 @@ pub mod i2c;
 pub mod i2c_target;
 #[cfg(feature = "low-power")]
 pub mod low_power;
+#[cfg(comp)]
+pub mod comp;
 #[cfg(mathacl)]
 pub mod mathacl;
 #[cfg(opa)]

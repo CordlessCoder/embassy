@@ -179,3 +179,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/sysctl: the G518x parts get their own SYSCTL block, and CLK_OUT names the MFPCLK and USB FLL sources rather than working around two SVD misnamings
 - **breaking** mspm0/opa: `NonInvertingInput::ground` refuses to compile on devices whose input mux has no ground position, where it used to select nothing and read a floating node
 - mspm0: return `impl Future` from the waits that only wrapped another future, saving 84-280 B and up to 48 B of RAM per binary; `Compare::wait_until` and `I2cTarget::listen` now touch their registers when called rather than when first polled
+- feat: mspm0/comp: add a comparator driver, with its 8-bit reference DAC — the only internal source an OPA has on families whose reference does not reach a pin

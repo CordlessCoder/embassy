@@ -133,6 +133,9 @@ fn peripheral_name_cfgs(cfgs: &mut CfgSet) {
 /// sheet, so unlike the family lists these replace it cannot miss a part — and a new device gets its
 /// workarounds without an edit.
 const ERRATA_CFGS: &[&str] = &[
+    "COMP_ERR_01",
+    "COMP_ERR_03",
+    "COMP_ERR_05",
     "GPIO_ERR_01",
     "MATHACL_ERR_02",
     "UART_ERR_03",
@@ -1429,6 +1432,7 @@ fn generate_peripheral_instances() -> TokenStream {
                 Some(quote! { impl_opa_instance!(#peri, #ground); })
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
+            "comp" => Some(quote! { impl_comp_instance!(#peri); }),
             _ => None,
         };
 
@@ -1524,6 +1528,15 @@ fn generate_pin_trait_impls() -> TokenStream {
                 ("opa", "IN1+") => Some(quote! { impl_opa_non_inverting_pin!(#peri, #pin_name, 2u8); }),
                 ("opa", "IN2+") => Some(quote! { impl_opa_non_inverting_pin!(#peri, #pin_name, 3u8); }),
                 ("opa", "OUT") => Some(quote! { impl_opa_output_pin!(#peri, #pin_name); }),
+                // `IPSEL`/`IMSEL` select the channel by its number, which is the digit in the
+                // signal name: `COMP_ERR_01` names `IMSEL = 0` as `COMP0_IN0-`. Only the pin
+                // positions are generated -- the higher positions reach internal analog sources and
+                // differ per family, with an absent one selecting nothing rather than failing.
+                ("comp", "IN0+") => Some(quote! { impl_comp_positive_pin!(#peri, #pin_name, 0u8); }),
+                ("comp", "IN1+") => Some(quote! { impl_comp_positive_pin!(#peri, #pin_name, 1u8); }),
+                ("comp", "IN0-") => Some(quote! { impl_comp_negative_pin!(#peri, #pin_name, 0u8); }),
+                ("comp", "IN1-") => Some(quote! { impl_comp_negative_pin!(#peri, #pin_name, 1u8); }),
+                ("comp", "OUT") => Some(quote! { impl_comp_output_pin!(#peri, #pin_name, #pf); }),
                 ("sysctl", "CLK_OUT") => Some(quote! { impl_clk_out_pin!(#pin_name, #pf); }),
                 ("tim", "CCP0") => Some(quote! { impl_tim_pin!(#peri, #pin_name, #pf, Ch0); }),
                 ("tim", "CCP1") => Some(quote! { impl_tim_pin!(#peri, #pin_name, #pf, Ch1); }),
