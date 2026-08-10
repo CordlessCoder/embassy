@@ -4,7 +4,6 @@
 // https://github.com/embassy-rs/embassy/tree/main/embassy-rp
 
 use core::future::poll_fn;
-use core::marker::PhantomData;
 use core::task::Poll;
 
 use embassy_embedded_hal::SetConfig;
@@ -13,7 +12,6 @@ use mspm0_metapac::i2c::vals::CpuIntIidxStat;
 use crate::gpio::{AnyPin, SealedPin};
 use crate::i2c::{Address, ClockSel, ConfigError, Info, Instance, InterruptHandler, SclPin, SdaPin, State};
 use crate::interrupt::InterruptExt;
-use crate::mode::{Async, Blocking, Mode};
 use crate::pac::i2c::vals;
 use crate::pac::{self};
 use crate::sysctl::MaybeWakeGuard;
@@ -115,7 +113,7 @@ pub enum ReadStatus {
 
 /// I2C Target driver.
 // Use the same Instance, SclPin, SdaPin traits as the controller
-pub struct I2cTarget<'d, M: Mode> {
+pub struct I2cTarget<'d> {
     info: &'static Info,
     state: &'static State,
     scl: Option<Peri<'d, AnyPin>>,
@@ -129,10 +127,9 @@ pub struct I2cTarget<'d, M: Mode> {
 
     target_config: i2c_target::Config,
     wake_guard: MaybeWakeGuard,
-    _phantom: PhantomData<M>,
 }
 
-impl<'d> SetConfig for I2cTarget<'d, Async> {
+impl<'d> SetConfig for I2cTarget<'d> {
     type Config = (i2c::Config, i2c_target::Config);
     type ConfigError = ConfigError;
 
@@ -154,27 +151,7 @@ impl<'d> SetConfig for I2cTarget<'d, Async> {
     }
 }
 
-impl<'d> SetConfig for I2cTarget<'d, Blocking> {
-    type Config = (i2c::Config, i2c_target::Config);
-    type ConfigError = ConfigError;
-
-    fn set_config(&mut self, config: &Self::Config) -> Result<(), Self::ConfigError> {
-        if let Some(ref sda) = self.sda {
-            sda.update_pf(config.0.sda_pf());
-        }
-
-        if let Some(ref scl) = self.scl {
-            scl.update_pf(config.0.scl_pf());
-        }
-
-        self.resolved = config.0.resolve()?;
-        self.target_config = config.1;
-
-        self.reset()
-    }
-}
-
-impl<'d> I2cTarget<'d, Async> {
+impl<'d> I2cTarget<'d> {
     /// Create a new asynchronous I2C target driver using interrupts
     /// The `config` reuses the i2c controller config to setup the clock while `target_config`
     /// configures i2c target specific parameters.
@@ -207,40 +184,6 @@ impl<'d> I2cTarget<'d, Async> {
         self.wake_guard = MaybeWakeGuard::new(self.resolved.wake_floor(&self.info.sleep));
         Ok(())
     }
-}
-
-impl<'d> I2cTarget<'d, Blocking> {
-    /// Create a new blocking I2C target driver.
-    /// The `config` reuses the i2c controller config to setup the clock while `target_config`
-    /// configures i2c target specific parameters.
-    pub fn new_blocking<T: Instance>(
-        peri: Peri<'d, T>,
-        scl: Peri<'d, impl SclPin<T>>,
-        sda: Peri<'d, impl SdaPin<T>>,
-        config: i2c::Config,
-        target_config: i2c_target::Config,
-    ) -> Result<Self, ConfigError> {
-        let mut this = Self::new_inner(
-            peri,
-            new_pin!(scl, config.scl_pf()),
-            new_pin!(sda, config.sda_pf()),
-            config,
-            target_config,
-        )?;
-        this.reset()?;
-        Ok(this)
-    }
-
-    /// Reset the i2c peripheral. If you cancel a respond_to_read, you may stall the bus.
-    /// You can recover the bus by calling this function, but doing so will almost certainly cause
-    /// an i/o error in the controller.
-    pub fn reset(&mut self) -> Result<(), ConfigError> {
-        self.init()?;
-        Ok(())
-    }
-}
-
-impl<'d, M: Mode> I2cTarget<'d, M> {
     fn new_inner<T: Instance>(
         _peri: Peri<'d, T>,
         scl: Option<Peri<'d, AnyPin>>,
@@ -271,7 +214,6 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             resolved,
             target_config,
             wake_guard: MaybeWakeGuard::none(),
-            _phantom: PhantomData,
         })
     }
 
@@ -483,9 +425,6 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
     pub fn flush_tx_fifo(&mut self) {
         self.flush_fifos(true, false);
     }
-}
-
-impl<'d> I2cTarget<'d, Async> {
     /// Wait asynchronously for commands from an I2C controller.
     /// `buffer` is provided in case controller does a 'write', 'write read', or 'general call' and is unused for 'read'.
     pub async fn listen(&mut self, buffer: &mut [u8]) -> Result<Command, Error> {
@@ -657,7 +596,7 @@ impl<'d> I2cTarget<'d, Async> {
     }
 }
 
-impl<'d, M: Mode> Drop for I2cTarget<'d, M> {
+impl<'d> Drop for I2cTarget<'d> {
     fn drop(&mut self) {
         // Ensure peripheral is disabled and pins are reset
         self.info.regs.target(0).tctr().modify(|w| w.set_active(false));
