@@ -53,6 +53,25 @@ impl SleepLevel {
         SleepLevel::Standby1,
     ];
 
+    /// The floor that leaves `mode` reachable, or `None` where nothing has to be blocked.
+    ///
+    /// Both ladders in [`SleepInfo`] are the same step: block the level *past* the deepest mode that
+    /// still does whatever is being asked of the instance. Written as arithmetic over the two
+    /// discriminants rather than as a match, because a match over eight modes lands out of line.
+    #[inline(always)]
+    const fn past(mode: Option<PowerMode>) -> Option<Self> {
+        let Some(mode) = mode else { return None };
+
+        // Nothing is past the two deepest, and RUN and SLEEP both step to `Stop0` rather than below it.
+        if mode as u8 >= PowerMode::Standby1 as u8 {
+            return None;
+        }
+
+        // RUN and SLEEP both step to `Stop0`; every deeper mode steps one rung down. `saturating_sub`
+        // is 12 B smaller here than the equivalent `d - (d != 0)`, measured.
+        Some(Self::LEVELS[(mode as u8).saturating_sub(1) as usize])
+    }
+
     /// The more restrictive of two floors, where `None` restricts nothing.
     ///
     /// A floor names the shallowest blocked level, so blocking from a shallower level is stricter.
@@ -129,18 +148,8 @@ impl SleepInfo {
     /// An unknown [`Self::usable_through`] reads as no constraint, the datasheet tables being unable to
     /// resolve some instances.
     pub const fn floor_to_stay_usable(&self) -> Option<SleepLevel> {
-        // The shallowest level to block is the one *past* the deepest the instance is usable in, so
-        // since the sub-mode split this is a step down the same ladder rather than a bucketing.
-        match self.usable_through {
-            // Usable to the bottom, or the datasheet does not say. Nothing to add.
-            Some(PowerMode::Standby1 | PowerMode::Shutdown) | None => None,
-            Some(PowerMode::Standby0) => Some(SleepLevel::Standby1),
-            Some(PowerMode::Stop2) => Some(SleepLevel::Standby0),
-            Some(PowerMode::Stop1) => Some(SleepLevel::Stop2),
-            Some(PowerMode::Stop0) => Some(SleepLevel::Stop1),
-            // Not usable below SLEEP, so no deep sleep at all.
-            Some(PowerMode::Run | PowerMode::Sleep) => Some(SleepLevel::Stop0),
-        }
+        // An unknown `usable_through` and one reaching the bottom both come back `None`.
+        SleepLevel::past(self.usable_through)
     }
 
     /// Shallowest level to block for the duration of an operation on this instance, clocked at
@@ -160,16 +169,7 @@ impl SleepInfo {
     /// Being in PD1 is not on its own a reason to block: SYSCTL disables those peripherals on entry but
     /// re-enables them on exit, so only losing the configuration registers needs anything done about it.
     pub const fn floor_to_keep_configured(&self) -> Option<SleepLevel> {
-        match self.retained_through {
-            // Retained to the bottom, or in a domain where nothing disables it.
-            Some(PowerMode::Standby1 | PowerMode::Shutdown) | None => None,
-            Some(PowerMode::Standby0) => Some(SleepLevel::Standby1),
-            Some(PowerMode::Stop2) => Some(SleepLevel::Standby0),
-            Some(PowerMode::Stop1) => Some(SleepLevel::Stop2),
-            Some(PowerMode::Stop0) => Some(SleepLevel::Stop1),
-            // Not retained by any deep-sleep mode.
-            Some(PowerMode::Run | PowerMode::Sleep) => Some(SleepLevel::Stop0),
-        }
+        SleepLevel::past(self.retained_through)
     }
 }
 
@@ -278,8 +278,19 @@ const _: () = {
         }
     }
 
+    // Every rung, because `SleepLevel::past` reads the step off the two discriminants rather than
+    // matching each mode. Adding a `PowerMode` variant anywhere but the end breaks it here.
     core::assert!(matches!(usable(None).floor_to_stay_usable(), None));
+    core::assert!(matches!(usable(Some(PowerMode::Shutdown)).floor_to_stay_usable(), None));
     core::assert!(matches!(usable(Some(PowerMode::Standby1)).floor_to_stay_usable(), None));
+    core::assert!(matches!(
+        usable(Some(PowerMode::Stop2)).floor_to_stay_usable(),
+        Some(Standby0)
+    ));
+    core::assert!(matches!(
+        usable(Some(PowerMode::Run)).floor_to_stay_usable(),
+        Some(Stop0)
+    ));
 
     // The one the sub-mode split exists for: usable in STANDBY0 blocks only the deeper STANDBY1, where
     // a single `Standby` value used to force this all the way down to blocking STANDBY0 as well.

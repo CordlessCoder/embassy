@@ -180,3 +180,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking** mspm0/opa: `NonInvertingInput::ground` refuses to compile on devices whose input mux has no ground position, where it used to select nothing and read a floating node
 - mspm0: return `impl Future` from the waits that only wrapped another future, saving 84-280 B and up to 48 B of RAM per binary; `Compare::wait_until` and `I2cTarget::listen` now touch their registers when called rather than when first polled
 - feat: mspm0/comp: add a comparator driver, with its 8-bit reference DAC — the only internal source an OPA has on families whose reference does not reach a pin
+- mspm0/sysctl: derive both sleep-floor ladders from the mode's position rather than matching each one, taking 40 B off `floor_for_operation` and off every binary that holds a sleep guard
