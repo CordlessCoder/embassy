@@ -438,6 +438,27 @@ fn park(arm: &EdgeArm) -> impl Future<Output = ()> {
     })
 }
 
+/// Adapts an infallible wait to the `Result` `embedded_hal_async` asks for.
+///
+/// An `async` block would do the same and cost a state machine per future — a discriminant, a resume
+/// switch, and the inner future inside it. This is laid out as the future it holds and its `poll` is
+/// the inner `poll` plus a tag.
+#[cfg(feature = "rt")]
+struct AlwaysOk<F>(F);
+
+#[cfg(feature = "rt")]
+impl<F: Future<Output = ()>> Future for AlwaysOk<F> {
+    type Output = Result<(), core::convert::Infallible>;
+
+    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: a structural projection to the only field. `AlwaysOk` is never unpinned, moved
+        // out of, or given a `Drop`, so the inner future stays pinned for as long as this is.
+        let inner = unsafe { self.map_unchecked_mut(|this| &mut this.0) };
+
+        inner.poll(cx).map(Ok)
+    }
+}
+
 /// Whether `GPIO_ERR_01` applies, which forces both directions to be detected.
 ///
 /// Its case 2 loses every STANDBY1 wake after the first unless the pin detects both edges, so where it
@@ -1072,29 +1093,24 @@ impl<'d, M: Mode> embedded_hal::digital::StatefulOutputPin for Flex<'d, M> {
 
 #[cfg(feature = "rt")]
 impl<'d> embedded_hal_async::digital::Wait for Flex<'d, Async> {
-    async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_high().await;
-        Ok(())
+    fn wait_for_high(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_high())
     }
 
-    async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_low().await;
-        Ok(())
+    fn wait_for_low(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_low())
     }
 
-    async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_rising_edge().await;
-        Ok(())
+    fn wait_for_rising_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_rising_edge())
     }
 
-    async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_falling_edge().await;
-        Ok(())
+    fn wait_for_falling_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_falling_edge())
     }
 
-    async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_any_edge().await;
-        Ok(())
+    fn wait_for_any_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_any_edge())
     }
 }
 
@@ -1116,29 +1132,24 @@ impl<'d, M: Mode> embedded_hal::digital::InputPin for Input<'d, M> {
 
 #[cfg(feature = "rt")]
 impl<'d> embedded_hal_async::digital::Wait for Input<'d, Async> {
-    async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_high().await;
-        Ok(())
+    fn wait_for_high(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_high())
     }
 
-    async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_low().await;
-        Ok(())
+    fn wait_for_low(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_low())
     }
 
-    async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_rising_edge().await;
-        Ok(())
+    fn wait_for_rising_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_rising_edge())
     }
 
-    async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_falling_edge().await;
-        Ok(())
+    fn wait_for_falling_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_falling_edge())
     }
 
-    async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_any_edge().await;
-        Ok(())
+    fn wait_for_any_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_any_edge())
     }
 }
 
@@ -1212,29 +1223,24 @@ impl<'d, M: Mode> embedded_hal::digital::StatefulOutputPin for OutputOpenDrain<'
 
 #[cfg(feature = "rt")]
 impl<'d> embedded_hal_async::digital::Wait for OutputOpenDrain<'d, Async> {
-    async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_high().await;
-        Ok(())
+    fn wait_for_high(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_high())
     }
 
-    async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_low().await;
-        Ok(())
+    fn wait_for_low(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_low())
     }
 
-    async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_rising_edge().await;
-        Ok(())
+    fn wait_for_rising_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_rising_edge())
     }
 
-    async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_falling_edge().await;
-        Ok(())
+    fn wait_for_falling_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_falling_edge())
     }
 
-    async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_any_edge().await;
-        Ok(())
+    fn wait_for_any_edge(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        AlwaysOk(self.wait_for_any_edge())
     }
 }
 
