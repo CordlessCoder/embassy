@@ -18,7 +18,7 @@ use mspm0_metapac::dma::vals::{self, Autoen, Em, Incr, Preirq, Wdth};
 
 use crate::interrupt::typelevel::{Handler, Interrupt};
 use crate::sync::irq_waker::IrqWaker;
-use crate::sysctl::{SleepLevel, WakeGuard};
+use crate::sysctl::{MaybeWakeGuard, SleepLevel};
 use crate::{Peri, interrupt, pac};
 
 /// DMA interrupt handler.
@@ -86,12 +86,12 @@ impl<'d> Channel<'d> {
     /// A hardware trigger reaches the event manager, which suspends STOP or STANDBY for as long as the
     /// transfer needs (TRM, "Suspended Low-Power Mode Operation"). A software request never reaches it,
     /// so deep sleep would cut the transfer until something unrelated woke the device.
-    fn transfer_guard(&self, trigger_source: u8) -> Option<WakeGuard> {
+    fn transfer_guard(&self, trigger_source: u8) -> MaybeWakeGuard {
         if trigger_source != Transfer::SOFTWARE_TRIGGER {
-            return None;
+            return MaybeWakeGuard::none();
         }
 
-        self.sw_wake_floor.map(WakeGuard::new)
+        MaybeWakeGuard::new(self.sw_wake_floor)
     }
 
     /// Create a new read DMA transfer.
@@ -360,7 +360,7 @@ impl Default for TransferOptions {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Transfer<'a> {
     channel: Channel<'a>,
-    wake_guard: Option<WakeGuard>,
+    wake_guard: MaybeWakeGuard,
 }
 
 impl<'a> Transfer<'a> {
@@ -403,7 +403,7 @@ impl<'a> Transfer<'a> {
 
         // Prevent drop from being called since we ran to completion (drop will try to pause). The wake
         // guard still has to be released, or it would block deep sleep for the rest of the program.
-        drop(self.wake_guard.take());
+        self.wake_guard.release();
         mem::forget(self);
     }
 }

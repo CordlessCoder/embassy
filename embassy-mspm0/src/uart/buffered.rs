@@ -13,7 +13,7 @@ use crate::gpio::{AnyPin, SealedPin};
 use crate::interrupt::typelevel::Binding;
 use crate::pac::uart::Uart as Regs;
 use crate::sync::irq_waker::IrqWaker;
-use crate::sysctl::{SleepLevel, WakeGuard};
+use crate::sysctl::{MaybeWakeGuard, SleepLevel};
 use crate::uart::{Config, ConfigError, CtsPin, Error, Info, Instance, RtsPin, RxPin, State, TxPin};
 use crate::{Peri, interrupt, pac};
 
@@ -157,7 +157,7 @@ impl<'d> BufferedUart<'d> {
                 tx: self.tx.tx.as_mut().map(Peri::reborrow),
                 cts: self.tx.cts.as_mut().map(Peri::reborrow),
                 reborrowed: true,
-                _retention_guard: None,
+                _retention_guard: MaybeWakeGuard::none(),
             },
             BufferedUartRx {
                 info: self.rx.info,
@@ -165,8 +165,8 @@ impl<'d> BufferedUart<'d> {
                 rx: self.rx.rx.as_mut().map(Peri::reborrow),
                 rts: self.rx.rts.as_mut().map(Peri::reborrow),
                 reborrowed: true,
-                wake_guard: None,
-                _retention_guard: None,
+                wake_guard: MaybeWakeGuard::none(),
+                _retention_guard: MaybeWakeGuard::none(),
             },
         )
     }
@@ -182,10 +182,10 @@ pub struct BufferedUartRx<'d> {
     rx: Option<Peri<'d, AnyPin>>,
     rts: Option<Peri<'d, AnyPin>>,
     reborrowed: bool,
-    wake_guard: Option<WakeGuard>,
+    wake_guard: MaybeWakeGuard,
     /// Held for as long as the driver exists; see
     /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
-    _retention_guard: Option<WakeGuard>,
+    _retention_guard: MaybeWakeGuard,
 }
 
 impl SetConfig for BufferedUartRx<'_> {
@@ -260,14 +260,15 @@ impl<'d> BufferedUartRx<'d> {
     /// expecting repeated UART start conditions" — which is exactly this case. STANDBY0 is also the only
     /// depth fast enough to catch the first bits, since the fast clock request needs 241 us typical from
     /// STANDBY1.
-    fn rx_wake_guard(&self, low_power_rx_wake: bool) -> Option<WakeGuard> {
+    fn rx_wake_guard(&self, low_power_rx_wake: bool) -> MaybeWakeGuard {
         if low_power_rx_wake {
-            Some(WakeGuard::new(SleepLevel::Standby1))
+            MaybeWakeGuard::new(Some(SleepLevel::Standby1))
         } else {
-            self.info
-                .sleep
-                .floor_for_operation(self.state.state.clock.load(Ordering::Relaxed))
-                .map(WakeGuard::new)
+            MaybeWakeGuard::new(
+                self.info
+                    .sleep
+                    .floor_for_operation(self.state.state.clock.load(Ordering::Relaxed)),
+            )
         }
     }
 
@@ -321,7 +322,7 @@ pub struct BufferedUartTx<'d> {
     reborrowed: bool,
     /// Held for as long as the driver exists; see
     /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
-    _retention_guard: Option<WakeGuard>,
+    _retention_guard: MaybeWakeGuard,
 }
 
 impl SetConfig for BufferedUartTx<'_> {
@@ -685,7 +686,7 @@ impl<'d> BufferedUart<'d> {
                 rx,
                 rts,
                 reborrowed: false,
-                wake_guard: None,
+                wake_guard: MaybeWakeGuard::none(),
                 _retention_guard: super::retention_guard(info),
             },
         };
@@ -747,7 +748,7 @@ impl<'d> BufferedUartRx<'d> {
             rx,
             rts,
             reborrowed: false,
-            wake_guard: None,
+            wake_guard: MaybeWakeGuard::none(),
             _retention_guard: super::retention_guard(T::info()),
         };
         this.enable_and_configure(rx_buffer, &config)?;
@@ -1025,11 +1026,11 @@ impl<'d> BufferedUartTx<'d> {
     }
 
     async fn flush_inner(&self) -> Result<(), Error> {
-        let _guard = self
-            .info
-            .sleep
-            .floor_for_operation(self.state.state.clock.load(Ordering::Relaxed))
-            .map(WakeGuard::new);
+        let _guard = MaybeWakeGuard::new(
+            self.info
+                .sleep
+                .floor_for_operation(self.state.state.clock.load(Ordering::Relaxed)),
+        );
 
         poll_fn(move |cx| {
             let state = self.state;

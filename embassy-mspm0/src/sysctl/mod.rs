@@ -368,6 +368,47 @@ impl Drop for WakeGuard {
     }
 }
 
+/// A [`WakeGuard`] a driver may or may not be holding, costing nothing when the crate cannot sleep.
+///
+/// `Option<WakeGuard>` would be the obvious spelling and is **one byte** with `low-power` off:
+/// `WakeGuard` is a zero-sized type there, so the option has no niche to put its discriminant in and
+/// takes one of its own. Almost every driver holds one, several hold two, so that byte multiplies
+/// across a chip with four kilobytes of RAM.
+pub(crate) struct MaybeWakeGuard {
+    #[cfg(feature = "low-power")]
+    guard: Option<WakeGuard>,
+}
+
+impl MaybeWakeGuard {
+    /// Hold a guard at `level`, or nothing if there is no level to hold.
+    #[inline]
+    pub(crate) fn new(level: Option<SleepLevel>) -> Self {
+        #[cfg(not(feature = "low-power"))]
+        let _ = level;
+
+        Self {
+            #[cfg(feature = "low-power")]
+            guard: level.map(WakeGuard::new),
+        }
+    }
+
+    /// Hold nothing.
+    #[inline]
+    pub(crate) const fn none() -> Self {
+        Self {
+            #[cfg(feature = "low-power")]
+            guard: None,
+        }
+    }
+
+    /// Drop whatever is held, without waiting for the owner to be dropped.
+    #[inline]
+    pub(crate) fn release(&mut self) {
+        #[cfg(feature = "low-power")]
+        drop(self.guard.take());
+    }
+}
+
 /// Highest frequency MCLK may run at on this chip.
 pub const MAX_MCLK_HZ: u32 = crate::_generated::MAX_MCLK_HZ;
 

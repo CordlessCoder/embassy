@@ -12,7 +12,7 @@ use micromath::F32Ext;
 
 use crate::Peri;
 use crate::pac::mathacl::{Mathacl as Regs, vals};
-use crate::sysctl::WakeGuard;
+use crate::sysctl::MaybeWakeGuard;
 
 /// How close a float has to be for the unit tests to call it equal.
 ///
@@ -80,7 +80,7 @@ pub struct Mathacl<'d> {
     /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
     ///
     /// MATHACL keeps its configuration no deeper than SLEEP, so deep sleep would discard it.
-    _retention_guard: Option<WakeGuard>,
+    _retention_guard: MaybeWakeGuard,
     _phantom: PhantomData<&'d mut ()>,
 }
 
@@ -104,9 +104,9 @@ impl<'d> Mathacl<'d> {
 
         Self {
             regs: T::regs(),
-            _retention_guard: <T as crate::sysctl::LowPowerInstance>::SLEEP
-                .floor_to_keep_configured()
-                .map(WakeGuard::new),
+            _retention_guard: MaybeWakeGuard::new(
+                <T as crate::sysctl::LowPowerInstance>::SLEEP.floor_to_keep_configured(),
+            ),
             _phantom: PhantomData,
         }
     }

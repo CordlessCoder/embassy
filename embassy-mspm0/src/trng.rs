@@ -16,7 +16,7 @@ use crate::interrupt_group::Binding;
 use crate::peripherals::TRNG;
 use crate::sealed;
 use crate::sync::irq_waker::IrqWaker;
-use crate::sysctl::{LowPowerInstance, WakeGuard};
+use crate::sysctl::{LowPowerInstance, MaybeWakeGuard, WakeGuard};
 
 /// Woken by the TRNG interrupt. Reachable only through [`InterruptHandler`], so a binary that binds
 /// no handler drops it along with the handler.
@@ -305,7 +305,7 @@ struct TrngInner<'d> {
     /// Deep sleep discards the TRNG's configuration entirely (L-series TRM 13.2.3). Dropping this in
     /// exchange for re-running `init()` on wake is the follow-up that would let a program with a TRNG
     /// still reach STANDBY.
-    _retention_guard: Option<WakeGuard>,
+    _retention_guard: MaybeWakeGuard,
     _phantom: PhantomData<&'d ()>,
 }
 
@@ -313,9 +313,7 @@ impl TrngInner<'_> {
     fn new(decim_rate: vals::DecimRate) -> Result<Self, Error> {
         let mut trng = TrngInner {
             decim_rate: decim_rate,
-            _retention_guard: <TRNG as LowPowerInstance>::SLEEP
-                .floor_to_keep_configured()
-                .map(WakeGuard::new),
+            _retention_guard: MaybeWakeGuard::new(<TRNG as LowPowerInstance>::SLEEP.floor_to_keep_configured()),
             _phantom: PhantomData,
         };
 

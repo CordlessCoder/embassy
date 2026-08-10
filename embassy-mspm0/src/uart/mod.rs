@@ -24,7 +24,7 @@ use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Blocking, Mode};
 use crate::pac::uart::{Uart as Regs, vals};
-use crate::sysctl::{PowerDomain, SleepInfo, WakeGuard};
+use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepInfo};
 
 /// Bit times of silence after which the receiver reports a FIFO that has not reached its level.
 ///
@@ -408,7 +408,7 @@ pub struct UartRx<'d, M: Mode> {
     rx: Option<Peri<'d, AnyPin>>,
     rts: Option<Peri<'d, AnyPin>>,
     /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
-    _retention_guard: Option<WakeGuard>,
+    _retention_guard: MaybeWakeGuard,
     _phantom: PhantomData<M>,
 }
 
@@ -502,7 +502,7 @@ pub struct UartTx<'d, M: Mode> {
     tx: Option<Peri<'d, AnyPin>>,
     cts: Option<Peri<'d, AnyPin>>,
     /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
-    _retention_guard: Option<WakeGuard>,
+    _retention_guard: MaybeWakeGuard,
     _phantom: PhantomData<M>,
 }
 
@@ -759,8 +759,8 @@ fn arm_async_clock_request(info: &Info) {
 }
 
 /// Guard keeping the instance's configuration intact, held for the driver's lifetime.
-pub(crate) fn retention_guard(info: &'static Info) -> Option<WakeGuard> {
-    info.sleep.floor_to_keep_configured().map(WakeGuard::new)
+pub(crate) fn retention_guard(info: &'static Info) -> MaybeWakeGuard {
+    MaybeWakeGuard::new(info.sleep.floor_to_keep_configured())
 }
 
 // ==== IMPL types ====

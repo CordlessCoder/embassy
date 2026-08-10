@@ -5,7 +5,7 @@ use core::mem::ManuallyDrop;
 use crate::Peri;
 use crate::pac::tim::vals::{Cm, Cvae, CxC, PwrenKey, Repeat, ResetKey};
 use crate::pac::tim::{Tim, regs};
-use crate::sysctl::{SleepLevel, WakeGuard};
+use crate::sysctl::{MaybeWakeGuard, SleepLevel};
 use crate::tim::{Channel, ClockSel, CountingMode, Instance, Word};
 
 /// Why a frequency cannot be programmed.
@@ -152,7 +152,7 @@ const _: () = {
 pub struct Timer<'d, T: Instance> {
     _timer: Peri<'d, T>,
     /// Held for the driver's lifetime, not per operation: a counter that stops has lost time.
-    _wake_guard: Option<WakeGuard>,
+    _wake_guard: MaybeWakeGuard,
 }
 
 impl<'d, T: Instance> Timer<'d, T> {
@@ -412,8 +412,8 @@ pub(crate) fn sleep_floor<T: Instance>(clock: ClockSel) -> Option<SleepLevel> {
 }
 
 /// Take a guard holding [`sleep_floor`], if that clock choice costs anything at all.
-pub(crate) fn wake_guard<T: Instance>(clock: ClockSel) -> Option<WakeGuard> {
-    sleep_floor::<T>(clock).map(WakeGuard::new)
+pub(crate) fn wake_guard<T: Instance>(clock: ClockSel) -> MaybeWakeGuard {
+    MaybeWakeGuard::new(sleep_floor::<T>(clock))
 }
 
 /// Every channel's up-direction capture/compare flag.

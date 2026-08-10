@@ -38,7 +38,7 @@
 //! The counters are clocked by the bus clock, which for these PD0 instances is ULPCLK. On a device
 //! whose datasheet keeps them clocked in STANDBY1 they keep counting there — **at whatever rate
 //! ULPCLK runs at in that mode**, which is not the rate a period was programmed against in RUN. The
-//! driver holds a [`WakeGuard`] only where the instance would otherwise stop.
+//! driver holds a [`WakeGuard`](crate::sysctl::WakeGuard) only where the instance would otherwise stop.
 
 #![macro_use]
 
@@ -50,7 +50,7 @@ use mspm0_metapac::timb::Tim;
 use mspm0_metapac::timb::vals::{PwrenKey, ResetKey};
 
 use crate::interrupt;
-use crate::sysctl::{LowPowerInstance, SleepLevel, WakeGuard};
+use crate::sysctl::{LowPowerInstance, MaybeWakeGuard, SleepLevel};
 
 /// What advances a counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,7 +173,7 @@ pub(crate) trait SealedInstance {
 pub struct BasicTimer<'d, T: Instance> {
     _timer: Peri<'d, T>,
     /// Held for the driver's lifetime rather than per operation: a counter that stops has lost time.
-    _wake_guard: Option<WakeGuard>,
+    _wake_guard: MaybeWakeGuard,
 }
 
 impl<'d, T: Instance> BasicTimer<'d, T> {
@@ -194,7 +194,7 @@ impl<'d, T: Instance> BasicTimer<'d, T> {
 
         Self {
             _timer: timer,
-            _wake_guard: sleep_floor::<T>().map(WakeGuard::new),
+            _wake_guard: MaybeWakeGuard::new(sleep_floor::<T>()),
         }
     }
 

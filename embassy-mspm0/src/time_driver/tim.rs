@@ -163,9 +163,7 @@ impl TimxDriver {
         //
         // `None` here means the timer survives everything and nothing is blocked, which is the case
         // `time-driver-any` selects for.
-        if let Some(guard) = low_level::wake_guard::<T>(ClockSel::LfClk) {
-            core::mem::forget(guard);
-        }
+        core::mem::forget(low_level::wake_guard::<T>(ClockSel::LfClk));
 
         let regs = regs();
 

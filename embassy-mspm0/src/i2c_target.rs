@@ -17,7 +17,7 @@ use crate::interrupt::InterruptExt;
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::i2c::vals;
 use crate::pac::{self};
-use crate::sysctl::WakeGuard;
+use crate::sysctl::MaybeWakeGuard;
 use crate::{Peri, i2c, i2c_target, interrupt};
 
 /// A second address for the target to answer on, with the bits of it to ignore.
@@ -129,7 +129,7 @@ pub struct I2cTarget<'d, M: Mode> {
     resolved: i2c::Resolved,
 
     target_config: i2c_target::Config,
-    wake_guard: Option<WakeGuard>,
+    wake_guard: MaybeWakeGuard,
     _phantom: PhantomData<M>,
 }
 
@@ -205,7 +205,7 @@ impl<'d> I2cTarget<'d, Async> {
         self.init()?;
         unsafe { self.info.interrupt.enable() };
 
-        self.wake_guard = self.resolved.wake_floor(&self.info.sleep).map(WakeGuard::new);
+        self.wake_guard = MaybeWakeGuard::new(self.resolved.wake_floor(&self.info.sleep));
         Ok(())
     }
 }
@@ -271,7 +271,7 @@ impl<'d, M: Mode> I2cTarget<'d, M> {
             sda,
             resolved,
             target_config,
-            wake_guard: None,
+            wake_guard: MaybeWakeGuard::none(),
             _phantom: PhantomData,
         })
     }
