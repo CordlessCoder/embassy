@@ -159,8 +159,8 @@ fn errata_cfgs(cfgs: &mut CfgSet) {
 /// What a SYSCTL register block provides that the device metadata does not.
 ///
 /// Which clock sources exist is [`METADATA.clock_tree`](clock_tree_cfgs) instead, since two families
-/// can share a block and still differ. What is left here are facts about the block itself: a step the
-/// C-series TRM adds to STOP0 entry, and which `RSTCAUSE.ID` variants its enum defines.
+/// can share a block and still differ. What is left here are facts about the block itself: which
+/// registers and which `RSTCAUSE.ID` and `EXCLKSRC` enum variants it defines.
 struct SysctlCaps {
     /// Whether SYSCTL has the `SHUTDNSTORE` array, the only bytes that survive SHUTDOWN.
     ///
@@ -180,6 +180,18 @@ struct SysctlCaps {
     /// even without a SYSPLL: it resets to the SYSPLL position, which is a source those devices do
     /// not have.
     hsclk_mux: bool,
+
+    /// `GENCLKCFG.EXCLKSRC` positions past the four every block has, which decide `ClkOutSource`'s
+    /// variants. USBFLL is the fifth and is `usbfs` instead, no block defining it without the
+    /// peripheral.
+    clkout_hfclk: bool,
+    clkout_syspllclk1: bool,
+
+    /// Whether the block's `EXCLKSRC` enum spells position 3 `Mfclk` rather than `Mfpclk`.
+    ///
+    /// It is MFPCLK on every block; the two C-series SVDs name it wrongly, and correcting them is a
+    /// metapac change.
+    exclksrc_mfclk_name: bool,
 }
 
 impl SysctlCaps {
@@ -189,21 +201,11 @@ impl SysctlCaps {
         rstcause_nonpmuparity: false,
         rstcause_wwdt1: false,
         rstcause_flashecc: false,
+        clkout_hfclk: false,
+        clkout_syspllclk1: false,
+        exclksrc_mfclk_name: false,
     };
 }
-
-/// Every SYSCTL version the crate knows, each of which gets a `sysctl_<version>` cfg.
-///
-/// `sysctl/mod.rs` picks its per-version file with these, and there is one file per entry.
-const SYSCTL_VERSIONS: &[&str] = &[
-    "c110x",
-    "c1105_c1106",
-    "g350x_g310x_g150x_g110x",
-    "g351x_g151x",
-    "h321x",
-    "l110x_l130x_l134x",
-    "l122x_l222x",
-];
 
 /// Emit a cfg for the parts of SYSCTL that only the register block can answer.
 ///
@@ -221,12 +223,16 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
     let caps = match version {
         "c110x" => SysctlCaps {
             shutdnstore: true,
+            clkout_hfclk: true,
+            exclksrc_mfclk_name: true,
             ..SysctlCaps::NONE
         },
 
         "c1105_c1106" => SysctlCaps {
             shutdnstore: true,
             hsclk_mux: true,
+            clkout_hfclk: true,
+            exclksrc_mfclk_name: true,
             ..SysctlCaps::NONE
         },
 
@@ -242,6 +248,7 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             hsclk_mux: true,
             rstcause_nonpmuparity: true,
             rstcause_flashecc: true,
+            clkout_hfclk: true,
             ..SysctlCaps::NONE
         },
 
@@ -249,6 +256,7 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             hsclk_mux: true,
             rstcause_nonpmuparity: true,
             rstcause_flashecc: true,
+            clkout_hfclk: true,
             ..SysctlCaps::NONE
         },
 
@@ -257,6 +265,8 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             hsclk_mux: true,
             rstcause_wwdt1: true,
             rstcause_flashecc: true,
+            clkout_hfclk: true,
+            clkout_syspllclk1: true,
             ..SysctlCaps::NONE
         },
 
@@ -264,21 +274,17 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             shutdnstore: true,
             hsclk_mux: true,
             rstcause_wwdt1: true,
+            clkout_hfclk: true,
+            clkout_syspllclk1: true,
             ..SysctlCaps::NONE
         },
 
         other => panic!(
-            "unknown SYSCTL version {other:?}: work out which RSTCAUSE.ID causes it defines, and \
-             whether it has SHUTDNSTORE and whether its TRM adds the USELFCLK step to STOP0 \
-             entry, and add it to `sysctl_version_cfgs`, to `SYSCTL_VERSIONS`, and as a file in \
-             `src/sysctl/`"
+            "unknown SYSCTL version {other:?}: work out which RSTCAUSE.ID causes it defines, \
+             whether it has SHUTDNSTORE, whether its TRM adds the USELFCLK step to STOP0 entry, \
+             and which EXCLKSRC positions it defines, then add it here"
         ),
     };
-
-    for known in SYSCTL_VERSIONS {
-        cfgs.declare(&format!("sysctl_{known}"));
-    }
-    cfgs.enable(&format!("sysctl_{version}"));
 
     for (cfg, present) in [
         ("mspm0_shutdnstore", caps.shutdnstore),
@@ -286,6 +292,9 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
         ("rstcause_nonpmuparity", caps.rstcause_nonpmuparity),
         ("rstcause_wwdt1", caps.rstcause_wwdt1),
         ("rstcause_flashecc", caps.rstcause_flashecc),
+        ("mspm0_clkout_hfclk", caps.clkout_hfclk),
+        ("mspm0_clkout_syspllclk1", caps.clkout_syspllclk1),
+        ("mspm0_exclksrc_mfclk_name", caps.exclksrc_mfclk_name),
     ] {
         cfgs.declare(cfg);
         if present {

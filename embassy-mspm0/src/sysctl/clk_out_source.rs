@@ -1,4 +1,4 @@
-//! SYSCTL configuration for MSPM0C1105/6 SYSCTL.
+//! `GENCLKCFG.EXCLKSRC`, the one part of SYSCTL whose shape differs between register-block versions.
 
 use mspm0_metapac::sysctl::vals;
 
@@ -31,7 +31,20 @@ pub enum ClkOutSource {
     /// Use HFCLK as the source.
     ///
     /// The divider is optional for this clock source.
+    #[cfg(mspm0_clkout_hfclk)]
     Hfclk(Option<ClkOutDiv>),
+
+    /// Use SYSPLLCLK1 as the source.
+    ///
+    /// The divider is optional for this clock source.
+    #[cfg(mspm0_clkout_syspllclk1)]
+    SysPllClk1(Option<ClkOutDiv>),
+
+    /// Use USBFLL as the source.
+    ///
+    /// The divider is required for this clock source.
+    #[cfg(usbfs)]
+    UsbFll(ClkOutDiv),
 }
 
 impl ClkOutSource {
@@ -41,7 +54,12 @@ impl ClkOutSource {
             ClkOutSource::UlpClk(div) => div_to_pac(Some(div)),
             ClkOutSource::LfClk(div) => div_to_pac(div),
             ClkOutSource::MfpClk(div) => div_to_pac(Some(div)),
+            #[cfg(mspm0_clkout_hfclk)]
             ClkOutSource::Hfclk(div) => div_to_pac(div),
+            #[cfg(mspm0_clkout_syspllclk1)]
+            ClkOutSource::SysPllClk1(div) => div_to_pac(div),
+            #[cfg(usbfs)]
+            ClkOutSource::UsbFll(div) => div_to_pac(Some(div)),
         }
     }
 
@@ -50,9 +68,18 @@ impl ClkOutSource {
             ClkOutSource::Sysosc(_) => vals::Exclksrc::Sysosc,
             ClkOutSource::UlpClk(_) => vals::Exclksrc::Ulpclk,
             ClkOutSource::LfClk(_) => vals::Exclksrc::Lfclk,
-            // FIXME: Wrong name from SVD
+            // FIXME: the C-series SVDs name position 3 MFCLK. It is MFPCLK on every block.
+            #[cfg(mspm0_exclksrc_mfclk_name)]
             ClkOutSource::MfpClk(_) => vals::Exclksrc::Mfclk,
+            #[cfg(not(mspm0_exclksrc_mfclk_name))]
+            ClkOutSource::MfpClk(_) => vals::Exclksrc::Mfpclk,
+            #[cfg(mspm0_clkout_hfclk)]
             ClkOutSource::Hfclk(_) => vals::Exclksrc::Hfclk,
+            #[cfg(mspm0_clkout_syspllclk1)]
+            ClkOutSource::SysPllClk1(_) => vals::Exclksrc::Syspllout1,
+            // FIXME: Update SVD to define _RESERVED_6 as USBFLL
+            #[cfg(usbfs)]
+            ClkOutSource::UsbFll(_) => vals::Exclksrc::_RESERVED_6,
         }
     }
 }

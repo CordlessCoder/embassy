@@ -12,24 +12,14 @@ use crate::pac::sysctl::vals;
 use crate::peripherals::CLK_OUT;
 use crate::{Peri, pac};
 
-// One file per SYSCTL version, named after it. The version is what selects the register block, so a
-// new device reusing an existing one needs no edit here — a family list needed one per family, and
-// missed four of them. `build.rs::SYSCTL_VERSIONS` is the other half; an unknown version fails there.
-#[cfg_attr(sysctl_c110x, path = "c110x.rs")]
-#[cfg_attr(sysctl_c1105_c1106, path = "c1105_c1106.rs")]
-#[cfg_attr(sysctl_g350x_g310x_g150x_g110x, path = "g350x_g310x_g150x_g110x.rs")]
-#[cfg_attr(sysctl_g351x_g151x, path = "g351x_g151x.rs")]
-#[cfg_attr(sysctl_h321x, path = "h321x.rs")]
-#[cfg_attr(sysctl_l110x_l130x_l134x, path = "l110x_l130x_l134x.rs")]
-#[cfg_attr(sysctl_l122x_l222x, path = "l122x_l222x.rs")]
-mod inner;
+mod clk_out_source;
 
 pub mod clock;
 
+pub use clk_out_source::ClkOutSource;
 #[cfg(mspm0_ulpclk_div)]
 pub use clock::UlpclkDiv;
 pub use clock::{ClockError, Clocks, Config as ClockConfig, MclkSource, Sysosc};
-pub use inner::ClkOutSource;
 
 /// Deep-sleep idle modes, ordered by increasing power saving.
 ///
