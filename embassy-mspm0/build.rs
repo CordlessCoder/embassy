@@ -6,7 +6,7 @@ use std::process::Command;
 use std::{env, fs};
 
 use common::CfgSet;
-use mspm0_metapac::metadata::{AdcInternalSource, METADATA, MemoryKind, Peripheral, PowerDomain, PowerMode};
+use mspm0_metapac::metadata::{AdcInternalSource, METADATA, MemoryKind, OpaInput, Peripheral, PowerDomain, PowerMode};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 
@@ -1420,7 +1420,14 @@ fn generate_peripheral_instances() -> TokenStream {
             "wwdt" => Some(quote! { impl_wwdt_instance!(#peri); }),
             "adc" => Some(quote! { impl_adc_instance!(#peri); }),
             "mathacl" => Some(quote! { impl_mathacl_instance!(#peri); }),
-            "opa" => Some(quote! { impl_opa_instance!(#peri); }),
+            "opa" => {
+                // Which mux positions this instance actually has. Absent ones select nothing at all,
+                // so an input built from one reads a floating node rather than failing — see
+                // `NonInvertingInput::ground`, which is position 8 and does not exist on the L series.
+                let opa = peripheral.opa.expect("an OPA instance with no mux data");
+                let ground = opa.pmux.iter().any(|entry| entry.input == OpaInput::Ground);
+                Some(quote! { impl_opa_instance!(#peri, #ground); })
+            }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
             _ => None,
         };

@@ -177,3 +177,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/opa: `Chopping::AdcAveraging`, the mode that needs no output filter, now that the ADC can average
 - **breaking** mspm0/vref: select a clock for the reference, which never regulated without one; `Config::clock` picks the source
 - mspm0/sysctl: the G518x parts get their own SYSCTL block, and CLK_OUT names the MFPCLK and USB FLL sources rather than working around two SVD misnamings
+- **breaking** mspm0/opa: `NonInvertingInput::ground` refuses to compile on devices whose input mux has no ground position, where it used to select nothing and read a floating node

@@ -174,7 +174,12 @@ impl<'d, T: Instance> NonInvertingInput<'d, T> {
     }
 
     /// Analog ground.
+    ///
+    /// **Not every device has this position.** Where it is absent the mux connects the input to
+    /// nothing, and the amplifier reads a floating node that often sits near zero and looks right —
+    /// so this refuses to compile there rather than letting the reading be believed.
     pub const fn ground() -> Self {
+        const { core::assert!(T::HAS_GROUND, "this device's OPA has no ground input position") };
         Self::internal(vals::Psel::Vss)
     }
 }
@@ -479,6 +484,13 @@ impl<'a, T: Instance> Drop for OpaInternalOutput<'a, T> {
 
 pub(crate) trait SealedInstance {
     fn regs() -> crate::pac::opa::Opa;
+
+    /// Whether this instance's `CFG.PSEL` has the ground position.
+    ///
+    /// It is absent on the L series, where selecting it connects the input to nothing — so the
+    /// amplifier reads a floating node rather than ground, and reports a plausible near-zero. Per
+    /// instance because the mux maps are.
+    const HAS_GROUND: bool;
 }
 
 /// OPA instance.
@@ -503,7 +515,7 @@ pub trait NonInvertingPin<T: Instance>: PeripheralType + SealedNonInvertingPin<T
 pub trait OutputPin<T: Instance>: PeripheralType + SealedOutputPin<T> + Sized {}
 
 macro_rules! impl_opa_instance {
-    ($inst:ident) => {
+    ($inst:ident, $has_ground:expr) => {
         // No guard is held while the amplifier is merely configured, which is only sound while the
         // configuration registers survive deep sleep. True of PD0 on every device shipped so far;
         // checked so a device that moves the OPA fails to build instead of losing its configuration.
@@ -522,6 +534,8 @@ macro_rules! impl_opa_instance {
             fn regs() -> crate::pac::opa::Opa {
                 crate::pac::$inst
             }
+
+            const HAS_GROUND: bool = $has_ground;
         }
         impl crate::opa::Instance for crate::peripherals::$inst {}
     };

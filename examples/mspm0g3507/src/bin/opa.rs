@@ -19,6 +19,14 @@
 //! amplifier drives the pin either way, so every check here passes with the jumper off; it is the
 //! meter reading that silently measures nothing.
 //!
+//! # Why there is no L-series twin
+//!
+//! Every input this uses is one the L series does not have: its `PSEL` carries neither ground
+//! (position 8) nor a reachable internal reference (position 5 is the `VREF+` pin, which the L-series
+//! reference does not drive). What it does have — the COMP's 8-bit DAC, and the other amplifier's
+//! ladder top — needs a COMP driver and cascade support that do not exist yet. So an L-series check
+//! wants those first rather than a weaker version of this.
+//!
 //! # What it does not prove
 //!
 //! Absolute accuracy: the bands are wide enough to absorb VREF and VDDA tolerance, so a few percent
