@@ -40,7 +40,7 @@ pub struct SecondAddress {
 
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-/// Config
+/// How an [`I2cTarget`] answers the bus.
 pub struct Config {
     /// Target address to answer on.
     pub target_addr: Address,
@@ -95,6 +95,11 @@ pub enum Command {
     Write(usize),
     /// Write followed by Read (Repeated Start): Controller wrote data, then issued a repeated
     /// start and wants to read data. Contains the number of bytes written before the read.
+    ///
+    /// **A 10-bit controller re-sends the whole address between the halves**, so the frame before the
+    /// read carries no data and looks like the one a plain 10-bit read opens with. Whether such a
+    /// transaction arrives here or as a [`Command::Read`] has not been measured; do not rely on
+    /// either at 10-bit.
     WriteRead(usize),
 }
 
@@ -238,7 +243,6 @@ impl<'d> I2cTarget<'d> {
             }
         }
 
-        // Init power for I2C
         regs.gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
             w.set_resetassert(true);
@@ -255,7 +259,6 @@ impl<'d> I2cTarget<'d> {
         // Init delay from the M0 examples by TI in CCStudio (16 cycles)
         cortex_m::asm::delay(16);
 
-        // Select and configure the I2C clock using the CLKSEL and CLKDIV registers
         regs.clksel().write(|w| match resolved.clock_source {
             ClockSel::BusClk => {
                 w.set_mfclk_sel(false);
@@ -301,7 +304,6 @@ impl<'d> I2cTarget<'d> {
             w.set_txwait_stale_txfifo(true);
         });
 
-        // Enable the I2C target mode by setting the ACTIVE bit in I2Cx.TCTR register.
         regs.target(0).tctr().modify(|w| {
             w.set_active(true);
         });

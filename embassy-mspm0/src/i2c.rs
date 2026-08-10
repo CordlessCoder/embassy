@@ -1,3 +1,22 @@
+//! Inter-Integrated Circuit (I2C).
+//!
+//! [`I2c`] is the controller and [`I2cTarget`](crate::i2c_target::I2cTarget) the target. Both come in
+//! a blocking and an [`Async`] flavour, chosen by which constructor is used; the asynchronous one
+//! needs an interrupt binding and parks the core rather than spinning, which is what lets the device
+//! sleep between bytes.
+//!
+//! A transfer is **one burst**, up to 4095 bytes, with the FIFO fed through it rather than being the
+//! unit that moves. The controller stretches SCL while the transmit FIFO is empty or the receive FIFO
+//! full, so a late refill costs bus time rather than bytes.
+//!
+//! # Cancelling an asynchronous transfer
+//!
+//! Dropping the future is safe and needs nothing from the caller. It cannot finish the transfer on
+//! the way out — a STOP on its own is illegal until the transaction ends — so it masks the interrupts
+//! and marks the peripheral dirty, and **the next transfer pays**: it resets the controller first,
+//! which is the only thing that clears `BUSBSY`. A target still holding SDA down survives that and is
+//! reported as [`Error::BusStuck`], which [`I2c::recover_stuck_bus`] will try to clear.
+
 #![macro_use]
 
 use core::future::{self, Future};
@@ -31,7 +50,7 @@ pub enum ClockSel {
 
     /// Use the middle frequency clock.
     ///
-    /// The MCLK runs at 4 MHz.
+    /// MFCLK runs at 4 MHz.
     MfClk,
 }
 
@@ -132,16 +151,16 @@ impl BusSpeed {
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-/// Config Error
+/// Why an [`I2c`] could not be built or reconfigured.
 pub enum ConfigError {
     /// Invalid clock rate.
     ///
-    /// The clock rate could not be configured with the given conifguratoin.
+    /// The clock rate could not be configured with the given configuration.
     InvalidClockRate,
 
     /// Clock source not enabled.
     ///
-    /// The clock soure is not enabled is SYSCTL.
+    /// The clock source is not enabled in SYSCTL.
     ClockSourceNotEnabled,
 
     /// Invalid target address.
@@ -162,7 +181,7 @@ pub enum ConfigError {
 
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-/// Config
+/// How an [`I2c`] drives the bus.
 pub struct Config {
     /// I2C clock source.
     pub(crate) clock_source: ClockSel,
@@ -1200,7 +1219,6 @@ impl<'d, M: Mode> I2c<'d, M> {
     }
 
     fn master_write(&mut self, address: Address, length: usize, send_stop: bool) {
-        // Start transfer of length amount of bytes
         self.info.regs.controller(0).csa().modify(|w| {
             w.set_taddr(address.addr());
             w.set_cmode(address.mode());
@@ -1533,7 +1551,10 @@ impl<'d> I2c<'d, Blocking> {
 
     /// Blocking write, restart, read.
     ///
-    /// Each buffer may hold between one and 4095 bytes.
+    /// Each buffer may hold between one and 4095 bytes.    ///
+    /// **A 10-bit address is re-sent before the read.** The hardware puts the addressing header on the
+    /// bus a second time after the repeated START, so a target sees this as indistinguishable from a
+    /// plain 10-bit read. Measured, and TI documents neither.
     pub fn blocking_write_read(
         &mut self,
         address: impl Into<Address>,
@@ -1812,18 +1833,30 @@ impl<'d> I2c<'d, Async> {
     // =========================
     //  Async public API
 
+    /// Write `write` to `address`, ending with a STOP.
+    ///
+    /// See the module docs on cancelling one of these.
     pub async fn async_write(&mut self, address: impl Into<Address>, write: &[u8]) -> Result<(), Error> {
         let address = Address::checked(address)?;
         self.recover_bus().await?;
         self.write_async_internal(address, write, true).await
     }
 
+    /// Read `read.len()` bytes from `address`, ending with a STOP.
+    ///
+    /// See the module docs on cancelling one of these.
     pub async fn async_read(&mut self, address: impl Into<Address>, read: &mut [u8]) -> Result<(), Error> {
         let address = Address::checked(address)?;
         self.recover_bus().await?;
         self.read_async_internal(address, read, false, true).await
     }
 
+    /// Write, restart, read.
+    ///
+    /// Each buffer may hold between one and 4095 bytes.    ///
+    /// **A 10-bit address is re-sent before the read.** The hardware puts the addressing header on the
+    /// bus a second time after the repeated START, so a target sees this as indistinguishable from a
+    /// plain 10-bit read. Measured, and TI documents neither.
     pub async fn async_write_read(
         &mut self,
         address: impl Into<Address>,
@@ -2271,7 +2304,12 @@ pub struct InterruptHandler<T: Instance> {
 }
 
 impl<T: Instance> crate::interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
-    // Mask interrupts and wake any task waiting for this interrupt
+    /// Wake the waiting transfer, leaving every interrupt unmasked.
+    ///
+    /// The completing poll is what disarms them — it writes `IMASK` clear once its status is no longer
+    /// `Pending` — so the handler has nothing to do but wake. That is sound because the controller
+    /// pulses its events rather than holding them: a status the poll has not consumed does not re-raise
+    /// the line, so returning without masking cannot re-enter.
     unsafe fn on_interrupt() {
         T::state().waker.wake();
     }
@@ -2321,7 +2359,6 @@ impl<'d, M: Mode> I2c<'d, M> {
         config: Config,
         resolved: Resolved,
     ) -> Result<Self, ConfigError> {
-        // Init power for I2C
         T::info().regs.gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
             w.set_resetassert(true);
@@ -2336,7 +2373,6 @@ impl<'d, M: Mode> I2c<'d, M> {
         // init delay, 16 cycles
         cortex_m::asm::delay(16);
 
-        // Init GPIO
         let scl_inner = new_pin!(scl, config.scl_pf());
         let sda_inner = new_pin!(sda, config.sda_pf());
 
