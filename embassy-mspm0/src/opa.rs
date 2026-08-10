@@ -139,6 +139,11 @@ pub enum Gain {
 ///
 /// Created from an `OPAx_INy+` pin (which is configured for analog mode and consumed — use
 /// [`Peri::reborrow`] to keep it), or from one of the internal-source constructors.
+///
+/// Copyable, so one built from a pin can be applied again and again. An application switching
+/// between two sensors builds both once and picks between them per measurement, rather than
+/// re-consuming a pin it no longer has.
+#[derive(Clone, Copy)]
 pub struct NonInvertingInput<'d, T: Instance> {
     channel: vals::Psel,
     _phantom: PhantomData<(&'d (), T)>,
@@ -180,6 +185,15 @@ impl<'d, T: Instance> NonInvertingInput<'d, T> {
     #[cfg(vref)]
     pub const fn vref() -> Self {
         Self::internal(vals::Psel::Vref)
+    }
+
+    /// The paired amplifier's gain-ladder top.
+    ///
+    /// Private: on its own this proves nothing about the amplifier it reads. [`OpaPair`] owns both
+    /// and enables them together, which is what makes the source live.
+    #[allow(dead_code)]
+    const fn cascade() -> Self {
+        Self::internal(vals::Psel::Oanm1rtop)
     }
 
     /// Analog ground.
@@ -431,6 +445,15 @@ impl<'d, T: Instance> Opa<'d, T> {
         }
     }
 
+    /// The register configuration for one [`Stage`], reusing the topology builders above.
+    fn stage_cfg(input: NonInvertingInput<'_, T>, stage: Stage) -> regs::Cfg {
+        match stage {
+            Stage::Buffer => Self::buffer_cfg(input),
+            Stage::Pga(gain) => Self::pga_cfg(input, gain, LadderBottom::Ground),
+            Stage::PgaBiased(gain, ladder) => Self::pga_cfg(input, gain, ladder),
+        }
+    }
+
     fn pga_cfg(input: NonInvertingInput<'_, T>, gain: Gain, ladder: LadderBottom) -> regs::Cfg {
         // Feedback from the tap, with the ladder bottom held at `ladder`.
         let mut cfg = regs::Cfg(0);
@@ -443,6 +466,149 @@ impl<'d, T: Instance> Opa<'d, T> {
         });
         cfg.set_gain(gain as u8);
         cfg
+    }
+}
+
+/// One amplifier's topology within an [`OpaPair`].
+///
+/// The same three shapes [`Opa`]'s own methods offer, named so a pair can be handed two of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Stage {
+    /// Unity-gain buffer.
+    Buffer,
+
+    /// Non-inverting PGA with the ladder grounded.
+    Pga(Gain),
+
+    /// Non-inverting PGA pivoted about a reference; output is `gain * input + (1 - gain) * ladder`.
+    PgaBiased(Gain, LadderBottom),
+}
+
+/// Proof that `Self`'s gain-ladder top reaches `T`'s non-inverting input mux.
+///
+/// Generated per instance from the device metadata, which names the source and its direction. Usually
+/// mutual on a two-amplifier chip, so either can feed the other; a device offering only one direction
+/// permits only that chain.
+#[allow(private_bounds)]
+pub trait CascadeInto<T: Instance>: Instance {}
+
+/// Two amplifiers, chained or independent, reconfigurable while they run.
+///
+/// The pair owns both drivers so a topology can be torn down and rebuilt between measurements without
+/// surrendering anything — which is what an application alternating between two sensors needs. Each
+/// configuration method takes `&mut self` and hands back a short-lived output handle, so the borrow
+/// checker allows exactly one topology at a time and reconfiguring is just calling another method.
+///
+/// [`OpaPair::release`] gives the two [`Opa`] drivers back.
+///
+/// # Power
+///
+/// Each configuration method switches both amplifiers off before applying the new one. Dropping an
+/// output handle disables the stage it names — but in a chain the *upstream* stage stays on until the
+/// next configuration call, [`OpaPair::disable`], or the pair being dropped. Call
+/// [`OpaPair::disable`] if a gap between measurements is long enough to care about.
+pub struct OpaPair<'d, A: Instance, B: Instance> {
+    a: Opa<'d, A>,
+    b: Opa<'d, B>,
+    upstream: Option<MaybeWakeGuard>,
+}
+
+impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
+    /// Take two amplifiers so they can be chained.
+    ///
+    /// Both are already reset, powered and checked against the clock tree by [`Opa::new`]; this adds
+    /// no configuration of its own and leaves both switched off.
+    pub fn new(a: Opa<'d, A>, b: Opa<'d, B>) -> Self {
+        Self { a, b, upstream: None }
+    }
+
+    /// Give the two amplifiers back, both switched off.
+    pub fn release(mut self) -> (Opa<'d, A>, Opa<'d, B>) {
+        self.disable();
+
+        // Neither `Opa` may be dropped here -- that would cut power to both -- and `Self` has no
+        // `Drop`, so moving the fields out is a plain destructure.
+        let Self { a, b, .. } = self;
+
+        (a, b)
+    }
+
+    /// Switch both amplifiers off.
+    ///
+    /// Only worth calling to release the upstream stage of a chain, which outlives its output handle.
+    pub fn disable(&mut self) {
+        A::regs().ctl().write(|w| w.set_enable(false));
+        B::regs().ctl().write(|w| w.set_enable(false));
+        self.upstream = None;
+    }
+
+    /// Chain `A` into `B`: `A` amplifies `input`, and `B` amplifies `A`'s ladder top.
+    ///
+    /// The returned handle is `B`'s output, routed to the ADC.
+    pub fn chain_a_into_b<'x>(
+        &'x mut self,
+        input: impl Into<NonInvertingInput<'x, A>>,
+        first: Stage,
+        second: Stage,
+    ) -> OpaInternalOutput<'x, B>
+    where
+        A: CascadeInto<B>,
+    {
+        self.disable();
+
+        self.upstream = Some(self.a.enable(Opa::<A>::stage_cfg(input.into(), first)));
+
+        OpaInternalOutput {
+            _guard: self.b.enable(Opa::<B>::stage_cfg(NonInvertingInput::cascade(), second)),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Chain `B` into `A`: `B` amplifies `input`, and `A` amplifies `B`'s ladder top.
+    ///
+    /// The returned handle is `A`'s output, routed to the ADC.
+    pub fn chain_b_into_a<'x>(
+        &'x mut self,
+        input: impl Into<NonInvertingInput<'x, B>>,
+        first: Stage,
+        second: Stage,
+    ) -> OpaInternalOutput<'x, A>
+    where
+        B: CascadeInto<A>,
+    {
+        self.disable();
+
+        self.upstream = Some(self.b.enable(Opa::<B>::stage_cfg(input.into(), first)));
+
+        OpaInternalOutput {
+            _guard: self.a.enable(Opa::<A>::stage_cfg(NonInvertingInput::cascade(), second)),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Run both amplifiers unchained, each on its own input.
+    ///
+    /// Both handles are ADC channels, and dropping each disables its own amplifier.
+    pub fn independent<'x>(
+        &'x mut self,
+        a_input: impl Into<NonInvertingInput<'x, A>>,
+        a_stage: Stage,
+        b_input: impl Into<NonInvertingInput<'x, B>>,
+        b_stage: Stage,
+    ) -> (OpaInternalOutput<'x, A>, OpaInternalOutput<'x, B>) {
+        self.disable();
+
+        (
+            OpaInternalOutput {
+                _guard: self.a.enable(Opa::<A>::stage_cfg(a_input.into(), a_stage)),
+                _phantom: PhantomData,
+            },
+            OpaInternalOutput {
+                _guard: self.b.enable(Opa::<B>::stage_cfg(b_input.into(), b_stage)),
+                _phantom: PhantomData,
+            },
+        )
     }
 }
 
@@ -522,6 +688,13 @@ pub trait NonInvertingPin<T: Instance>: PeripheralType + SealedNonInvertingPin<T
 /// The `OPAx_OUT` pin.
 #[allow(private_bounds)]
 pub trait OutputPin<T: Instance>: PeripheralType + SealedOutputPin<T> + Sized {}
+
+/// `$source`'s ladder top reaches `$sink`'s non-inverting input mux.
+macro_rules! impl_opa_cascade {
+    ($source:ident, $sink:ident) => {
+        impl crate::opa::CascadeInto<crate::peripherals::$sink> for crate::peripherals::$source {}
+    };
+}
 
 macro_rules! impl_opa_instance {
     ($inst:ident, $has_ground:expr) => {

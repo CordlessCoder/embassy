@@ -1429,7 +1429,22 @@ fn generate_peripheral_instances() -> TokenStream {
                 // `NonInvertingInput::ground`, which is position 8 and does not exist on the L series.
                 let opa = peripheral.opa.expect("an OPA instance with no mux data");
                 let ground = opa.pmux.iter().any(|entry| entry.input == OpaInput::Ground);
-                Some(quote! { impl_opa_instance!(#peri, #ground); })
+
+                // Which instance's ladder top this one can take as its non-inverting input, if any.
+                // The metadata names it per instance and gives the direction, so the pairing needs no
+                // family list -- on a two-amplifier chip it is usually mutual, but a device where only
+                // one direction exists then permits only that one chain.
+                let cascade = opa.pmux.iter().find_map(|entry| match entry.input {
+                    OpaInput::Rtop(n) => Some(format_ident!("OPA{}", n)),
+                    _ => None,
+                });
+
+                let cascade = match cascade {
+                    Some(source) => quote! { impl_opa_cascade!(#source, #peri); },
+                    None => quote! {},
+                };
+
+                Some(quote! { impl_opa_instance!(#peri, #ground); #cascade })
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
             "comp" => {
