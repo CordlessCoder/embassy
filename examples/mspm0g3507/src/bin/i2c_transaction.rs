@@ -146,10 +146,7 @@ async fn main(_spawner: Spawner) -> ! {
     // 8: a merged run past one burst's reach. The log judges this one.
     info!("8: a merged run longer than a burst");
     Timer::after_millis(SETTLE_MS).await;
-    match i2c.transaction(
-        TARGET_ADDR,
-        &mut [Operation::Write(&BIG), Operation::Write(&BIG)],
-    ) {
+    match i2c.transaction(TARGET_ADDR, &mut [Operation::Write(&BIG), Operation::Write(&BIG)]) {
         Err(Error::TransferLengthIsOverLimit) => info!("  refused, as it should be"),
         Ok(()) => {
             fail += 1;
