@@ -79,7 +79,7 @@ pub enum Port {
 /// mode.
 ///
 /// [`Flex::new`] gives a pin whose level can be read and driven. Waiting for an edge needs an
-/// interrupt handler behind it, so it lives on [`Flex<Async>`] and [`Flex::new_async`], which asks
+/// interrupt handler behind it, so it lives on [`Flex<Async>`] and `Flex::new_async`, which asks
 /// for the binding that installs one.
 pub struct Flex<'d, M: Mode = Blocking> {
     pin: Peri<'d, AnyPin>,
@@ -669,7 +669,7 @@ impl<'d, M: Mode> Drop for Flex<'d, M> {
 /// GPIO input driver.
 ///
 /// [`Input::new`] gives a pin whose level can be read. Waiting for an edge needs an interrupt
-/// handler behind it, so it lives on [`Input<Async>`] and [`Input::new_async`], which asks for the
+/// handler behind it, so it lives on [`Input<Async>`] and `Input::new_async`, which asks for the
 /// binding that installs one.
 pub struct Input<'d, M: Mode = Blocking> {
     pin: Flex<'d, M>,
@@ -842,7 +842,7 @@ impl<'d> Output<'d> {
 ///
 /// [`OutputOpenDrain::new`] gives a pin whose level can be read and driven. Waiting for an edge
 /// needs an interrupt handler behind it, so it lives on [`OutputOpenDrain<Async>`] and
-/// [`OutputOpenDrain::new_async`], which asks for the binding that installs one.
+/// `OutputOpenDrain::new_async`, which asks for the binding that installs one.
 pub struct OutputOpenDrain<'d, M: Mode = Blocking> {
     pin: Flex<'d, M>,
 }
@@ -1312,7 +1312,7 @@ pub(crate) const GPIO_PF: u8 = 1;
 
 /// A pin with wakeup logic, able to bring the device out of SHUTDOWN.
 ///
-/// Distinct from waking the device at all: `FASTWAKE`, which [`Flex::wait_for_any_edge`] and friends
+/// Distinct from waking the device at all: `FASTWAKE`, which `Flex::wait_for_any_edge` and friends
 /// use, works on any GPIO pin but only down to STANDBY. SHUTDOWN powers the GPIO logic off entirely,
 /// and only these pins keep a path to the wake controller. See [`ShutdownWake`].
 ///
@@ -1545,7 +1545,7 @@ pub struct InterruptHandler {
 
 /// Proof that every GPIO port on the chip is bound to [`InterruptHandler`].
 ///
-/// Required by [`Flex::new_async`] and the other `new_async` constructors, and is what keeps the
+/// Required by `Flex::new_async` and the other `new_async` constructors, and is what keeps the
 /// handler out of a binary that never waits on an edge.
 ///
 /// All of them, rather than the pin's own, because a pin's port is not in its type — it is a

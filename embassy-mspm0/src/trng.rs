@@ -148,7 +148,7 @@ impl core::error::Error for Error {}
 
 /// True Random Number Generator (TRNG) Driver for MSPM0 series.
 ///
-/// The driver provides blocking random numbers with [`TryRng`] methods and asynchronous counterparts in [`Trng::async_read_u32`], [`Trng::async_read_u64`], and [`Trng::async_read_bytes`].
+/// The driver provides blocking random numbers with [`TryRng`] methods and, with `rt`, asynchronous counterparts in `Trng::async_read_u32`, `Trng::async_read_u64` and `Trng::async_read_bytes`.
 ///
 /// The TRNG can be configured with different decimation rates. See [`DecimRate`], [`FastDecimRate`], and [`CryptoDecimRate`].
 /// The TRNG can be instantiated with [`Trng::new`], [`Trng::new_fast`], or [`Trng::new_secure`].
