@@ -163,3 +163,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/time-driver: a bookkeeping tick with no alarm to arm no longer rewrites the interrupt mask with the value it already held
 - breaking: mspm0/i2c-target: `I2cTarget` drops its mode parameter and its blocking constructor, which built a target with no way to receive a command
 - breaking: mspm0/i2c: `Config::check_config`, `Error::Crc` and `Error::Overrun` are gone, none of them reachable
+- mspm0/gpio: the port interrupt handler drops a panic path for a pin index the hardware cannot produce

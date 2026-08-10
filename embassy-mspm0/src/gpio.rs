@@ -1458,7 +1458,14 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
     // One snapshot for all of them: the status bit carries no direction, so the level a pin settled
     // at is the only thing an edge can be classified by. Taken before the loop, so every pin in this
     // handler is classified against the same instant.
-    let level = gpio.din31_0().read();
+    //
+    // A volatile read survives dead-code elimination, so where nothing classifies edges it is skipped
+    // rather than read and ignored.
+    let level = if DETECT_BOTH_EDGES {
+        gpio.din31_0().read()
+    } else {
+        gpio::regs::Dio(0)
+    };
 
     // `IIDX` answers "which pin, and clear it" in one read, which is what the hardware is for: SLAU846
     // 9.3.10 has it return the lowest set *enabled* status bit, clear that bit in `RIS` and `MIS`, and
@@ -1475,7 +1482,16 @@ fn irq_handler(gpio: gpio::Gpio, port: Port) {
         }
 
         // Indices are one-based, zero having been spent on "nothing pending".
-        let bit = stat as usize - 1;
+        //
+        // Masked because `stat` is an 8-bit field the compiler cannot bound, so the classification below
+        // and the `imask` write would each carry the metapac's bounds assert and a panic site into the
+        // handler. `IIDX.STAT` encodes 0x00-0x20 (SLAU846 9.3.10), so the mask never changes a value the
+        // hardware can produce.
+        //
+        // `assert_unchecked` is the cheaper-looking option and is **measurably worse here**: stated over
+        // `stat`, over `bit`, or over both, one of the two bounds checks survives and the binary comes
+        // out 12 bytes larger than this. The `and` costs two bytes and pays for itself in what it folds.
+        let bit = (stat as usize - 1) & 31;
 
         // SAFETY: this is the port's own interrupt handler, which is the only walker allowed.
         let waiter = unsafe { WAITERS[port as usize].find(|wait| usize::from(wait.bit) == bit) };
