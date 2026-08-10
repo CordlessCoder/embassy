@@ -600,9 +600,9 @@ impl<'d, M: Mode> UartTx<'d, M> {
 
     /// Shallowest level to block while a transmission is in flight.
     ///
-    /// Asked only when there is a sleep to prevent. Reading the clock is what keeps `configure`'s store
-    /// to it live, and with it the whole clock-tree lookup and its 40-byte static — measured at 168
-    /// bytes in a binary that cannot sleep at all.
+    /// Asked only when there is a sleep to prevent. Reading the clock keeps `configure`'s store to it
+    /// live, and with it the clock-tree lookup — 16 bytes of flash and a 40-byte static in a binary
+    /// that cannot sleep at all.
     #[cfg(feature = "low-power")]
     fn wake_floor(&self) -> Option<SleepLevel> {
         self.info
@@ -611,7 +611,6 @@ impl<'d, M: Mode> UartTx<'d, M> {
     }
 
     #[cfg(not(feature = "low-power"))]
-    #[inline(always)]
     fn wake_floor(&self) -> Option<SleepLevel> {
         None
     }
