@@ -13,10 +13,6 @@ cargo run --release --bin min_sleep_gate
 |---|---|---|
 | `min_sleep_gate` | that `Config::min_sleep` keeps short sleeps out of a deep mode, by timing what each sleep costs | one board |
 
-**The debug probe drops as soon as the device deep-sleeps**, and a device already running one of these
-cannot be re-flashed normally — recover it with a mass erase in UniFlash. Each example waits a few
-seconds before its first sleep to leave a window for `probe-rs` to take the device back.
-
 The L-series counterpart to `examples/mspm0g3507-lowpower`. Running the same measurement on both is the
 point: the two parts are different SYSCTL families with different published wake-up latencies, and this
 one has no STOP0 figure at all.
