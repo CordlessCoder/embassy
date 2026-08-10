@@ -23,8 +23,14 @@
 //! pause while the CPU sleeps, which is what the hardware does in STANDBY regardless, so the two agree
 //! and every sleep level stays reachable. **It also means nothing is watching during the sleep.**
 //!
-//! **To supervise a device across a deep sleep, use a timer that survives it** — one whose
-//! `clocked_in_standby1` metadata is true — and have it wake the device rather than reset it.
+//! **To supervise a device across a deep sleep**, either use a timer that survives it — one whose
+//! `clocked_in_standby1` metadata is true — and have it wake the device rather than reset it, or use
+//! the IWDT on a part that has one.
+//!
+//! The **IWDT is a different peripheral** (TRM chapter 38, where this is chapter 39) and it does run in
+//! STANDBY0, though not under the STANDBY1 policy, where only two timers and the RTC are clocked. This
+//! HAL does not drive it and the metapac generates no register block for it, so it is a thing to reach
+//! for on a part that has one, not something available here.
 //!
 //! # Stopping it
 //!
