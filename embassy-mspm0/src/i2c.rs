@@ -551,6 +551,85 @@ const IDLE_HALF_PERIODS: u32 = 4;
 /// moves in.
 const MAX_TRANSFER_LEN: usize = 0xFFF;
 
+/// Where a run of same-direction operations has got to.
+///
+/// `embedded-hal` merges consecutive operations of one type into a single stretch of bus traffic, so a
+/// run is one burst fed from several buffers rather than one burst per buffer.
+struct GroupCursor {
+    /// Operation being moved, indexing the transaction's own slice.
+    op: usize,
+    /// Bytes of that operation already moved.
+    pos: usize,
+}
+
+/// A run of consecutive operations that move in one direction.
+struct Group {
+    /// First operation of the run.
+    start: usize,
+    /// One past the last operation that carries any bytes.
+    end: usize,
+    /// Whether the run writes; it reads otherwise.
+    write: bool,
+    /// Bytes the whole run moves, which is the burst length.
+    total: usize,
+}
+
+/// Bytes an operation carries.
+fn op_len(op: &embedded_hal::i2c::Operation<'_>) -> usize {
+    match op {
+        embedded_hal::i2c::Operation::Read(buf) => buf.len(),
+        embedded_hal::i2c::Operation::Write(buf) => buf.len(),
+    }
+}
+
+/// Whether an operation writes.
+fn op_is_write(op: &embedded_hal::i2c::Operation<'_>) -> bool {
+    matches!(op, embedded_hal::i2c::Operation::Write(_))
+}
+
+/// The next run of same-direction operations at or after `from`, or [`None`] once there are none left.
+///
+/// **Operations carrying no bytes are skipped rather than addressed.** Nothing is gained by putting an
+/// address on the bus to move nothing, the transfer paths refuse a zero-length buffer anyway, and an
+/// empty operation between two writes must not break the run they form.
+fn next_group(ops: &[embedded_hal::i2c::Operation<'_>], from: usize) -> Option<Group> {
+    let mut start = from;
+    while start < ops.len() && op_len(&ops[start]) == 0 {
+        start += 1;
+    }
+
+    if start >= ops.len() {
+        return None;
+    }
+
+    let write = op_is_write(&ops[start]);
+    let mut total = op_len(&ops[start]);
+    let mut end = start + 1;
+
+    let mut at = start + 1;
+    while at < ops.len() {
+        if op_len(&ops[at]) == 0 {
+            at += 1;
+            continue;
+        }
+
+        if op_is_write(&ops[at]) != write {
+            break;
+        }
+
+        total += op_len(&ops[at]);
+        at += 1;
+        end = at;
+    }
+
+    Some(Group {
+        start,
+        end,
+        write,
+        total,
+    })
+}
+
 /// A [`Config`] with everything the driver needs derived from it.
 ///
 /// The two cycle counts are here rather than recomputed where they are used because deriving either one
@@ -1261,6 +1340,64 @@ impl<'d, M: Mode> I2c<'d, M> {
         got
     }
 
+    /// Push what fits into the transmit FIFO from a run of write operations, returning how many went in.
+    ///
+    /// The run moves as one burst, so the FIFO is fed from each operation's buffer in turn.
+    fn fill_tx_group(&self, ops: &[embedded_hal::i2c::Operation<'_>], end: usize, cur: &mut GroupCursor) -> usize {
+        let ctrl = self.info.regs.controller(0);
+        let mut sent = 0;
+
+        while cur.op < end {
+            let embedded_hal::i2c::Operation::Write(buf) = &ops[cur.op] else {
+                break;
+            };
+
+            if cur.pos == buf.len() {
+                cur.op += 1;
+                cur.pos = 0;
+                continue;
+            }
+
+            if ctrl.cfifosr().read().txfifocnt() == 0 {
+                break;
+            }
+
+            ctrl.ctxdata().write(|w| w.set_value(buf[cur.pos]));
+            cur.pos += 1;
+            sent += 1;
+        }
+
+        sent
+    }
+
+    /// Take what the receive FIFO holds into a run of read operations, returning how many came out.
+    fn drain_rx_group(&self, ops: &mut [embedded_hal::i2c::Operation<'_>], end: usize, cur: &mut GroupCursor) -> usize {
+        let ctrl = self.info.regs.controller(0);
+        let mut got = 0;
+
+        while cur.op < end {
+            let embedded_hal::i2c::Operation::Read(buf) = &mut ops[cur.op] else {
+                break;
+            };
+
+            if cur.pos == buf.len() {
+                cur.op += 1;
+                cur.pos = 0;
+                continue;
+            }
+
+            if ctrl.cfifosr().read().rxfifocnt() == 0 {
+                break;
+            }
+
+            buf[cur.pos] = ctrl.crxdata().read().value();
+            cur.pos += 1;
+            got += 1;
+        }
+
+        got
+    }
+
     /// Which half of the transfer went unanswered.
     ///
     /// `ADRACK` and `DATACK` are the difference between nothing being at that address and the target being
@@ -1305,8 +1442,20 @@ impl<'d> I2c<'d, Blocking> {
     /// Arm a transmit burst for `length` bytes and return once the address phase has settled.
     ///
     /// The caller keeps the FIFO fed; this does not wait for the burst to finish.
-    fn master_blocking_write(&mut self, address: Address, length: usize, send_stop: bool) -> Result<(), Error> {
-        while !self.info.regs.controller(0).csr().read().idle() && !self.timed_out() {}
+    ///
+    /// `restart` says this continues a transaction rather than opening one. Waiting for idle then would
+    /// wait for something that cannot happen: no STOP has been sent, so the controller is still busy by
+    /// design, and with no clock-low timeout configured the wait has nothing to end it.
+    fn master_blocking_write(
+        &mut self,
+        address: Address,
+        length: usize,
+        restart: bool,
+        send_stop: bool,
+    ) -> Result<(), Error> {
+        if !restart {
+            while !self.info.regs.controller(0).csr().read().idle() && !self.timed_out() {}
+        }
 
         self.master_write(address, length, send_stop)?;
 
@@ -1371,7 +1520,7 @@ impl<'d> I2c<'d, Blocking> {
         // bus time rather than bytes.
         let mut sent = self.fill_tx(write);
 
-        self.master_blocking_write(address, write.len(), end_w_stop)?;
+        self.master_blocking_write(address, write.len(), false, end_w_stop)?;
 
         while sent < write.len() {
             if let Err(err) = self.check_error() {
@@ -1810,19 +1959,114 @@ impl<'d, M: Mode> embedded_hal::i2c::ErrorType for I2c<'d, M> {
 
 impl<'d> I2c<'d, Blocking> {
     /// Body of [`embedded_hal::i2c::I2c::transaction`], shared by the impl per addressing mode.
+    /// Run a transaction the way `embedded-hal` defines one.
+    ///
+    /// Consecutive operations of the same type merge into one stretch of bus traffic — one address
+    /// phase, then every byte of the run — and a change of direction is a repeated START with the
+    /// address again. The last run ends with the STOP, so nothing issues one separately.
     fn eh_transaction(
         &mut self,
         address: Address,
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> Result<(), Error> {
         self.blocking_wait_bus_free()?;
-        for i in 0..operations.len() {
-            match &mut operations[i] {
-                embedded_hal::i2c::Operation::Read(buf) => self.read_blocking_internal(address, buf, false, false)?,
-                embedded_hal::i2c::Operation::Write(buf) => self.write_blocking_internal(address, buf, false)?,
+
+        let mut from = 0;
+        let mut opened = false;
+
+        while let Some(group) = next_group(operations, from) {
+            // A run merges into one burst, and the burst length register bounds it. Splitting a longer
+            // run across bursts would put the FIFO back in charge of what a transfer is.
+            if group.total > MAX_TRANSFER_LEN {
+                return Err(Error::TransferLengthIsOverLimit);
+            }
+
+            let last = next_group(operations, group.end).is_none();
+
+            let result = if group.write {
+                self.write_group_blocking(address, operations, &group, opened, last)
+            } else {
+                self.read_group_blocking(address, operations, &group, opened, last)
+            };
+
+            if let Err(err) = result {
+                self.recover_after(err);
+                return Err(err);
+            }
+
+            opened = true;
+            from = group.end;
+        }
+
+        Ok(())
+    }
+
+    /// One run of writes, as a single burst.
+    fn write_group_blocking(
+        &mut self,
+        address: Address,
+        ops: &mut [embedded_hal::i2c::Operation<'_>],
+        group: &Group,
+        restart: bool,
+        send_stop: bool,
+    ) -> Result<(), Error> {
+        self.clear_timeout();
+
+        let mut cur = GroupCursor {
+            op: group.start,
+            pos: 0,
+        };
+        let mut sent = self.fill_tx_group(ops, group.end, &mut cur);
+
+        self.master_blocking_write(address, group.total, restart, send_stop)?;
+
+        while sent < group.total {
+            self.check_error()?;
+
+            if !self.info.regs.controller(0).csr().read().busy() {
+                return Err(Error::Bus);
+            }
+
+            sent += self.fill_tx_group(ops, group.end, &mut cur);
+        }
+
+        while self.info.regs.controller(0).csr().read().busy() && !self.timed_out() {}
+
+        self.check_error()
+    }
+
+    /// One run of reads, as a single burst.
+    fn read_group_blocking(
+        &mut self,
+        address: Address,
+        ops: &mut [embedded_hal::i2c::Operation<'_>],
+        group: &Group,
+        restart: bool,
+        send_stop: bool,
+    ) -> Result<(), Error> {
+        self.clear_timeout();
+
+        self.master_blocking_read(address, group.total, restart, send_stop)?;
+
+        let mut cur = GroupCursor {
+            op: group.start,
+            pos: 0,
+        };
+        let mut got = 0;
+
+        while got < group.total {
+            self.check_error()?;
+
+            got += self.drain_rx_group(ops, group.end, &mut cur);
+
+            if got < group.total
+                && !self.info.regs.controller(0).csr().read().busy()
+                && self.info.regs.controller(0).cfifosr().read().rxfifocnt() == 0
+            {
+                return Err(Error::Bus);
             }
         }
-        self.master_stop();
+
         Ok(())
     }
 }
@@ -1873,20 +2117,173 @@ impl<'d> embedded_hal::i2c::I2c<embedded_hal::i2c::TenBitAddress> for I2c<'d, Bl
 
 impl<'d> I2c<'d, Async> {
     /// Body of [`embedded_hal_async::i2c::I2c::transaction`], shared by the impl per addressing mode.
+    /// Run a transaction the way `embedded-hal` defines one. See the blocking twin for the shape.
     async fn eh_transaction(
         &mut self,
         address: Address,
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> Result<(), Error> {
         self.recover_bus().await?;
-        for i in 0..operations.len() {
-            match &mut operations[i] {
-                embedded_hal::i2c::Operation::Read(buf) => self.read_async_internal(address, buf, false, false).await?,
-                embedded_hal::i2c::Operation::Write(buf) => self.write_async_internal(address, buf, false).await?,
+
+        let mut from = 0;
+        let mut opened = false;
+
+        while let Some(group) = next_group(operations, from) {
+            if group.total > MAX_TRANSFER_LEN {
+                return Err(Error::TransferLengthIsOverLimit);
             }
+
+            let last = next_group(operations, group.end).is_none();
+
+            let result = if group.write {
+                self.write_group_async(address, operations, &group, last).await
+            } else {
+                self.read_group_async(address, operations, &group, opened, last).await
+            };
+
+            if let Err(err) = result {
+                self.recover_after(err);
+                return Err(err);
+            }
+
+            opened = true;
+            from = group.end;
         }
-        self.master_stop();
+
         Ok(())
+    }
+
+    /// One run of writes, as a single burst fed from the FIFO trigger interrupt.
+    async fn write_group_async(
+        &mut self,
+        addr: Address,
+        ops: &mut [embedded_hal::i2c::Operation<'_>],
+        group: &Group,
+        send_stop: bool,
+    ) -> Result<(), Error> {
+        self.clear_timeout();
+
+        let _guard = self.wake_floor.map(WakeGuard::new);
+        let abort = Self::abort_on_drop(self.info.regs, self.state);
+
+        let mut cur = GroupCursor {
+            op: group.start,
+            pos: 0,
+        };
+        let mut sent = self.fill_tx_group(ops, group.end, &mut cur);
+
+        self.info.regs.cpu_int(0).imask().modify(|w| {
+            w.set_carblost(true);
+            w.set_cnack(true);
+            w.set_timeouta(true);
+            w.set_ctxdone(true);
+            w.set_ctxfifotrg(sent < group.total);
+        });
+
+        self.master_write(addr, group.total, send_stop)?;
+
+        let res: Result<(), Error> = future::poll_fn(|cx| {
+            use crate::i2c::vals::CpuIntIidxStat;
+            self.state.waker.register(cx.waker());
+
+            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
+                CpuIntIidxStat::NoIntr => Poll::Pending,
+                CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
+                CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
+                CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
+                CpuIntIidxStat::Ctxfifotrg => {
+                    sent += self.fill_tx_group(ops, group.end, &mut cur);
+
+                    if sent == group.total {
+                        self.info.regs.cpu_int(0).imask().modify(|w| w.set_ctxfifotrg(false));
+                    }
+
+                    Poll::Pending
+                }
+                CpuIntIidxStat::Ctxdonefg => Poll::Ready(Ok(())),
+                _ => Poll::Pending,
+            };
+
+            if !result.is_pending() {
+                self.info
+                    .regs
+                    .cpu_int(0)
+                    .imask()
+                    .write_value(i2c::regs::CpuInt::default());
+            }
+            return result;
+        })
+        .await;
+
+        abort.defuse();
+        res
+    }
+
+    /// One run of reads, as a single burst drained from the FIFO trigger interrupt.
+    async fn read_group_async(
+        &mut self,
+        addr: Address,
+        ops: &mut [embedded_hal::i2c::Operation<'_>],
+        group: &Group,
+        restart: bool,
+        send_stop: bool,
+    ) -> Result<(), Error> {
+        self.clear_timeout();
+
+        let _guard = self.wake_floor.map(WakeGuard::new);
+        let abort = Self::abort_on_drop(self.info.regs, self.state);
+
+        self.info.regs.cpu_int(0).imask().modify(|w| {
+            w.set_carblost(true);
+            w.set_cnack(true);
+            w.set_timeouta(true);
+            w.set_crxdone(true);
+            w.set_crxfifotrg(true);
+        });
+
+        self.master_read(addr, group.total, restart, false, send_stop)?;
+
+        let mut cur = GroupCursor {
+            op: group.start,
+            pos: 0,
+        };
+        let mut got = 0;
+
+        let res: Result<(), Error> = future::poll_fn(|cx| {
+            use crate::i2c::vals::CpuIntIidxStat;
+            self.state.waker.register(cx.waker());
+
+            let result = match self.info.regs.cpu_int(0).iidx().read().stat() {
+                CpuIntIidxStat::NoIntr => Poll::Pending,
+                CpuIntIidxStat::Cnackfg => Poll::Ready(Err(self.nack_kind())),
+                CpuIntIidxStat::Carblostfg => Poll::Ready(Err(Error::Arbitration)),
+                CpuIntIidxStat::Timeouta => Poll::Ready(Err(Error::Timeout)),
+                CpuIntIidxStat::Crxfifotrg => {
+                    got += self.drain_rx_group(ops, group.end, &mut cur);
+                    Poll::Pending
+                }
+                CpuIntIidxStat::Crxdonefg => {
+                    got += self.drain_rx_group(ops, group.end, &mut cur);
+                    Poll::Ready(Ok(()))
+                }
+                _ => Poll::Pending,
+            };
+
+            if !result.is_pending() {
+                self.info
+                    .regs
+                    .cpu_int(0)
+                    .imask()
+                    .write_value(i2c::regs::CpuInt::default());
+            }
+            return result;
+        })
+        .await;
+
+        abort.defuse();
+        res?;
+
+        if got < group.total { Err(Error::Bus) } else { Ok(()) }
     }
 }
 

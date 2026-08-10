@@ -157,3 +157,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/uart: `BufferedUartRx::take_faults` reports noise, framing, parity and break errors, which were detected and then discarded
 - fix: mspm0/wwdt: `Watchdog` borrows its instance for its lifetime rather than releasing it in the constructor, so a second one can no longer be built for the same peripheral
 - mspm0/wwdt: `Config::stop_in_sleep` no longer implies the watchdog resets a device that sleeps past its timeout from STANDBY, where the device disables it
+- fix: mspm0/i2c: `embedded-hal`'s `transaction` merges consecutive operations of the same type into one addressed stretch, and no longer hangs when given two of them
