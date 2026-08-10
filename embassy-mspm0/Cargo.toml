@@ -86,7 +86,6 @@ portable-atomic = { version = "1.14.0" }
 [build-dependencies]
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
-cfg_aliases = "0.2.2"
 
 # mspm0-metapac = { version = "", default-features = false, features = ["metadata"] }
 # Fork, temporarily: see the note on the dependency above.

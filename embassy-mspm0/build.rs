@@ -6,7 +6,7 @@ use std::process::Command;
 use std::{env, fs};
 
 use common::CfgSet;
-use mspm0_metapac::metadata::{ALL_CHIPS, METADATA, MemoryKind, Peripheral, PowerDomain, PowerMode};
+use mspm0_metapac::metadata::{METADATA, MemoryKind, Peripheral, PowerDomain, PowerMode};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 
@@ -50,11 +50,6 @@ fn generate_code(cfgs: &mut CfgSet) {
     .replace('_', "-");
 
     eprintln!("chip: {chip_name}");
-
-    cfgs.enable_all(&get_chip_cfgs(&chip_name));
-    for chip in ALL_CHIPS {
-        cfgs.declare_all(&get_chip_cfgs(&chip));
-    }
 
     peripheral_kind_cfgs(cfgs);
     peripheral_name_cfgs(cfgs);
@@ -347,76 +342,6 @@ fn clock_tree_cfgs(cfgs: &mut CfgSet) -> TokenStream {
         pub const HFCLK_MIN_HZ: u32 = #min;
         pub const HFCLK_MAX_HZ: u32 = #max;
     }
-}
-
-fn get_chip_cfgs(chip_name: &str) -> Vec<String> {
-    let mut cfgs = Vec::new();
-
-    // GPIO on C110x is special as it does not belong to an interrupt group.
-    if chip_name.starts_with("mspm0c1103") || chip_name.starts_with("mspm0c1104") || chip_name.starts_with("msps003f") {
-        cfgs.push("mspm0c110x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0c1105") || chip_name.starts_with("mspm0c1106") {
-        cfgs.push("mspm0c1105_c1106".to_string());
-    }
-
-    // Family ranges (temporary until int groups are generated)
-    //
-    // TODO: Remove this once int group stuff is generated.
-    if chip_name.starts_with("mspm0g110") {
-        cfgs.push("mspm0g110x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0g150") {
-        cfgs.push("mspm0g150x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0g151") {
-        cfgs.push("mspm0g151x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0g310") {
-        cfgs.push("mspm0g310x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0g350") {
-        cfgs.push("mspm0g350x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0g351") {
-        cfgs.push("mspm0g351x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0g518") {
-        cfgs.push("mspm0g518x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0h321") {
-        cfgs.push("mspm0h321x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0l110") {
-        cfgs.push("mspm0l110x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0l122") {
-        cfgs.push("mspm0l122x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0l130") {
-        cfgs.push("mspm0l130x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0l134") {
-        cfgs.push("mspm0l134x".to_string());
-    }
-
-    if chip_name.starts_with("mspm0l222") {
-        cfgs.push("mspm0l222x".to_string());
-    }
-
-    cfgs
 }
 
 /// Interrupt groups use a weakly linked symbols and #[linkage = "extern_weak"] is nightly we need to
