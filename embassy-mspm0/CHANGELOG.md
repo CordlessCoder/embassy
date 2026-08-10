@@ -173,3 +173,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/i2c: document that a transfer onto a bus whose SCL is held low never returns unless `Config::clock_low_timeout_us` is set
 - **breaking** mspm0/uart: `blocking_write` becomes `begin_blocking_write().write()`, whose guard waits for the transmitter when dropped, so deep sleep no longer truncates a write nobody flushed
 - mspm0/opa: add a driver for the operational amplifier, with buffer and non-inverting PGA topologies read through its fixed internal ADC channel (#6517)
+- **breaking** mspm0/adc: hardware averaging, as `Config::averaging` for the rate and `Conversion::average` to pick which conversions use it

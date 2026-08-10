@@ -172,6 +172,45 @@ pub enum Vrsel {
     IntrefVrefm = 4,
 }
 
+/// How many conversions the hardware averages into one result.
+///
+/// Each setting divides by what it accumulated, so the result stays on the same scale as an
+/// unaveraged one and only the noise changes. The accumulate-without-dividing mode the registers also
+/// allow is not offered: it overflows `MEMRES`'s 16 bits at most resolutions and truncates silently.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Averaging {
+    /// Average 2 conversions.
+    X2,
+    /// Average 4 conversions.
+    X4,
+    /// Average 8 conversions.
+    X8,
+    /// Average 16 conversions.
+    X16,
+    /// Average 32 conversions.
+    X32,
+    /// Average 64 conversions.
+    X64,
+    /// Average 128 conversions.
+    X128,
+}
+
+impl Averaging {
+    /// The accumulate count and the matching right shift (SLAU846 table 18-1).
+    const fn to_regs(self) -> (vals::Avgn, u8) {
+        match self {
+            Self::X2 => (vals::Avgn::Avg2, 1),
+            Self::X4 => (vals::Avgn::Avg4, 2),
+            Self::X8 => (vals::Avgn::Avg8, 3),
+            Self::X16 => (vals::Avgn::Avg16, 4),
+            Self::X32 => (vals::Avgn::Avg32, 5),
+            Self::X64 => (vals::Avgn::Avg64, 6),
+            Self::X128 => (vals::Avgn::Avg128, 7),
+        }
+    }
+}
+
 /// Sample conversion parameters.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -182,7 +221,14 @@ pub struct Conversion {
 
     /// Sample time period.
     pub stime: SampleTimeComparator,
-    // TODO: AVG, BCS, TRIG, WINCOMP
+
+    /// Average this conversion, at the rate [`Config::averaging`] sets.
+    ///
+    /// Per conversion because the hardware enables averaging per conversion but holds one rate for
+    /// the whole peripheral, so a sequence can average some of its channels and not others. Setting
+    /// this with no [`Config::averaging`] is a caller error and panics.
+    pub average: bool,
+    // TODO: BCS, TRIG, WINCOMP
 }
 
 impl Default for Conversion {
@@ -191,6 +237,7 @@ impl Default for Conversion {
         Self {
             vrsel: Vrsel::VddaVssa,
             stime: SampleTimeComparator::Scomp0,
+            average: false,
         }
     }
 }
@@ -214,6 +261,15 @@ pub struct Config {
 
     /// Length of [`SampleTimeComparator::Scomp1`]'s sample period, in ADC sample clock cycles.
     pub sample_period_1: NonZeroU16,
+
+    /// How many conversions to average, for conversions that ask for it.
+    ///
+    /// One rate for the whole peripheral: the hardware has a single accumulate count and cannot hold
+    /// a different one per channel. Which conversions use it is [`Conversion::average`].
+    ///
+    /// A conversion takes this many times as long, and the driver holds its sleep guard for all of
+    /// it.
+    pub averaging: Option<Averaging>,
 }
 
 impl Config {
@@ -229,6 +285,7 @@ impl Default for Config {
             // TODO: What should these be by default?
             sample_period_0: NonZeroU16::new(50).unwrap(),
             sample_period_1: NonZeroU16::new(50).unwrap(),
+            averaging: None,
         }
     }
 }
@@ -525,8 +582,14 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
             w.set_sc(false);
             w.set_conseq(vals::Conseq::Sequence);
             w.set_sampmode(vals::Sampmode::Auto);
-            w.set_avgn(vals::Avgn::Disable);
-            w.set_avgd(0);
+
+            // One rate for the peripheral; `Conversion::average` picks which conversions use it.
+            let (avgn, avgd) = match config.averaging {
+                Some(averaging) => averaging.to_regs(),
+                None => (vals::Avgn::Disable, 0),
+            };
+            w.set_avgn(avgn);
+            w.set_avgd(avgd);
         });
 
         r.ctl2().write(|w| {
@@ -560,13 +623,20 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
                 "Reference voltage selection out of bounds"
             );
 
+            // Read back rather than kept on the driver: the rate lives in `CTL1` from `Config`, and a
+            // copy here could disagree with what is actually programmed.
+            assert!(
+                !conversion.average || r.ctl1().read().avgn() != vals::Avgn::Disable,
+                "Conversion::average needs Config::averaging set"
+            );
+
             r.memctl(i).write(|w| {
                 w.set_chansel(ch);
                 // TODO: Conversion function to not be repr dependent
                 w.set_vrsel(vals::Vrsel::from_bits(conversion.vrsel as u8));
                 w.set_stime(convert_stime(conversion.stime));
                 // TODO: More parameters
-                w.set_avgen(false);
+                w.set_avgen(conversion.average);
                 w.set_bcsen(false);
                 w.set_trig(vals::Trig::AutoNext);
                 w.set_wincomp(false);
@@ -838,4 +908,28 @@ macro_rules! impl_adc_pin {
 #[allow(dead_code)]
 fn _assert_new_blocking_infers<'d, T: Instance>(peri: Peri<'d, T>) -> Adc<'d, T, Blocking> {
     Adc::new_blocking(peri, Config::default())
+}
+
+#[cfg(test)]
+mod averaging_tests {
+    use super::*;
+
+    #[test]
+    fn shift_matches_count() {
+        // SLAU846 table 18-1 pairs each count with the shift that divides by it, so an averaged
+        // result stays on the same scale as an unaveraged one.
+        for (averaging, count) in [
+            (Averaging::X2, 2u32),
+            (Averaging::X4, 4),
+            (Averaging::X8, 8),
+            (Averaging::X16, 16),
+            (Averaging::X32, 32),
+            (Averaging::X64, 64),
+            (Averaging::X128, 128),
+        ] {
+            let (avgn, avgd) = averaging.to_regs();
+            assert_eq!(1u32 << avgd, count, "{averaging:?} divides by the wrong amount");
+            assert_eq!(avgn.to_bits(), avgd, "{averaging:?} count and shift disagree");
+        }
+    }
 }
