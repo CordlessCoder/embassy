@@ -42,6 +42,10 @@ const BAUD: Baud = match Baud::solve(ClockSel::MfClk, clock::RESET_SETUP.clocks(
     None => core::panic!("this baud rate is not reachable from MFCLK"),
 };
 
+/// In `.bss`, zeroed by the startup code rather than by a run-time clear.
+static mut TX_BUF: [u8; 32] = [0; 32];
+static mut RX_BUF: [u8; 32] = [0; 32];
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     info!("Hello world!");
@@ -50,17 +54,9 @@ async fn main(_spawner: Spawner) -> ! {
 
     let config = Config::default().with_baud(BAUD);
 
-    let mut tx_buf = [0u8; 32];
-    let mut rx_buf = [0u8; 32];
-    let mut uart = unwrap!(BufferedUart::new(
-        p.UART1,
-        p.PA10,
-        p.PA1,
-        Irqs,
-        &mut tx_buf,
-        &mut rx_buf,
-        config
-    ));
+    // SAFETY: single-threaded, and each is borrowed exactly once, here.
+    let (tx_buf, rx_buf) = unsafe { (&mut *(&raw mut TX_BUF), &mut *(&raw mut RX_BUF)) };
+    let mut uart = unwrap!(BufferedUart::new(p.UART1, p.PA10, p.PA1, Irqs, tx_buf, rx_buf, config));
 
     let mut round: u8 = 0;
 

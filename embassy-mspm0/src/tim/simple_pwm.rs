@@ -146,6 +146,19 @@ pub struct PwmPins<'d, T: Instance> {
 }
 
 /// PWM driver.
+/// Aligned to two bytes so that moving one does not call `memcpy`.
+///
+/// With `low-power` on, `Timer` carries a one-byte `MaybeWakeGuard` and this becomes **9 bytes at
+/// alignment 1**, which is over whatever threshold LLVM inlines a copy at on this target: it emits two
+/// bytes inline and calls `memcpy` for the remaining seven, twice, on the way out of `new_2ch` and into
+/// the caller. That is **616 bytes** on `cmp_pwm` — a quarter of the binary — for a nine-byte move.
+///
+/// Alignment two makes it ten bytes, copied as five halfwords inline, and **costs nothing when
+/// `low-power` is off**: the struct is eight bytes there either way. Measured both ways.
+///
+/// **Do not "improve" this to `align(4)`.** That was measured too and brings the `memcpy` back — twelve
+/// bytes is over the threshold again. More alignment is worse here, which is not what anyone guesses.
+#[repr(align(2))]
 pub struct SimplePwm<'d, T: Instance> {
     timer: Timer<'d, T>,
     pins: [Option<Peri<'d, AnyPin>>; 4],

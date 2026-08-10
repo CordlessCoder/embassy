@@ -153,6 +153,10 @@ struct Stats {
     stalls: u32,
 }
 
+/// In `.bss`, zeroed by the startup code rather than by a run-time clear.
+static mut TX_BUF: [u8; 64] = [0; 64];
+static mut RX_BUF: [u8; BLOCK * 4] = [0; BLOCK * 4];
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -180,8 +184,9 @@ async fn main(_spawner: Spawner) -> ! {
 
     // The RX ring holds four blocks. Anything smaller and a full ring would mask the RX interrupt
     // itself, which produces overruns that say nothing about the FIFO.
-    let mut tx_buf = [0u8; 64];
-    let mut rx_buf = [0u8; BLOCK * 4];
+    // SAFETY: single-threaded, and each is borrowed exactly once, here. The UART below is rebuilt per
+    // case and dropped at the end of each, so the reborrows it takes never overlap.
+    let (tx_buf, rx_buf) = unsafe { (&mut *(&raw mut TX_BUF), &mut *(&raw mut RX_BUF)) };
 
     info!("{} bytes per case, blocks of {}", BYTES, BLOCK);
 
@@ -207,8 +212,8 @@ async fn main(_spawner: Spawner) -> ! {
                     tx_pin.reborrow(),
                     rx_pin.reborrow(),
                     Irqs,
-                    &mut tx_buf,
-                    &mut rx_buf,
+                    &mut *tx_buf,
+                    &mut *rx_buf,
                     config,
                 ));
 

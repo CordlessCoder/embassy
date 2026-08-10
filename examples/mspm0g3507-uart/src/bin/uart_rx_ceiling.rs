@@ -146,6 +146,10 @@ const REPORT: Duration = Duration::from_secs(1);
 /// that says nothing about the driver's rate.
 const CHUNK: usize = 64;
 
+/// In `.bss`, zeroed by the startup code rather than by a run-time clear.
+static mut TX_BUF: [u8; 64] = [0; 64];
+static mut RX_BUF: [u8; 256] = [0; 256];
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -171,17 +175,9 @@ async fn main(_spawner: Spawner) -> ! {
 
     // Both pins are claimed even when only receiving, so `PB6` idles high instead of floating. An
     // undriven pin reads as a start bit at the far end, which `TESTING.md` C3 lost a run to.
-    let mut tx_buf = [0u8; 64];
-    let mut rx_buf = [0u8; 256];
-    let mut uart = unwrap!(BufferedUart::new(
-        p.UART1,
-        p.PB6,
-        p.PB7,
-        Irqs,
-        &mut tx_buf,
-        &mut rx_buf,
-        config,
-    ));
+    // SAFETY: single-threaded, and each is borrowed exactly once, here.
+    let (tx_buf, rx_buf) = unsafe { (&mut *(&raw mut TX_BUF), &mut *(&raw mut RX_BUF)) };
+    let mut uart = unwrap!(BufferedUart::new(p.UART1, p.PB6, p.PB7, Irqs, tx_buf, rx_buf, config,));
 
     info!(
         "receiving at {} baud, fifo {}, duplex {}, uart domain {:?}",

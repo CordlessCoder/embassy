@@ -91,6 +91,10 @@ const ECHO_TIMEOUT: Duration = Duration::from_millis(500);
 /// 2 ms, so this is generous at every rate.
 const QUIET: Duration = Duration::from_millis(20);
 
+/// In `.bss`, zeroed by the startup code rather than by a run-time clear.
+static mut TX_BUF: [u8; 64] = [0; 64];
+static mut RX_BUF: [u8; 64] = [0; 64];
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -98,17 +102,9 @@ async fn main(_spawner: Spawner) -> ! {
     let mut config = Config::default().with_baud(BAUD);
     config.clock_source = ClockSel::BusClk;
 
-    let mut tx_buf = [0u8; 64];
-    let mut rx_buf = [0u8; 64];
-    let mut uart = unwrap!(BufferedUart::new(
-        p.UART1,
-        p.PB6,
-        p.PB7,
-        Irqs,
-        &mut tx_buf,
-        &mut rx_buf,
-        config,
-    ));
+    // SAFETY: single-threaded, and each is borrowed exactly once, here.
+    let (tx_buf, rx_buf) = unsafe { (&mut *(&raw mut TX_BUF), &mut *(&raw mut RX_BUF)) };
+    let mut uart = unwrap!(BufferedUart::new(p.UART1, p.PB6, p.PB7, Irqs, tx_buf, rx_buf, config,));
 
     drain(&mut uart).await;
 

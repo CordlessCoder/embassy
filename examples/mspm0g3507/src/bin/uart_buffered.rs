@@ -27,6 +27,11 @@ const BAUD: Baud = match Baud::solve(ClockSel::MfClk, clock::RESET_SETUP.clocks(
     None => core::panic!("this baud rate is not reachable from MFCLK"),
 };
 
+/// In `.bss`, which the startup code zeroes. Stack arrays are cleared at run time instead, and
+/// that pulls in a 158-byte memory-clear helper — measured, on a binary this size.
+static mut TX_BUF: [u8; 32] = [0; 32];
+static mut RX_BUF: [u8; 32] = [0; 32];
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
     info!("Hello world!");
@@ -36,19 +41,11 @@ async fn main(_spawner: Spawner) -> ! {
     let instance = p.UART0;
     let tx = p.PA10;
     let rx = p.PA11;
-    let mut tx_buf = [0u8; 32];
-    let mut rx_buf = [0u8; 32];
+    // SAFETY: single-threaded, and each is borrowed exactly once, here.
+    let (tx_buf, rx_buf) = unsafe { (&mut *(&raw mut TX_BUF), &mut *(&raw mut RX_BUF)) };
 
     let config = Config::default().with_baud(BAUD);
-    let mut uart = unwrap!(BufferedUart::new(
-        instance,
-        tx,
-        rx,
-        Irqs,
-        &mut tx_buf,
-        &mut rx_buf,
-        config
-    ));
+    let mut uart = unwrap!(BufferedUart::new(instance, tx, rx, Irqs, tx_buf, rx_buf, config));
 
     unwrap!(uart.blocking_write(b"Hello Embassy World (buffered)!\r\n"));
     info!("wrote Hello, starting echo");

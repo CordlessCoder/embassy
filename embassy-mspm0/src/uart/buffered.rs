@@ -207,6 +207,9 @@ impl<'d> BufferedUartRx<'d> {
     /// Create a new rx-only buffered UART with no hardware flow control.
     ///
     /// Useful if you only want Uart Rx. It saves 1 pin.
+    ///
+    /// See [`BufferedUart::new`] on where to put the buffer: a `'static` home rather than an array in
+    /// the calling task, for the same reason and the same saving.
     pub fn new<T: Instance>(
         uart: Peri<'d, T>,
         rx: Peri<'d, impl RxPin<T>>,

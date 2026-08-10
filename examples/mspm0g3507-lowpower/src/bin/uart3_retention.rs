@@ -76,6 +76,9 @@ const WAKE_BAUD: Baud = match Baud::solve(
     None => core::panic!("this baud rate is not reachable from UART1's bus clock"),
 };
 
+/// In `.bss`, zeroed by the startup code rather than by a run-time clear.
+static mut RX_BUF: [u8; 32] = [0; 32];
+
 #[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
@@ -95,8 +98,9 @@ async fn main(_spawner: Spawner) -> ! {
     wake_config.clock_source = ClockSel::BusClk;
     wake_config.low_power_rx_wake = true;
 
-    let mut rx_buf = [0u8; 32];
-    let mut wake = unwrap!(BufferedUartRx::new(p.UART1, p.PB7, Irqs, &mut rx_buf, wake_config));
+    // SAFETY: single-threaded, and borrowed exactly once, here.
+    let rx_buf = unsafe { &mut *(&raw mut RX_BUF) };
+    let mut wake = unwrap!(BufferedUartRx::new(p.UART1, p.PB7, Irqs, rx_buf, wake_config));
 
     // Toggles on every wake, so the wake path can be confirmed by eye even with no probe attached and
     // nothing coming back over UART3.
