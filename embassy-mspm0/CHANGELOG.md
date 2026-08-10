@@ -150,3 +150,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/gpio: `wait_for_high` and `wait_for_low` no longer wait for a second edge when the level arrives while the wait is being armed
 - fix: mspm0/gpio: releasing a pin from a peripheral driver now clears the whole pin configuration, including the bit that connects the pad to the peripheral
 - fix: mspm0/uart: `Config::cts_pull` and `Config::invert_cts` are applied to the CTS pin, rather than the RTS pin's settings being used for both
+- fix: mspm0/adc: `Adc::new_blocking` can be called without naming the mode

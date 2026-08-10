@@ -243,8 +243,9 @@ pub struct Adc<'d, T: Instance, M: Mode> {
     _mode: PhantomData<M>,
 }
 
-impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
-    pub fn new_blocking(peri: Peri<'d, T>, config: Config) -> Adc<'d, T, Blocking> {
+impl<'d, T: Instance> Adc<'d, T, Blocking> {
+    /// Create a blocking ADC driver.
+    pub fn new_blocking(peri: Peri<'d, T>, config: Config) -> Self {
         Self::setup(config);
         Adc {
             adc: peri,
@@ -252,7 +253,9 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
             _mode: PhantomData,
         }
     }
+}
 
+impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
     /// Read an ADC pin.
     pub fn blocking_read<'a>(&mut self, channel: impl BorrowedChannel<'a, T>, conversion: Conversion) -> u16 {
         let r = T::info().regs;
@@ -825,4 +828,14 @@ macro_rules! impl_adc_pin {
             }
         }
     };
+}
+
+/// `new_blocking` must be callable without naming the mode.
+///
+/// It used to sit in the mode-generic impl while returning a `Blocking` one, so nothing constrained the
+/// parameter and every call needed a turbofish. Placed here rather than in a test because the failure it
+/// catches is a change to an impl block's bounds.
+#[allow(dead_code)]
+fn _assert_new_blocking_infers<'d, T: Instance>(peri: Peri<'d, T>) -> Adc<'d, T, Blocking> {
+    Adc::new_blocking(peri, Config::default())
 }
