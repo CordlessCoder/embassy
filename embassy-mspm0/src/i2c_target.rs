@@ -96,10 +96,10 @@ pub enum Command {
     /// Write followed by Read (Repeated Start): Controller wrote data, then issued a repeated
     /// start and wants to read data. Contains the number of bytes written before the read.
     ///
-    /// **A 10-bit controller re-sends the whole address between the halves**, so the frame before the
-    /// read carries no data and looks like the one a plain 10-bit read opens with. Whether such a
-    /// transaction arrives here or as a [`Command::Read`] has not been measured; do not rely on
-    /// either at 10-bit.
+    /// **Reported for a 10-bit transaction too**, though a 10-bit controller re-sends the whole address
+    /// between the halves, so the frame before the read carries no data and looks exactly like the one
+    /// a plain 10-bit read opens with. What separates them here is the byte count carried over from
+    /// before the restart, not anything about the addressing.
     WriteRead(usize),
 }
 
