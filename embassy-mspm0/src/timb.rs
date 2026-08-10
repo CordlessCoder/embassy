@@ -150,21 +150,6 @@ pub enum Event {
     Stopped,
 }
 
-impl Event {
-    /// Bit this event occupies for `counter` in `IMASK`, `RIS`, `MIS`, `ISET` and `ICLR`.
-    ///
-    /// The three events are interleaved per counter rather than grouped by kind.
-    const fn bit(self, counter: u8) -> usize {
-        let offset = match self {
-            Event::Overflow => 0,
-            Event::Started => 1,
-            Event::Stopped => 2,
-        };
-
-        (counter as usize) * 3 + offset
-    }
-}
-
 /// A basic timer instance.
 #[allow(private_bounds)]
 pub trait Instance: SealedInstance + PeripheralType + LowPowerInstance {
@@ -237,25 +222,36 @@ impl<'d, T: Instance> BasicTimer<'d, T> {
     pub fn enable_interrupt(&self, counter: u8, event: Event, enable: bool) {
         assert!(counter < T::COUNTERS, "this instance does not have that many counters");
 
-        T::regs()
-            .cpu_int(0)
-            .imask()
-            .modify(|w| w.set_cntovf(event.bit(counter), enable));
+        // Each event has its own field array indexed by counter; the three interleave in the register.
+        let counter = counter as usize;
+        T::regs().cpu_int(0).imask().modify(|w| match event {
+            Event::Overflow => w.set_cntovf(counter, enable),
+            Event::Started => w.set_cntstrt(counter, enable),
+            Event::Stopped => w.set_cntstop(counter, enable),
+        });
     }
 
     /// Whether `event` has fired on `counter` since it was last cleared.
     #[inline]
     pub fn is_pending(&self, counter: u8, event: Event) -> bool {
-        T::regs().cpu_int(0).ris().read().cntovf(event.bit(counter))
+        let counter = counter as usize;
+        let ris = T::regs().cpu_int(0).ris().read();
+        match event {
+            Event::Overflow => ris.cntovf(counter),
+            Event::Started => ris.cntstrt(counter),
+            Event::Stopped => ris.cntstop(counter),
+        }
     }
 
     /// Acknowledge `event` on `counter`.
     #[inline]
     pub fn clear_pending(&self, counter: u8, event: Event) {
-        T::regs()
-            .cpu_int(0)
-            .iclr()
-            .write(|w| w.set_cntovf(event.bit(counter), true));
+        let counter = counter as usize;
+        T::regs().cpu_int(0).iclr().write(|w| match event {
+            Event::Overflow => w.set_cntovf(counter, true),
+            Event::Started => w.set_cntstrt(counter, true),
+            Event::Stopped => w.set_cntstop(counter, true),
+        });
     }
 
     /// Power the instance down and give the peripheral back, so another driver can claim it.
