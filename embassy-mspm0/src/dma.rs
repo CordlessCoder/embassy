@@ -716,42 +716,57 @@ macro_rules! impl_full_dma_channel {
     };
 }
 
-fn on_irq(dma: pac::dma::Dma) {
-    use crate::BitIter;
+/// Lowest `IIDX` index that names a channel; zero is "nothing pending".
+const IIDX_CH0: u8 = pac::dma::vals::Stat::Ch0.to_bits();
 
+/// The two error indices, which sort above every channel and every `PRE-IRQ`.
+const IIDX_ADDRERR: u8 = pac::dma::vals::Stat::Addrerr.to_bits();
+const IIDX_DATAERR: u8 = pac::dma::vals::Stat::Dataerr.to_bits();
+
+fn on_irq(dma: pac::dma::Dma) {
     #[cfg(feature = "_probe")]
     let probe = crate::probe::target(crate::probe::Marker::DmaHandler);
     #[cfg(feature = "_probe")]
     crate::probe::set(probe);
 
     let events = dma.int_event(0);
-    let mis = events.mis().read();
 
-    // TODO: Handle DATAERR and ADDRERR? However we do not know which channel causes an error.
-    if mis.dataerr() {
-        panic!("DMA data error");
-    } else if mis.addrerr() {
-        panic!("DMA address error")
-    }
+    // `IIDX` names the highest-priority pending event and clears it, so it replaces the `MIS` read, the
+    // bit scan over it — ARMv6-M has no `clz`, so that was a shift loop — and the `ICLR` write, and it
+    // hands back the channel number rather than a bit position to search for.
+    //
+    // **One event per entry.** Clearing `MIS` is what deasserts the line, so the NVIC re-enters this
+    // handler while any event remains. That is cheaper here than looping: the entry it adds is a
+    // shorter one than the iteration it replaces.
+    'dispatch: {
+        let stat = events.iidx().read().stat().to_bits();
 
-    // Ignore preirq interrupts (values greater than 16).
-    for i in BitIter(mis.0 & 0x0000_FFFF) {
-        if let Some(state) = STATE.get(i as usize) {
-            // Masking the channel is not clearing it: the flag stays latched in `ris`, so the next
-            // transfer's unmask raises the interrupt again the moment it is armed, and the handler
-            // masks the channel back off before the transfer it belongs to has finished. The
-            // completion nobody is left listening for is the one that matters.
-            events.iclr().write(|w| {
-                w.set_ch(i as usize, true);
-            });
-
-            state.waker.wake();
-
-            // Nothing more to report until the next transfer arms it again.
-            events.imask().modify(|w| {
-                w.set_ch(i as usize, false);
-            });
+        // An error sorts above every channel, so a completion pending at the same instant is reported
+        // first and the error arrives on the next entry. It is not lost, only later.
+        match stat {
+            0 => break 'dispatch,
+            IIDX_DATAERR => panic!("DMA data error"),
+            IIDX_ADDRERR => panic!("DMA address error"),
+            _ => {}
         }
+
+        // `PRE-IRQ` indices sit above the channels and below the errors. Every channel disables it in
+        // `CTL`, so nothing unmasks one and `IIDX` cannot report it — but it costs a bounds check to
+        // say so rather than indexing past the end.
+        let channel = (stat - IIDX_CH0) as usize;
+
+        let Some(state) = STATE.get(channel) else {
+            break 'dispatch;
+        };
+
+        state.waker.wake();
+
+        // Nothing more to report until the next transfer arms it again. Masking is not clearing — the
+        // flag would stay latched in `RIS` and the next unmask would raise the interrupt at once — but
+        // reading `IIDX` above already cleared it.
+        events.imask().modify(|w| {
+            w.set_ch(channel, false);
+        });
     }
 
     #[cfg(feature = "_probe")]
