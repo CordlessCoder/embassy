@@ -182,12 +182,6 @@ struct SysctlCaps {
     /// peripheral.
     clkout_hfclk: bool,
     clkout_syspllclk1: bool,
-
-    /// Whether the block's `EXCLKSRC` enum spells position 3 `Mfclk` rather than `Mfpclk`.
-    ///
-    /// It is MFPCLK on every block; the two C-series SVDs name it wrongly, and correcting them is a
-    /// metapac change.
-    exclksrc_mfclk_name: bool,
 }
 
 impl SysctlCaps {
@@ -199,7 +193,6 @@ impl SysctlCaps {
         rstcause_flashecc: false,
         clkout_hfclk: false,
         clkout_syspllclk1: false,
-        exclksrc_mfclk_name: false,
     };
 }
 
@@ -220,7 +213,6 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
         "c110x" => SysctlCaps {
             shutdnstore: true,
             clkout_hfclk: true,
-            exclksrc_mfclk_name: true,
             ..SysctlCaps::NONE
         },
 
@@ -228,7 +220,6 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             shutdnstore: true,
             hsclk_mux: true,
             clkout_hfclk: true,
-            exclksrc_mfclk_name: true,
             ..SysctlCaps::NONE
         },
 
@@ -275,6 +266,20 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
             ..SysctlCaps::NONE
         },
 
+        // Derived from `g351x_g151x`, which is the layout it shares; it had been borrowing
+        // `g350x_g310x_g150x_g110x`, which was the wrong generation and misstated the flash
+        // protection region, `PMUOPAMP` and `GENCLKCFG.CANCLKSRC`. What it adds over `g351x_g151x`
+        // is the USB FLL, which reaches `EXCLKSRC` position 6 and is gated on `usbfs` rather than
+        // here — no block defines the position without the peripheral.
+        "g518x" => SysctlCaps {
+            shutdnstore: true,
+            hsclk_mux: true,
+            rstcause_wwdt1: true,
+            clkout_hfclk: true,
+            clkout_syspllclk1: true,
+            ..SysctlCaps::NONE
+        },
+
         other => panic!(
             "unknown SYSCTL version {other:?}: work out which RSTCAUSE.ID causes it defines, \
              whether it has SHUTDNSTORE, whether its TRM adds the USELFCLK step to STOP0 entry, \
@@ -290,7 +295,6 @@ fn sysctl_version_cfgs(cfgs: &mut CfgSet) {
         ("rstcause_flashecc", caps.rstcause_flashecc),
         ("mspm0_clkout_hfclk", caps.clkout_hfclk),
         ("mspm0_clkout_syspllclk1", caps.clkout_syspllclk1),
-        ("mspm0_exclksrc_mfclk_name", caps.exclksrc_mfclk_name),
     ] {
         cfgs.declare(cfg);
         if present {
