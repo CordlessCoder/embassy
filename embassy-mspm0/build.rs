@@ -6,7 +6,9 @@ use std::process::Command;
 use std::{env, fs};
 
 use common::CfgSet;
-use mspm0_metapac::metadata::{AdcInternalSource, METADATA, MemoryKind, OpaInput, Peripheral, PowerDomain, PowerMode};
+use mspm0_metapac::metadata::{
+    AdcInternalSource, CalibrationReference, METADATA, MemoryKind, OpaInput, Peripheral, PowerDomain, PowerMode,
+};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 
@@ -1775,8 +1777,65 @@ fn generate_adc_temp_sensor(cfgs: &mut CfgSet) -> TokenStream {
         quote! { impl_adc_temp_sensor!(#adc, #channel); }
     });
 
+    let constants = temp_sensor_constants();
+
     quote! {
         #(#impls)*
+        #constants
+    }
+}
+
+/// The five per-device figures that turn a temperature sensor reading into a temperature.
+///
+/// Stated only in the device's datasheet — no register or header carries them, and none of the three
+/// can be inferred from the others. The calibration reference in particular takes three different
+/// values across the portfolio and splits families that sit next to each other in the part numbering.
+///
+/// A device that routes the sensor to an ADC and states none of this fails the build. Reading the
+/// channel would still work and every temperature computed from it would be wrong, which is the
+/// failure this crate keeps meeting.
+fn temp_sensor_constants() -> TokenStream {
+    let sensor = METADATA.temperature_sensor.unwrap_or_else(|| {
+        panic!(
+            "{} routes its temperature sensor to an ADC but states no conversion constants",
+            METADATA.name
+        )
+    });
+
+    let trim_c = sensor.tstrim_c;
+    let slope_uv_per_c = sensor.tsc_uv_per_c;
+
+    // The datasheets state these separately and they are not the same condition: one is how long the
+    // sensor takes to settle, the other is the window the stored code was measured with, and only
+    // matching the second makes a live reading comparable with it. Sampling at the wider satisfies
+    // both, which is the figure a caller actually wants.
+    let settling_ns = option_u32(sensor.settling_ns);
+    let calibration_sample_ns = option_u32(sensor.calibration_sample_ns);
+    let recommended_ns = option_u32(match (sensor.settling_ns, sensor.calibration_sample_ns) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    });
+
+    let calibration_reference_mv: u32 = match sensor.calibration_reference {
+        CalibrationReference::Vdd => 3300,
+        CalibrationReference::Internal1V4 => 1400,
+        CalibrationReference::Internal4V05 => 4050,
+    };
+
+    quote! {
+        pub const TEMP_SENSOR_TRIM_C: i16 = #trim_c;
+        pub const TEMP_SENSOR_SLOPE_UV_PER_C: i32 = #slope_uv_per_c;
+        pub const TEMP_SENSOR_SETTLING_NS: Option<u32> = #settling_ns;
+        pub const TEMP_SENSOR_CALIBRATION_SAMPLE_NS: Option<u32> = #calibration_sample_ns;
+        pub const TEMP_SENSOR_RECOMMENDED_SAMPLE_NS: Option<u32> = #recommended_ns;
+        pub const TEMP_SENSOR_CALIBRATION_REFERENCE_MV: u32 = #calibration_reference_mv;
+    }
+}
+
+fn option_u32(value: Option<u32>) -> TokenStream {
+    match value {
+        Some(value) => quote! { Some(#value) },
+        None => quote! { None },
     }
 }
 

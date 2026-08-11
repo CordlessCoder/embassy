@@ -629,6 +629,104 @@ pub trait AdcChannel<T>: SealedAdcChannel<T> + Sized {
 #[cfg(adc_temp_sensor)]
 pub struct TempSensor;
 
+#[cfg(adc_temp_sensor)]
+impl TempSensor {
+    /// `TSTRIM`, the temperature the factory calibration was taken at.
+    ///
+    /// 30 on every device so far. Its own tolerance is the floor on absolute accuracy: the
+    /// datasheets specify the trim as having been taken somewhere in 27 to 33 degrees, and no
+    /// arithmetic here recovers that.
+    pub const TRIM_CELSIUS: i16 = crate::_generated::TEMP_SENSOR_TRIM_C;
+
+    /// `TSc`, the sensor's slope. Always negative: the output falls as the die warms.
+    pub const SLOPE_UV_PER_C: i32 = crate::_generated::TEMP_SENSOR_SLOPE_UV_PER_C;
+
+    /// `tSET,TS`, how long the sensor takes to settle once selected.
+    pub const SETTLING_NS: Option<u32> = crate::_generated::TEMP_SENSOR_SETTLING_NS;
+
+    /// The sample window the factory measurement itself used.
+    ///
+    /// Not always [`SETTLING_NS`](Self::SETTLING_NS), and the difference is the quiet one. "Long
+    /// enough for the sensor to settle" and "the window the stored code was taken with" are
+    /// different conditions, and only the second makes a live reading directly comparable with the
+    /// stored code. A window that settles but is shorter than the factory's reads plausibly and
+    /// drifts.
+    pub const CALIBRATION_SAMPLE_NS: Option<u32> = crate::_generated::TEMP_SENSOR_CALIBRATION_SAMPLE_NS;
+
+    /// The wider of the two windows above, which satisfies both. What to set the sample period from.
+    pub const RECOMMENDED_SAMPLE_NS: Option<u32> = crate::_generated::TEMP_SENSOR_RECOMMENDED_SAMPLE_NS;
+
+    /// The reference [`temp_calibration_code`] was measured against.
+    ///
+    /// Three values across the portfolio -- the supply, the 1.4 V internal reference, or the 4.05 V
+    /// one -- and it splits families that sit next to each other in the part numbering. Nominal for
+    /// the supply case: a board running off something other than 3.3 V has a trim voltage to match,
+    /// and only the application knows.
+    pub const CALIBRATION_REFERENCE_MV: u32 = crate::_generated::TEMP_SENSOR_CALIBRATION_REFERENCE_MV;
+
+    /// Convert a reading of this sensor to millidegrees Celsius.
+    ///
+    /// `reference_mv` is the reference **the conversion** ran against, which is not always the one
+    /// the factory used and is why this cannot be a one-argument call. For
+    /// [`Vrsel::VddaVssa`] it is the supply the board actually runs at; the driver has no way to
+    /// know that, and on a device calibrated against the supply a wrong value scales the answer.
+    ///
+    /// The calculation is SLAU846 equation 17, in integer arithmetic throughout. Both codes are
+    /// turned into voltages before being compared, which is what lets the two references differ.
+    ///
+    /// Within 0.04 degrees of exact arithmetic anywhere in -40 to 130 degrees, across every slope
+    /// and calibration reference in the portfolio. That is two orders of magnitude inside what the
+    /// trim's own 27-to-33-degree spread allows, so the fixed point is not what limits the answer.
+    pub fn celsius_millidegrees(code: u16, resolution: Resolution, reference_mv: u32) -> i32 {
+        let sample_uv = code_to_microvolts(code, resolution, reference_mv);
+        let trim_uv = code_to_microvolts(
+            temp_calibration_code(),
+            Resolution::Bits12,
+            Self::CALIBRATION_REFERENCE_MV,
+        );
+
+        // The reciprocal folds at compile time -- the slope is a constant, and dividing by it here
+        // would link a division routine on a core that has neither a divide instruction nor a
+        // widening multiply to build one from.
+        const MILLIDEGREES_PER_UV_Q12: i32 =
+            (1000i64 * 4096 / crate::_generated::TEMP_SENSOR_SLOPE_UV_PER_C as i64) as i32;
+
+        // Clamped so the multiply below cannot overflow whatever reference it was handed. The bound
+        // is several hundred degrees from the trim point, so it engages only on a reading that was
+        // already meaningless -- and clamping keeps that monotone where wrapping would not.
+        let delta_uv = (sample_uv as i32 - trim_uv as i32).clamp(-800_000, 800_000);
+        let offset_mc = delta_uv * MILLIDEGREES_PER_UV_Q12 >> 12;
+
+        Self::TRIM_CELSIUS as i32 * 1000 + offset_mc
+    }
+}
+
+/// The largest reference [`code_to_microvolts`] can be handed.
+///
+/// Twice the highest reference any MSPM0 has, and set by where the arithmetic below stops fitting in
+/// 32 bits rather than by anything electrical.
+#[cfg(adc_temp_sensor)]
+const MAX_REFERENCE_MV: u32 = 8000;
+
+/// An ADC code as microvolts, given the reference it was taken against.
+///
+/// Codes below 12 bits are shifted up rather than scaled, so one function serves the stored
+/// calibration code and a conversion at any resolution.
+///
+/// Panics above [`MAX_REFERENCE_MV`]. Callers pass a constant here in the ordinary case, and the
+/// check folds away with it.
+#[cfg(adc_temp_sensor)]
+fn code_to_microvolts(code: u16, resolution: Resolution, reference_mv: u32) -> u32 {
+    assert!(reference_mv <= MAX_REFERENCE_MV);
+
+    let code = (code as u32) << (12 - resolution.bits());
+
+    // `code * reference_mv * 1000 >> 12`, with the constants reduced so the product stays inside 32
+    // bits. Plain multiplies: a `saturating_mul` here is not free on this core, which detects the
+    // overflow with a widening multiply and links a 64-bit routine to do it.
+    code * reference_mv * 125 >> 9
+}
+
 /// Read this unit's temperature sensor calibration code from `FACTORYREGION.TEMP_SENSE0`.
 ///
 /// The code the factory measured from this device's own sensor at the trim temperature, as a 12-bit
