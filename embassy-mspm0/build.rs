@@ -7,7 +7,8 @@ use std::{env, fs};
 
 use common::CfgSet;
 use mspm0_metapac::metadata::{
-    AdcInternalSource, CalibrationReference, METADATA, MemoryKind, OpaInput, Peripheral, PowerDomain, PowerMode,
+    AdcInternalSource, CalibrationReference, IoStructure, METADATA, MemoryKind, OpaInput, Peripheral, PowerDomain,
+    PowerMode,
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
@@ -70,6 +71,7 @@ fn generate_code(cfgs: &mut CfgSet) {
 
     g.extend(generate_singletons(&singletons));
     g.extend(generate_pincm_mapping());
+    g.extend(generate_pins_without_pullup());
     g.extend(generate_pin());
     g.extend(generate_timers());
     g.extend(generate_basic_timers(cfgs));
@@ -999,6 +1001,30 @@ fn make_valid_identifier(s: &str) -> Singleton {
     let name = s.replace('+', "_P").replace("-", "_N");
 
     Singleton { name, cfg: None }
+}
+
+/// The PINCM indices of pins whose structure has no pullup.
+///
+/// Open drain is the only structure without one, and it is `PA0` and `PA1` on every family but the
+/// H321x, which has no open-drain pins at all. So this is two entries or none, and it exists to make
+/// `PIPU` on one of those pins a `debug_assert!` rather than a silent no-op.
+///
+/// Emitted unconditionally even when empty: an empty slice costs nothing in a release build, where
+/// the only thing that reads it compiles out.
+fn generate_pins_without_pullup() -> TokenStream {
+    let mut pincms: Vec<u8> = METADATA
+        .pins
+        .iter()
+        .filter(|mapping| mapping.structure == IoStructure::OpenDrain)
+        .map(|mapping| mapping.pincm - 1)
+        .collect();
+    pincms.sort_unstable();
+    pincms.dedup();
+
+    quote! {
+        /// PINCM indices whose IO structure implements no pullup.
+        pub const PINS_WITHOUT_PULLUP: &[u8] = &[#(#pincms),*];
+    }
 }
 
 fn generate_pincm_mapping() -> TokenStream {

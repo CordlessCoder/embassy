@@ -226,3 +226,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: mspm0/adc: correct the default sample window to 6.25 us, which clears every internal source except the temperature sensor
 - mspm0/adc: expose the internal temperature sensor as an ADC channel, with `temp_calibration_code()` for the per-unit factory trim value
 - mspm0/adc: `TempSensor` carries the device's temperature-sensor constants and converts a reading to millidegrees, the calibration reference being one of three across the portfolio
+- mspm0/gpio: `debug_assert!` that `Pull::Up` is not asked for on an open-drain pin, whose structure has no pullup and silently ignored it

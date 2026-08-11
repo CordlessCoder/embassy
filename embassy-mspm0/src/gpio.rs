@@ -71,10 +71,33 @@ impl From<Level> for bool {
 pub enum Pull {
     /// No pull.
     None,
+
     /// Internal pull-up resistor.
+    ///
+    /// **Not every pin has one.** The 5 V tolerant open-drain structure implements a pulldown and no
+    /// pullup, so `PIPU` on one of those pins is accepted, reads back, and does nothing — the pin
+    /// floats. That structure is `PA0` and `PA1` on every family except the H321x, which has no
+    /// open-drain pins at all.
+    ///
+    /// A `debug_assert!` catches it, so a debug build panics and a release build does not. The
+    /// choice is deliberate: a pin that cannot be pulled up is visible from the datasheet and is
+    /// normally settled when the schematic is drawn, so the cost of finding out belongs at
+    /// development time rather than in the field.
+    ///
+    /// An external pullup is the fix, and is what those pins expect — being 5 V tolerant, they are
+    /// meant for a bus that supplies its own.
     Up,
-    /// Internal pull-down resistor.
+
+    /// Internal pull-down resistor. Every structure has one.
     Down,
+}
+
+/// Whether `pincm`'s IO structure implements a pullup.
+///
+/// The table it reads exists only for the `debug_assert!` below, so both vanish in a release build.
+#[inline]
+fn has_pullup(pincm: u8) -> bool {
+    !crate::_generated::PINS_WITHOUT_PULLUP.contains(&pincm)
 }
 
 /// A GPIO bank with up to 32 pins.
@@ -138,8 +161,16 @@ impl<'d> Flex<'d, Async> {
 
 impl<'d, M: Mode> Flex<'d, M> {
     /// Set the pin's pull.
+    ///
+    /// Panics in a debug build if `pull` is [`Pull::Up`] on a pin that has no pullup — see that
+    /// variant for which pins those are and why this is not a release-build check.
     #[inline]
     pub fn set_pull(&mut self, pull: Pull) {
+        debug_assert!(
+            pull != Pull::Up || has_pullup(self.pin.pin_cm()),
+            "this pin's IO structure has no pullup, so Pull::Up would do nothing"
+        );
+
         let pincm = pac::IOMUX.pincm(self.pin.pin_cm() as usize);
 
         pincm.modify(|w| {
@@ -1575,6 +1606,11 @@ pub(crate) trait SealedPin {
 
 #[inline(never)]
 fn set_pf(pincm: usize, pf: u8, ty: PfType) {
+    debug_assert!(
+        ty.pull != Pull::Up || has_pullup(pincm as u8),
+        "this pin's IO structure has no pullup, so Pull::Up would do nothing"
+    );
+
     pac::IOMUX.pincm(pincm).modify(|w| {
         w.set_pf(pf);
         w.set_pc(true);
