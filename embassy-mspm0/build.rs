@@ -984,32 +984,54 @@ fn make_valid_identifier(s: &str) -> Singleton {
 }
 
 fn generate_pincm_mapping() -> TokenStream {
-    let pincms = METADATA.pins.iter().map(|mapping| {
-        let port_letter = mapping.pin.strip_prefix("P").unwrap();
-        let port_base = (port_letter.chars().next().unwrap() as u8 - b'A') * 32;
-        // This assumes all ports are single letter length.
-        // This is fine unless TI releases a part with 833+ GPIO pins.
-        let pin_number = mapping.pin[2..].parse::<u8>().unwrap();
+    let mut entries: Vec<(u8, u8)> = METADATA
+        .pins
+        .iter()
+        .map(|mapping| {
+            let port_letter = mapping.pin.strip_prefix("P").unwrap();
+            let port_base = (port_letter.chars().next().unwrap() as u8 - b'A') * 32;
+            // This assumes all ports are single letter length.
+            // This is fine unless TI releases a part with 833+ GPIO pins.
+            let pin_number = mapping.pin[2..].parse::<u8>().unwrap();
 
-        let num = port_base + pin_number;
+            // But subtract 1 since pincm indices start from 0, not 1.
+            (port_base + pin_number, mapping.pincm - 1)
+        })
+        .collect();
+    entries.sort_unstable();
 
-        // But subtract 1 since pincm indices start from 0, not 1.
-        let pincm = Literal::u8_unsuffixed(mapping.pincm - 1);
-        quote! {
-            #num => #pincm
-        }
-    });
+    let len = entries.last().map(|(num, _)| *num as usize + 1).unwrap_or(0);
+
+    // Dense, so `pin_port` indexes it directly. Gaps are pins the package does not bring out and are
+    // unreachable -- `SealedPin::pin_port` only ever yields a pin that exists.
+    let mut table = vec![0u8; len];
+    for (num, pincm) in entries {
+        table[num as usize] = pincm;
+    }
+    let table = table.iter().map(|v| Literal::u8_unsuffixed(*v));
+    let len = Literal::usize_unsuffixed(len);
 
     quote! {
-        #[doc = "Get the mapping from GPIO pin port to IOMUX PINCM index. This is required since the mapping from IO to PINCM index is not consistent across parts."]
+        /// Maps a pin's `port * 32 + bit` to its IOMUX `PINCM` index, which is not consistent across
+        /// parts.
+        ///
+        /// A table rather than a `match`, and that is load-bearing rather than stylistic. Written as a
+        /// `match` LLVM chooses between a lookup table and an inline switch, and the choice is not
+        /// stable: narrowing an unrelated field in a driver that stores pins was measured flipping it
+        /// from a **240-byte** `.rodata` table to **+384 bytes** of `movs`/branch pairs. Written this
+        /// way there is nothing to choose, and the table is one byte per pin rather than four.
+        ///
+        /// A `const` rather than a `static` so that a concrete pin, whose index is a constant, folds to
+        /// an immediate instead of loading; a run-time index still promotes to one shared anonymous
+        /// static.
+        const GPIO_PINCM: [u8; #len] = [#(#table),*];
+
+        #[doc = "Get the mapping from GPIO pin port to IOMUX PINCM index."]
         pub(crate) fn gpio_pincm(pin_port: u8) -> u8 {
-            match pin_port {
-                #(#pincms),*,
-                // SAFETY: every caller passes `SealedPin::pin_port`, which is a constant on a concrete
-                // pin and, on `AnyPin`, is guaranteed by `AnyPin::steal`'s contract to name a pin this
-                // chip has. The same contract already backs the unchecked waiter-list indexing.
-                _ => unsafe { core::hint::unreachable_unchecked() },
-            }
+            // SAFETY: every caller passes `SealedPin::pin_port`, which is a constant on a concrete pin
+            // and, on `AnyPin`, is guaranteed by `AnyPin::steal`'s contract to name a pin this chip
+            // has. The same contract already backs the unchecked waiter-list indexing.
+            unsafe { *GPIO_PINCM.get_unchecked(pin_port as usize) }
         }
     }
 }
