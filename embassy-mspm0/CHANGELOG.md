@@ -224,3 +224,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/adc: encode `Vrsel` through a match rather than its `repr`, and drop the run-time bounds check that could never fail
 - mspm0/dma: allow 128-bit transfers on the devices whose DMA implements them
 - docs: mspm0/adc: correct the default sample window to 6.25 us, which clears every internal source except the temperature sensor
+- mspm0/adc: expose the internal temperature sensor as an ADC channel, with `temp_calibration_code()` for the per-unit factory trim value

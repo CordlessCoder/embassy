@@ -81,6 +81,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_dma_channel_count(cfgs));
     g.extend(generate_adc_constants(cfgs));
     g.extend(generate_opa_adc_channels());
+    g.extend(generate_adc_temp_sensor(cfgs));
     g.extend(generate_trng_constants());
     g.extend(generate_vref_constants());
     g.extend(generate_flash_geometry());
@@ -1732,6 +1733,46 @@ fn generate_opa_adc_channels() -> TokenStream {
         let opa = format_ident!("{}", opa);
         let adc = format_ident!("{}", adc);
         quote! { impl_opa_adc_channel!(#opa, #adc, #channel); }
+    });
+
+    quote! {
+        #(#impls)*
+    }
+}
+
+/// The ADC channels the on-die temperature sensor is routed to.
+///
+/// One sensor, reachable from more than one ADC on a dual-ADC part and on a different channel from
+/// each — 11 from `ADC0` and 12 from `ADC1` on the G-series, 28 or 29 elsewhere. So this emits one
+/// impl per route and lets a single marker type carry them all, rather than picking a channel from
+/// the chip family.
+///
+/// A device with no route has no sensor, which is why absence is not an error here. That is the
+/// difference from the OPA above: an amplifier that reaches no ADC would be a metadata defect.
+fn generate_adc_temp_sensor(cfgs: &mut CfgSet) -> TokenStream {
+    cfgs.declare("adc_temp_sensor");
+
+    let routes: Vec<_> = METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.adc.map(|adc| (peripheral.name, adc)))
+        .flat_map(|(adc_name, adc)| {
+            adc.internal_channels
+                .iter()
+                .filter(|internal| matches!(internal.source, AdcInternalSource::TemperatureSensor))
+                .map(move |internal| (adc_name, internal.channel))
+        })
+        .collect();
+
+    if routes.is_empty() {
+        return quote! {};
+    }
+
+    cfgs.enable("adc_temp_sensor");
+
+    let impls = routes.iter().map(|(adc, channel)| {
+        let adc = format_ident!("{}", adc);
+        quote! { impl_adc_temp_sensor!(#adc, #channel); }
     });
 
     quote! {

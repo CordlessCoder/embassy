@@ -593,6 +593,73 @@ pub trait AdcChannel<T>: SealedAdcChannel<T> + Sized {
     }
 }
 
+/// The on-die temperature sensor, as an ADC channel.
+///
+/// The sensor needs no pin and nothing switches it on: it is wired to a fixed channel of every ADC
+/// that reaches it, and selecting that channel is the whole of using it. On a part with two ADCs it
+/// is the same sensor from either, on a different channel number, so this implements
+/// [`AdcChannel`] once per ADC and either reads it.
+///
+/// # It needs a longer sample window than the default
+///
+/// [`Config::sample_period_0`]'s default is around 6.25 us, and the datasheet's `tSET,TS` is the
+/// **minimum** sampling time for this channel -- 10 us on the L-series, 12.5 us on the G-series. A
+/// shorter window samples the capacitor before it has charged and reads low by a margin nothing
+/// reports. TI's own configuration for this measurement asks for 50 us.
+///
+/// # Turning a reading into a temperature
+///
+/// The driver hands back the ADC code and stops there, because the two constants needed are per
+/// device and stated only in its datasheet: `TSc`, the sensor's slope in mV/degC, and `TSTRIM`, the
+/// temperature the factory calibration was taken at. [`temp_calibration_code`] reads the third,
+/// which is per unit. The relation is SLAU846 equation 17.
+///
+/// # Which reference the calibration used is per device, and the datasheets are not reliable on it
+///
+/// The stored code only means a voltage once you know the reference it was taken against, and a
+/// conversion run against a different one has to be rescaled before the two codes can be compared.
+/// **The answer differs between families and one datasheet gives both answers**: the L-series states
+/// the 1.4 V internal reference in its specification table and VDD in its detailed description, and
+/// the G-series states VDD. Measured on an L1306, the specification table is the correct one there.
+///
+/// The device will tell you, and this is worth doing before trusting any absolute reading. Take
+/// [`temp_calibration_code`] and work out what voltage it stands for under each candidate reference:
+/// only one of them is a temperature sensor output, and the wrong choice is wrong by hundreds of
+/// degrees rather than by a few.
+#[cfg(adc_temp_sensor)]
+pub struct TempSensor;
+
+/// Read this unit's temperature sensor calibration code from `FACTORYREGION.TEMP_SENSE0`.
+///
+/// The code the factory measured from this device's own sensor at the trim temperature, as a 12-bit
+/// ADC result. It is what makes a reading absolute rather than relative: the slope is a family
+/// figure, the offset is per unit, and this is the offset.
+///
+/// See [`TempSensor`] for what else the conversion needs and which reference the value is against.
+#[cfg(adc_temp_sensor)]
+#[must_use]
+pub fn temp_calibration_code() -> u16 {
+    // Every one of TI's factory-constant accessors takes the read with the cache off and restores
+    // CPUSS.CTL after, which is the only statement anywhere of how this region wants to be read.
+    // `flash.rs` does the same for the geometry constants.
+    let saved = crate::pac::CPUSS.ctl().read();
+    let mut suspended = saved;
+    suspended.set_prefetch(false);
+    suspended.set_icache(false);
+    suspended.set_liten(false);
+    crate::pac::CPUSS.ctl().write_value(suspended);
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
+
+    // DATA is the whole word rather than a field within it, so there is nothing to mask off; what
+    // it holds is a 12-bit conversion result.
+    let code = crate::pac::FACTORYREGION.temp_sense0().read();
+
+    crate::pac::CPUSS.ctl().write_value(saved);
+
+    code as u16
+}
+
 // Impl details
 
 const ADC_VRSEL: u8 = crate::_generated::ADC_VRSEL;
@@ -971,6 +1038,17 @@ macro_rules! impl_adc_instance {
 
         impl crate::adc::Instance for crate::peripherals::$instance {
             type Interrupt = crate::interrupt::typelevel::$instance;
+        }
+    };
+}
+
+macro_rules! impl_adc_temp_sensor {
+    ($inst: ident, $ch: expr) => {
+        impl crate::adc::AdcChannel<peripherals::$inst> for crate::adc::TempSensor {}
+        impl crate::adc::SealedAdcChannel<peripherals::$inst> for crate::adc::TempSensor {
+            fn channel(&self) -> u8 {
+                $ch
+            }
         }
     };
 }
