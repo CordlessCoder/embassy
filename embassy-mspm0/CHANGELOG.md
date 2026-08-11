@@ -221,3 +221,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/flash: work out the sectors per bank without a 32-bit divide, saving 404 B in any binary that erases or writes
 - **breaking**: mspm0: `executor-thread` and `executor-interrupt` no longer imply `low-power` — the HAL's executor now idles on a guarded `WFI` without it, and enabling both is what reaches a deep-sleep mode
 - mspm0/opa: refuse at compile time to select a DAC12, DAC8 or `VREF+` input position the device's amplifier does not have, as `ground()` already did
+- mspm0/adc: encode `Vrsel` through a match rather than its `repr`, and drop the run-time bounds check that could never fail

@@ -144,10 +144,10 @@ impl SampleTimeComparator {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Vrsel {
     /// VDDA reference
-    VddaVssa = 0,
+    VddaVssa,
 
     /// External reference from pin
-    ExtrefVrefm = 1,
+    ExtrefVrefm,
 
     /// Internal reference
     ///
@@ -159,17 +159,39 @@ pub enum Vrsel {
     /// does not return until the reference has settled, and dropping it powers the reference down, so
     /// the borrow is what says the reference was up for the conversion. The 200 us that used to be
     /// documented here as a caller's delay is `Tstartup`, which is per device and spans 20x.
-    IntrefVssa = 2,
+    IntrefVssa,
 
     /// VDDA and VREFM connected to VREF+ and VREF- of ADC
     #[cfg(adc_neg_vref)]
-    VddaVrefm = 3,
+    VddaVrefm,
 
     /// INTREF and VREFM connected to VREF+ and VREF- of ADC
     ///
     /// Carries the same startup requirement as [`IntrefVssa`](Self::IntrefVssa).
     #[cfg(adc_neg_vref)]
-    IntrefVrefm = 4,
+    IntrefVrefm,
+}
+
+impl Vrsel {
+    /// The `MEMCTL.VRSEL` encoding.
+    ///
+    /// A match rather than a cast: the discriminants used to be written out and read back with
+    /// `as u8`, which made the `repr` load-bearing from a register write several hundred lines away.
+    ///
+    /// The two negative-reference selections exist only where `MEMCTL.VRSEL` is five wide, which is
+    /// the same condition `adc_neg_vref` is generated from — so every variant that compiles is one
+    /// this device has, and there is nothing left to check at run time.
+    const fn to_vals(self) -> vals::Vrsel {
+        match self {
+            Self::VddaVssa => vals::Vrsel::VddaVssa,
+            Self::ExtrefVrefm => vals::Vrsel::ExtrefVrefm,
+            Self::IntrefVssa => vals::Vrsel::IntrefVssa,
+            #[cfg(adc_neg_vref)]
+            Self::VddaVrefm => vals::Vrsel::VddaVrefm,
+            #[cfg(adc_neg_vref)]
+            Self::IntrefVrefm => vals::Vrsel::IntrefVrefm,
+        }
+    }
 }
 
 /// How many conversions the hardware averages into one result.
@@ -253,6 +275,26 @@ pub struct Config {
     pub sample_clk: SampleClock,
 
     /// Length of [`SampleTimeComparator::Scomp0`]'s sample period, in ADC sample clock cycles.
+    ///
+    /// The window has to charge the sampling capacitor through whatever the source impedance is, so
+    /// how long it needs is a property of what is being measured rather than of the ADC. In 12-bit
+    /// mode the datasheet asks for:
+    ///
+    /// | source | `tSample` |
+    /// |---|---|
+    /// | a pin, 50 ohm source | 156 ns |
+    /// | through an OPA, gain x1 | 0.31 us |
+    /// | through an OPA, gain x32 | 1.5 us |
+    /// | through the general-purpose amplifier | 2.5 us |
+    /// | the supply monitor | 3 us |
+    /// | the temperature sensor, to settle | 2.5 us typical, 10 us maximum |
+    ///
+    /// The default is fifty cycles, about 1.5 us on the clock tree this crate defaults to — ten times
+    /// what a low-impedance pin needs, and **short of every internal source in that table**. A higher
+    /// source impedance wants more too: 50 ohms is lower than most sensors.
+    ///
+    /// Two comparators exist so a sequence can mix them, taking the short window for the pins and the
+    /// long one for whatever needs it, rather than paying the longest for every conversion.
     //
     // Two fields rather than an array indexed by `SampleTimeComparator`: `Config` is taken by value
     // and an array field of it spills to the stack, which costs 48 bytes of flash in every binary
@@ -282,7 +324,16 @@ impl Default for Config {
         Self {
             resolution: Resolution::Bits12,
             sample_clk: SampleClock::Sysosc,
-            // TODO: What should these be by default?
+            // Fifty sample clocks, which at the 32 MHz SYSOSC this defaults to is about 1.5 us. The
+            // datasheet's `tSample` for 12-bit mode is 156 ns at a 50 ohm source, so this is roughly
+            // ten times the minimum -- margin worth having, because that figure assumes a source
+            // impedance almost nothing real has, and the window has to charge the sampling capacitor
+            // through whatever the input actually is.
+            //
+            // **It is not enough for any of the internal sources**, whose figures are far longer than
+            // an external pin's: 2.5 us through the general-purpose amplifier, 3 us for the supply
+            // monitor, and up to 10 us for the temperature sensor to settle. See
+            // [`Config::sample_period_0`].
             sample_period_0: NonZeroU16::new(50).unwrap(),
             sample_period_1: NonZeroU16::new(50).unwrap(),
             averaging: None,
@@ -547,6 +598,12 @@ pub trait AdcChannel<T>: SealedAdcChannel<T> + Sized {
 const ADC_VRSEL: u8 = crate::_generated::ADC_VRSEL;
 const ADC_MEMCTL: u8 = crate::_generated::ADC_MEMCTL;
 
+// What lets `Vrsel::to_vals` be a total match with no run-time bounds check: every variant that
+// compiles is one this device has. `adc_neg_vref` and this count come from the same metapac field, so
+// they cannot disagree today — this is what would notice if a variant were ever added without a `cfg`,
+// or if the field grew a third value.
+const _: () = core::assert!(ADC_VRSEL == if cfg!(adc_neg_vref) { 5 } else { 3 });
+
 impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
     fn setup(config: Config) {
         assert!(config.sample_period_0 <= Config::MAX_SAMPLE_PERIOD);
@@ -627,11 +684,6 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
     fn write_memctl(i: usize, ch: u8, conversion: Conversion) {
         let r = T::info().regs;
 
-        assert!(
-            (conversion.vrsel as u8) < ADC_VRSEL,
-            "Reference voltage selection out of bounds"
-        );
-
         // Read back rather than kept on the driver: the rate lives in `CTL1` from `Config`, and a
         // copy here could disagree with what is actually programmed.
         assert!(
@@ -641,8 +693,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
 
         r.memctl(i).write(|w| {
             w.set_chansel(ch);
-            // TODO: Conversion function to not be repr dependent
-            w.set_vrsel(vals::Vrsel::from_bits(conversion.vrsel as u8));
+            w.set_vrsel(conversion.vrsel.to_vals());
             w.set_stime(convert_stime(conversion.stime));
             w.set_avgen(conversion.average);
             w.set_bcsen(false);
