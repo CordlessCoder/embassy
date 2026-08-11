@@ -55,6 +55,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     peripheral_name_cfgs(cfgs);
     errata_cfgs(cfgs);
     sysctl_version_cfgs(cfgs);
+    sysctl_device_cfgs(cfgs);
     crc_version_cfgs(cfgs);
     let clock_tree = clock_tree_cfgs(cfgs);
 
@@ -171,6 +172,7 @@ const ERRATA_CFGS: &[&str] = &[
     "FLASH_ERR_06",
     "GPIO_ERR_01",
     "MATHACL_ERR_02",
+    "PMCU_ERR_03",
     "UART_ERR_03",
     "UART_ERR_08",
     "VREF_ERR_01",
@@ -236,6 +238,32 @@ impl SysctlCaps {
         clkout_syspllclk1: false,
         flash_bank_swap: false,
     };
+}
+
+/// Emit a cfg for the parts of SYSCTL that only the device metadata can answer.
+///
+/// Separate from [`sysctl_version_cfgs`] because these are not properties of the register block: two
+/// devices sharing a SYSCTL differ here, which is exactly why the block cannot be asked.
+fn sysctl_device_cfgs(cfgs: &mut CfgSet) {
+    cfgs.declare_all(&["mspm0_bor_warning_levels", "mspm0_bor_sleep_guard"]);
+
+    let sysctl = METADATA
+        .peripherals
+        .iter()
+        .find_map(|peripheral| peripheral.sysctl)
+        .unwrap_or_else(|| panic!("{} has no SYSCTL metadata", METADATA.name));
+
+    if sysctl.bor_warning_levels {
+        cfgs.enable("mspm0_bor_warning_levels");
+    }
+
+    // Whether `low_power::sleep` has to save and restore the level. Emitted as one cfg because the
+    // three conditions behind it are checked at five sites, and `PMCU_ERR_03` on a device with no
+    // warning level to lose is not a combination worth spelling out five times. The feature implies
+    // the device has them -- `lib.rs` refuses the pair otherwise.
+    if env::var_os("CARGO_FEATURE_BOR_WARNING").is_some() && METADATA.has_erratum("PMCU_ERR_03") {
+        cfgs.enable("mspm0_bor_sleep_guard");
+    }
 }
 
 /// Emit a cfg for the parts of SYSCTL that only the register block can answer.

@@ -164,6 +164,19 @@ swd-pins-as-gpio = []
 ## wake, so there is no duration to gate on.
 low-power = []
 
+## Let the brown-out supervisor's warning levels be selected, adding `sysctl::BorThreshold` and its two
+## functions.
+##
+## Off by default because it is not free where it is used. `low_power::sleep` has to put the level back
+## after a deep sleep on the families carrying `PMCU_ERR_03`, and it cannot tell from the code whether
+## an application ever raised one — the level lives in a register a public function may have written —
+## so the check stays in the sleep path. That is ~100 bytes on an affected part, spent for nothing by
+## the applications that leave the supervisor where it boots, which is most of them.
+##
+## A device with only the reset level (the MSPM0H321x) rejects this feature at build time rather than
+## offering warning levels it does not implement.
+bor-warning = []
+
 executor-thread = ["_executor"]
 
 executor-interrupt = ["_executor"]

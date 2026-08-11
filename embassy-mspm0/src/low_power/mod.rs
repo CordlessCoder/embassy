@@ -145,6 +145,7 @@ pub unsafe fn sleep(cs: CriticalSection) {
         }
         Some(level) => {
             trace!("Low-power sleep allowed, mode: {:?}", level);
+            let _bor = BorSuspend::new(level);
             enter_sleep(cs, inner::level_to_mode(level));
         }
     }
@@ -184,6 +185,73 @@ pub fn shutdown(_cs: CriticalSection) -> ! {
     // so it can fall through with a probe attached. Ask again rather than assume it slept.
     loop {
         cortex_m::asm::wfi();
+    }
+}
+
+/// Workaround for `PMCU_ERR_03` — the brown-out supervisor's warning levels do not work in STANDBY,
+/// and a supply passing one there does not reset the device properly.
+///
+/// The errata sheet's own workaround: go back to the reset level before entering STANDBY, and put the
+/// warning level back on the way out. Doing it here rather than leaving it to the caller is what makes
+/// it reliable — the failure is a brown-out that does not reset, which nothing reports and no test
+/// finds by accident.
+///
+/// Costs nothing unless it is doing something. A caller that never raised the threshold, which is
+/// every application until one asks for a warning level, takes one register read and no delay. Where
+/// it does act it spends the change time twice, about 30 us against a wake path measured in tens —
+/// that is the price of the feature, paid only by the applications that want it.
+#[cfg(mspm0_bor_sleep_guard)]
+struct BorSuspend(Option<crate::sysctl::BorThreshold>);
+
+#[cfg(mspm0_bor_sleep_guard)]
+impl BorSuspend {
+    fn new(level: SleepLevel) -> Self {
+        // Only STANDBY. The advisory names it and no other mode, and the supervisor is documented as
+        // running normally in STOP -- dropping the warning level there would give up the feature for
+        // a reason that does not apply.
+        if level < SleepLevel::Standby0 {
+            return Self(None);
+        }
+
+        // What the application asked for, which the hardware keeps even after a warning has fired and
+        // dropped the *active* level. Restoring the active level would re-arm nothing.
+        let asked = pac::SYSCTL.borthreshold().read().level();
+
+        if asked == crate::sysctl::BorThreshold::Bor0 as u8 {
+            return Self(None);
+        }
+
+        crate::sysctl::program_bor_threshold(crate::sysctl::BorThreshold::Bor0);
+        crate::sysctl::bor_settle();
+
+        Self(Some(match asked {
+            1 => crate::sysctl::BorThreshold::Bor1,
+            2 => crate::sysctl::BorThreshold::Bor2,
+            _ => crate::sysctl::BorThreshold::Bor3,
+        }))
+    }
+}
+
+#[cfg(mspm0_bor_sleep_guard)]
+impl Drop for BorSuspend {
+    fn drop(&mut self) {
+        // Not waited out: see `program_bor_threshold`. The interim state is the reset level.
+        if let Some(threshold) = self.0 {
+            crate::sysctl::program_bor_threshold(threshold);
+        }
+    }
+}
+
+/// The brown-out supervisor needs nothing done around sleep here — the `bor-warning` feature is off,
+/// so no warning level can have been selected, or `PMCU_ERR_03` does not apply to this device.
+#[cfg(not(mspm0_bor_sleep_guard))]
+struct BorSuspend;
+
+#[cfg(not(mspm0_bor_sleep_guard))]
+impl BorSuspend {
+    #[inline(always)]
+    fn new(_level: SleepLevel) -> Self {
+        Self
     }
 }
 

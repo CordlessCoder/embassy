@@ -23,6 +23,16 @@ cortex-m-rt = { version = "0.7.0"}
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
 
+# `bor` is the only binary that selects a brown-out warning level, and the feature it needs is not
+# free: on this part it puts a save/restore into every deep-sleep entry. Left off the crate so the
+# wake-latency binaries here keep measuring a sleep path with nothing extra in it.
+[features]
+bor-warning = ["embassy-mspm0/bor-warning"]
+
+[[bin]]
+name = "bor"
+required-features = ["bor-warning"]
+
 [profile.release]
 # Matches what actually gets flashed. Without these a release build has no LTO and
 # `opt-level = 3`, which is roughly 3x larger and makes size comparisons meaningless.

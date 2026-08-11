@@ -70,6 +70,13 @@ pub mod mode {
     impl Mode for Async {}
 }
 
+#[cfg(all(feature = "bor-warning", not(mspm0_bor_warning_levels)))]
+compile_error!(
+    "`bor-warning` is on for a device whose brown-out supervisor has only the reset level. Its \
+     datasheet publishes no VBOR1-VBOR3, so the upper `BORTHRESHOLD.LEVEL` encodings arm nothing. \
+     Drop the feature: BOR0 still resets the device, which is all this part offers."
+);
+
 #[cfg(all(feature = "_time-driver", not(feature = "rt")))]
 compile_error!(
     "a `time-driver-*` feature needs `rt`. The time driver installs its own interrupt handler, and \

@@ -451,6 +451,161 @@ impl MaybeWakeGuard {
     }
 }
 
+/// The brown-out supervisor's threshold.
+///
+/// Needs the `bor-warning` feature: selecting a level is not free in the sleep path, so an
+/// application that leaves the supervisor where it boots should not carry it.
+///
+/// `Bor0` is the reset threshold and is always the floor: a `BOR0-` violation resets the device
+/// whatever this says. The other three sit *above* it and change what happens in the band between —
+/// the supervisor raises an interrupt instead of resetting, which is an early warning that the
+/// supply is sagging rather than a second reset level. SLAU847's fault table puts it plainly: a
+/// `BOR0-` supply error generates a BOR, a `BOR1/2/3-` supply error generates a `BORLVL` interrupt.
+///
+/// The voltages are per device. The datasheet's supply-monitor table is keyed on these names.
+///
+/// # The warning is an NMI, and an unhandled one hangs
+///
+/// `BORLVL` arrives as a **non-maskable** interrupt in SYSCTL's NMI registers. Two consequences a
+/// caller has to plan for:
+///
+/// - It is not held off by a critical section, so it can arrive in the middle of one.
+/// - An application with no `NonMaskableInt` handler gets `cortex-m-rt`'s default, which is an
+///   endless loop. **Arming a warning level without a handler turns a supply dip into a hang** —
+///   and the device stays there until the supply falls far enough for `BOR0-` to reset it, or does
+///   not.
+///
+/// Arm one only alongside a handler that does something useful with it: park the outputs, flush what
+/// has to survive, and let the reset come.
+///
+/// **A warning level is one-shot.** When a `BOR1-`, `BOR2-` or `BOR3-` violation raises its
+/// interrupt the supervisor drops itself back to `Bor0`, so that a further fall still resets the
+/// device. Re-arming is another [`set_bor_threshold`] call, which is also what clears the violation.
+///
+/// The supervisor runs in RUN, SLEEP, STOP and STANDBY, and is disabled by SHUTDOWN.
+///
+/// # Errata
+/// - `SYSCTL_ERR_11` (L110x/L13xx) — with the frequency correction loop enabled and the device in
+///   RUN2 or SLEEP2, a warning level produces an unexpected BOR *reset* followed by the NMI. Both are
+///   clock-tree choices the HAL fixes per binary rather than something a driver can guard, so it is
+///   the caller's to avoid: do not combine a warning level with FCL in those modes.
+///
+#[cfg(feature = "bor-warning")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum BorThreshold {
+    /// Reset on a `BOR0-` violation. The level every device boots at.
+    #[default]
+    Bor0,
+
+    /// Interrupt on a `BOR1-` violation; reset still at `BOR0-`.
+    Bor1,
+
+    /// Interrupt on a `BOR2-` violation; reset still at `BOR0-`.
+    Bor2,
+
+    /// Interrupt on a `BOR3-` violation; reset still at `BOR0-`.
+    Bor3,
+}
+
+#[cfg(feature = "bor-warning")]
+impl BorThreshold {
+    const fn to_bits(self) -> u8 {
+        self as u8
+    }
+
+    const fn from_active(active: vals::Borcurthreshold) -> Self {
+        match active {
+            vals::Borcurthreshold::Borlevel1 => BorThreshold::Bor1,
+            vals::Borcurthreshold::Borlevel2 => BorThreshold::Bor2,
+            vals::Borcurthreshold::Borlevel3 => BorThreshold::Bor3,
+            // `Bormin` and the reserved encodings. Reporting the reset level for one that should not
+            // occur is the safe direction: it is what the hardware falls back to.
+            _ => BorThreshold::Bor0,
+        }
+    }
+}
+
+/// The threshold the supervisor is enforcing now.
+///
+/// Not necessarily the one last asked for — a warning level disarms itself when it fires.
+#[cfg(feature = "bor-warning")]
+pub fn bor_threshold() -> BorThreshold {
+    BorThreshold::from_active(pac::SYSCTL.sysstatus().read().borcurthreshold())
+}
+
+/// Ask the supervisor for `threshold`, and report whether it took.
+///
+/// The change is not immediate. SLAU847 §2.2.3.2 gives it about 15 us, **during which the supervisor
+/// is blind to the supply**, so this waits that out and then reads back what became active. A
+/// mismatch is returned rather than ignored: asking for a warning level while the supply is already
+/// below it leaves the supervisor at [`BorThreshold::Bor0`], and a caller that assumed otherwise
+/// would be waiting for a warning that cannot arrive.
+///
+/// This also clears any recorded violation, which is what re-arms a warning level that has fired.
+///
+/// # Errata
+/// - `PMCU_ERR_03` (L110x/L13xx revisions C and D) — the warning levels do not work in STANDBY, and
+///   a device passing one there does not reset properly. [`low_power::sleep`](crate::low_power::sleep)
+///   handles it: it drops to [`BorThreshold::Bor0`] before entering STANDBY and restores the asked-for
+///   level on wake, so a caller does not have to know.
+#[cfg(feature = "bor-warning")]
+pub fn set_bor_threshold(threshold: BorThreshold) -> Result<(), BorThreshold> {
+    program_bor_threshold(threshold);
+    bor_settle();
+
+    match bor_threshold() {
+        active if active == threshold => Ok(()),
+        active => Err(active),
+    }
+}
+
+/// Ask for `threshold` without waiting for it.
+///
+/// Split from the wait because the two directions do not need the same thing. Going *down* to the
+/// reset level has to be complete before anything depends on it, so the sleep path waits. Coming back
+/// *up* does not: until the change lands the supervisor is still at the reset level, which is the
+/// safer of the two, and a wake path measured in tens of microseconds should not spend fifteen of
+/// them re-arming a warning.
+#[cfg(feature = "bor-warning")]
+pub(crate) fn program_bor_threshold(threshold: BorThreshold) {
+    let sysctl = pac::SYSCTL;
+
+    sysctl.borthreshold().write(|w| w.set_level(threshold.to_bits()));
+    sysctl.borclrcmd().write(|w| {
+        w.set_key(vals::BorclrcmdKey::Key);
+        w.set_go(true);
+    });
+}
+
+/// Wait out a threshold change.
+///
+/// Nothing reports the transit — `BORCURTHRESHOLD` reads the old level until it reads the new one, so
+/// polling it cannot tell "not yet" from "refused" and a poll on a refused change never ends.
+#[cfg(feature = "bor-warning")]
+pub(crate) fn bor_settle() {
+    cortex_m::asm::delay(bor_change_cycles(clocks().mclk));
+}
+
+/// Cycles covering the threshold change at `mclk`.
+#[cfg(feature = "bor-warning")]
+const fn bor_change_cycles(mclk: u32) -> u32 {
+    // 15 us, from SLAU847 §2.2.3.2, as `mclk / (1e9 / 15_000)`. Kept in `u32`: the obvious
+    // `mclk * 15_000 / 1e9` needs 64 bits, which on this core is a call to `__aeabi_lmul` and another
+    // to `__aeabi_uldivmod` -- measured at 132 B for this one function, and it would link the 64-bit
+    // divider into low-power binaries that carry no other reason for it.
+    mclk.div_ceil(66_667)
+}
+
+#[cfg(feature = "bor-warning")]
+const _: () = {
+    core::assert!(bor_change_cycles(32_000_000) == 480);
+    core::assert!(bor_change_cycles(80_000_000) == 1_200);
+    // Never zero, however slow the clock, or the change would be read back before it started.
+    core::assert!(bor_change_cycles(32_768) == 1);
+    core::assert!(bor_change_cycles(1) == 1);
+};
+
 /// Highest frequency MCLK may run at on this chip.
 pub const MAX_MCLK_HZ: u32 = crate::_generated::MAX_MCLK_HZ;
 

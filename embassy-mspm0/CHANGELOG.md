@@ -192,3 +192,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0: update mspm0-metapac, which adds the flash geometry and sector-protection widths per device
 - feat: mspm0/flash: add a FLASHCTL driver over MAIN flash, implementing the `embedded-storage` traits
 - mspm0: update mspm0-metapac, which says per device whether the brown-out supervisor has the warning levels at all
+- feat: mspm0/sysctl: add `BorThreshold`, `set_bor_threshold` and `bor_threshold` behind the new `bor-warning` feature, so the brown-out supervisor's warning levels can be used at all
+- fix: mspm0/low-power: restore the brown-out warning level across deep sleep on the families carrying `PMCU_ERR_03`, where it does not work in STANDBY
+
