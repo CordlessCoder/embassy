@@ -20,10 +20,12 @@
 
 use core::convert::Infallible;
 #[cfg(feature = "rt")]
-use core::future::{Future, poll_fn};
+use core::future::Future;
 use core::marker::PhantomData;
 #[cfg(feature = "rt")]
-use core::task::{Poll, Waker};
+use core::marker::PhantomPinned;
+#[cfg(feature = "rt")]
+use core::task::{Context, Poll, Waker};
 
 use embassy_hal_internal::{Peri, PeripheralType, impl_peripheral};
 
@@ -343,6 +345,7 @@ impl<'d, M: Mode> Flex<'d, M> {
 #[cfg(feature = "rt")]
 impl<'d> Flex<'d, Async> {
     /// Wait until the pin is high. If it is already high, return immediately.
+    ///
     #[inline]
     pub async fn wait_for_high(&mut self) {
         if self.is_high() {
@@ -350,7 +353,11 @@ impl<'d> Flex<'d, Async> {
         }
 
         // Not `wait_for_rising_edge`: this promises a level, so the wait has to survive the pin going
-        // high between the test above and the edge detector being armed. `park` re-tests it there.
+        // high between the test above and the edge detector being armed. `Park` re-tests it there.
+        //
+        // Testing it in `Park` instead, which would make this a plain `fn`, was measured and is not
+        // worth it: the test cannot fold away for the edge waits sharing that future, so it costs
+        // 40 bytes in every binary that only waits on edges to save 44 in one that waits on a level.
         self.wait_inner(Edge::Rising, Some(true)).await
     }
 
@@ -382,12 +389,13 @@ impl<'d> Flex<'d, Async> {
         self.wait_inner(Edge::Any, None)
     }
 
-    async fn wait_inner(&mut self, edge: Edge, settled_high: Option<bool>) {
-        // Not armed here: `park` arms from inside its first poll, where the waker exists, so that the
+    fn wait_inner(&mut self, edge: Edge, settled_high: Option<bool>) -> Park {
+        // Described here, armed from inside the first poll, where the waker exists — so that the
         // registration and the unmask are one critical section and no edge can land between them.
-        let arm = EdgeArm::new(self.pin.block(), self.pin.pin_port(), edge, settled_high);
-
-        park(&arm).await;
+        Park {
+            arm: EdgeArm::new(self.pin.block(), self.pin.pin_port(), edge, settled_high),
+            _pin: PhantomPinned,
+        }
     }
 }
 
@@ -404,14 +412,29 @@ impl<'d> Flex<'d, Async> {
 /// below takes its edge with it and the wait would otherwise block for a second one that may never come.
 /// Re-testing the level immediately after arming closes that window: either the edge is still to come
 /// and the wait proceeds, or the level is already there and the wait is over.
+///
+/// **Not `async fn` and not a `poll_fn`.** [`EdgeArm::arm`] publishes the address of a field of `arm`
+/// into the port's waiter list, so this future may not move between its first poll and its drop.
+/// Written as a generator that guarantee came free, at the price of a discriminant, a resume switch and
+/// a nested future; written as a `poll_fn` owning the arm it would be lost, `PollFn` being `Unpin`
+/// whenever its closure is. [`PhantomPinned`] is what states it instead.
 #[cfg(feature = "rt")]
-fn park(arm: &EdgeArm) -> impl Future<Output = ()> {
-    let mut armed = false;
+struct Park {
+    arm: EdgeArm,
+    _pin: PhantomPinned,
+}
 
-    poll_fn(move |cx| {
-        if !armed {
+#[cfg(feature = "rt")]
+impl Future for Park {
+    type Output = ();
+
+    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        // SAFETY: nothing below moves out of the future or hands out a `&mut` that could, so the
+        // address `arm` publishes stays the address it keeps until `EdgeArm::drop` withdraws it.
+        let arm = unsafe { &mut self.get_unchecked_mut().arm };
+
+        if !arm.armed {
             arm.arm(cx.waker());
-            armed = true;
 
             if let Some(high) = arm.settled_high {
                 if arm.is_high() == high {
@@ -435,7 +458,7 @@ fn park(arm: &EdgeArm) -> impl Future<Output = ()> {
         }
 
         Poll::Pending
-    })
+    }
 }
 
 /// Adapts an infallible wait to the `Result` `embedded_hal_async` asks for.
@@ -509,9 +532,15 @@ struct EdgeArm {
     port: u8,
     /// The level a level wait is settling for, or [`None`] for an edge wait.
     ///
-    /// Here rather than in [`park`]'s future because `bit` and `port` leave padding before `waiter`,
-    /// so this rides along free; in the future it grew the task frame for every edge wait too.
+    /// Here rather than in [`Park`] because `bit` and `port` leave padding before `waiter`, so this
+    /// rides along free; in the future it grew the task frame for every edge wait too.
     settled_high: Option<bool>,
+    /// Whether [`EdgeArm::arm`] has run, which is what [`Park`] tests to tell its first poll from the
+    /// rest and what [`EdgeArm::drop`] tests to tell whether there is anything to undo.
+    ///
+    /// A `Park` is built before it is polled and may be dropped without ever being, so the drop cannot
+    /// assume the pin was ever unmasked. Same padding as `settled_high`.
+    armed: bool,
     waiter: Waiter<EdgeWait>,
 }
 
@@ -540,6 +569,7 @@ impl EdgeArm {
             bit: pin_port % 32,
             port: pin_port / 32,
             settled_high,
+            armed: false,
             waiter: Waiter::new(EdgeWait {
                 bit: pin_port % 32,
                 edge,
@@ -589,10 +619,11 @@ impl EdgeArm {
     ///
     /// The order inside matters in one place: the unmask is last, so the waiter is reachable and the
     /// waker is stored before any edge can be reported.
-    fn arm(&self, waker: &Waker) {
+    fn arm(&mut self, waker: &Waker) {
         // Before the section: a `Waker`'s clone is someone else's code, and it has no business running
         // with interrupts off.
         let parked = waker.clone();
+        self.armed = true;
 
         let polarity = if DETECT_BOTH_EDGES {
             Polarity::RiseFall
@@ -655,6 +686,12 @@ fn _assert_edge_waits_are_send(pin: &mut Flex<'static, Async>) {
 #[cfg(feature = "rt")]
 impl Drop for EdgeArm {
     fn drop(&mut self) {
+        // A wait built and dropped without ever being polled has nothing to undo, and clearing the
+        // pin's status here would throw away an edge the pin is not even unmasked for.
+        if !self.armed {
+            return;
+        }
+
         critical_section::with(|cs| {
             self.block.fastwake().modify(|w| w.set_din(self.bit(), false));
             self.block.cpu_int().imask().modify(|w| w.set_dio(self.bit(), false));
