@@ -48,11 +48,26 @@ they link **no logger at all**:
 DEFMT_LOG=off cargo build --release --features bench --bin wake_edge
 ```
 
-The `DEFMT_LOG=off` is not optional for these two. Every other binary here links `defmt-rtt`, whose
-buffer is a kilobyte of RAM and whose encoder runs inside a critical section — and a probe attached to
-drain it holds the device out of the idle being measured. Keeping the logger out is most of what makes
-them measurements. Flash them with `probe-rs download` and start them with `probe-rs reset`, so nothing
-stays attached while they run.
+Keeping the logger out is most of what makes them measurements: `defmt-rtt`'s buffer is a kilobyte of
+RAM, its encoder runs inside a critical section, and a probe attached to drain it holds the device out
+of the idle being measured. Flash them with `probe-rs download` and start them with `probe-rs reset`,
+so nothing stays attached while they run.
+
+**Two separate things keep it out, and only one of them removes the kilobyte.** Not importing
+`defmt-rtt` is what drops the transport — the ring buffer, the control block and the encoder.
+`DEFMT_LOG=off` only compiles out the call sites, and it is needed here because the HAL's own logging
+is enabled in this crate and would otherwise want a global logger that these binaries do not provide.
+Setting the environment variable without dropping the import gets you a binary that logs nothing and
+still spends the kilobyte.
+
+Check the binary rather than the build command, because the failure is silent in the direction that
+looks fine:
+
+```
+llvm-nm --defined-only --print-size target/thumbv6m-none-eabi/release/wake_edge | grep BUFFER
+```
+
+Nothing on these two. Every other binary here answers with a 0x400-byte `defmt_rtt::BUFFER`.
 
 | Example | What it measures | Needs |
 |---|---|---|
