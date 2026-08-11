@@ -217,7 +217,7 @@ impl<'d, T: Instance> Vref<'d, T> {
     fn wait_until_settled() {
         // `STAT.READY` is stuck set from a previous enable on this device, so it cannot be asked. The
         // wait is derived from MCLK because it is a CPU-cycle delay, and MCLK is the CPU clock in RUN.
-        let cycles = startup_cycles(crate::sysctl::clocks().mclk);
+        let cycles = crate::sysctl::with_clocks(|clocks| startup_cycles(clocks.mclk));
         cortex_m::asm::delay(cycles);
     }
 
@@ -249,16 +249,24 @@ impl<'d, T: Instance> Drop for Vref<'d, T> {
 ///
 /// Split out so the arithmetic is checked rather than inlined into a delay call: at 80 MHz the 200 us
 /// placeholder is 16,000 cycles, which is well inside a `u32` but not inside a `u16`.
+///
+/// Whole microseconds times cycles per microsecond. The exact form needs 64 bits, and a 64-bit
+/// divide on this core is over a kilobyte of `compiler_builtins`. Splitting MCLK into whole
+/// megahertz and the remainder keeps every divisor constant and the arithmetic in 32 bits, at the
+/// cost of rounding the figure up to a whole microsecond. Saturating, because a wrapped product
+/// would hand the reference over early.
+///
+/// **The remainder is what makes this usable below 1 MHz.** Rounding MCLK up to whole megahertz
+/// instead turns the 200 us startup into 6.1 ms on an LFCLK-sourced MCLK, which is the tree a
+/// low-power application picks.
 #[cfg(vref_err_01)]
 const fn startup_cycles(mclk: u32) -> u32 {
-    let mclk = if mclk == 0 { 1 } else { mclk };
+    let us = STARTUP_NS.div_ceil(1_000);
+    let cycles = us
+        .saturating_mul(mclk / 1_000_000)
+        .saturating_add(us.saturating_mul(mclk % 1_000_000).div_ceil(1_000_000));
 
-    // `mclk / 1_000_000 * STARTUP_NS / 1000` regrouped to keep it exact without overflowing: MCLK is
-    // at most 80 MHz, so `mclk / 1000` is at most 80,000 and the product at most 16 billion — which is
-    // why it is done in `u64`.
-    let cycles = (mclk as u64 * STARTUP_NS as u64).div_ceil(1_000_000_000);
-
-    if cycles == 0 { 1 } else { cycles as u32 }
+    if cycles == 0 { 1 } else { cycles }
 }
 
 // A factor-of-1000 slip in `startup_cycles` is the one error here that no test would catch: too large
@@ -268,14 +276,21 @@ const fn startup_cycles(mclk: u32) -> u32 {
 // Written against `STARTUP_NS` rather than against its value, because that value is per device now — an
 // earlier version pinned 6400 cycles at 32 MHz, which was right for the 200 us part it was written on
 // and failed to build on the 15 us one.
+//
+// Bounds rather than equalities, because the rounding above is deliberate: what has to hold is that
+// the count covers the figure, and that a unit slip still shows.
 #[cfg(vref_err_01)]
 const _: () = {
     // At 1 GHz a cycle is a nanosecond, so the conversion is the identity and any unit slip shows here.
-    core::assert!(startup_cycles(1_000_000_000) == STARTUP_NS);
-    // Rounds up rather than truncating, and never waits zero cycles.
-    core::assert!(startup_cycles(1) == 1);
+    core::assert!(startup_cycles(1_000_000_000) >= STARTUP_NS);
+    core::assert!(startup_cycles(1_000_000_000) < STARTUP_NS + 1_000);
+    // Never waits zero cycles, however slow the clock.
+    core::assert!(startup_cycles(1) >= 1);
     // A clock this actually runs at, against the arithmetic done the other way round.
-    core::assert!(startup_cycles(32_000_000) == (STARTUP_NS as u64 * 32 / 1000) as u32);
+    core::assert!(startup_cycles(32_000_000) >= (STARTUP_NS as u64 * 32 / 1000) as u32);
+    // A sub-megahertz MCLK is exact rather than rounded to the next whole megahertz, which would
+    // have waited 28 times too long on an LFCLK-sourced tree.
+    core::assert!(startup_cycles(32_768) == (STARTUP_NS.div_ceil(1_000) * 32_768).div_ceil(1_000_000));
 };
 
 #[allow(private_bounds)]

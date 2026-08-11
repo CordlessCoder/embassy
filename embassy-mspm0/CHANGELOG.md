@@ -214,3 +214,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/adc: read a single channel without building a sequence for it, saving 136 B in any binary that reads one
 - mspm0/adc: derive the sample-clock registers through one helper, saving 180 B in a binary with two ADCs
 - mspm0/opa: read the one clock rate it needs in place, saving 688 B in a binary that builds a second amplifier
+- mspm0/vref: read the clock rate in place and time the startup wait in 32-bit arithmetic
