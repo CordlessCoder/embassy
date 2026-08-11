@@ -119,9 +119,14 @@ const _: () = {
     core::assert!(calc_now::<u32>(1, 0xFFFF_FFFF) == 0x0_FFFF_FFFF);
     core::assert!(calc_now::<u32>(2, 0x0000_0000) == 0x1_0000_0000);
 
-    // The arming threshold is one and a half periods, whatever the width.
-    core::assert!(3u64 << (16 - 2) == 0xC000);
-    core::assert!(3u64 << (32 - 2) == 0xC000_0000);
+    // The arming threshold is one and a half periods, whatever the width. Clippy folds both sides of
+    // these two and reports them as the same expression, which is what an assertion pinning an
+    // arithmetic identity looks like from the outside.
+    #[allow(clippy::eq_op, clippy::assertions_on_constants)]
+    {
+        core::assert!(3u64 << (16 - 2) == 0xC000);
+        core::assert!(3u64 << (32 - 2) == 0xC000_0000);
+    }
 };
 
 /// `embassy-time`'s clock, kept by a timer counting half its range at a time.
