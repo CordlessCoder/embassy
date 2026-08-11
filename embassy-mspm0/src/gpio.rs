@@ -248,7 +248,24 @@ impl<'d, M: Mode> Flex<'d, M> {
         });
     }
 
-    // TODO: drive strength, hysteresis, wakeup enable, wakeup compare
+    // Four `PINCM` fields are still unexposed, and none of them is the ordinary pin setting it looks
+    // like. SLAU846 table 8-1 gives the features per IO structure, and they do not overlap:
+    //
+    // - `DRV`, drive strength, exists only on the high-drive and high-speed types. The TRM is explicit
+    //   that "drive strength control is not available for standard drive and open drain IO types".
+    // - `HYSTEN`, hysteresis, exists only on the 5 V tolerant open-drain type, and on nothing else.
+    // - `WUEN`/`WCOMP`, the wake logic, is on the two "with wake" variants, high-drive and open drain.
+    //   `build.rs` already generates `impl_wake_capable_pin!` for this one, from the metadata's
+    //   `io_wakeup`, so it is the only one of the four whose capability is answerable today.
+    //
+    // Writing any of them on a pin whose structure lacks it is accepted and does nothing, which is the
+    // failure this crate keeps meeting: a setting that silently is not applied reads as a working
+    // configuration. So the first three want the pin's IO structure in the device metadata, which the
+    // pinned revision does not carry -- `Pin` has `pin`, `pincm` and `wakeup` and no type. Raised as a
+    // metapac request rather than guessed at from a pin-name list.
+    //
+    // The same table says the open-drain type has no pullup at all, which `Pull` does not know either.
+    // Worth checking against a device that has such pins before treating it as a defect.
 
     /// Put the pin into the PF mode, unchecked.
     ///
