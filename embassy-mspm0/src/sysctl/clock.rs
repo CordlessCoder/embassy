@@ -694,6 +694,7 @@ impl Config {
 }
 
 impl Default for Config {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -816,9 +817,21 @@ impl ClockSetup {
     }
 }
 
-impl Default for ClockSetup {
-    fn default() -> Self {
+impl ClockSetup {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Config::new().build()
+    }
+}
+
+impl Default for ClockSetup {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

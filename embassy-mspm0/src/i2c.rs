@@ -247,8 +247,13 @@ pub struct Config {
     pub clock_low_timeout_us: Option<u32>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
             clock_source: ClockSel::MfClk,
             clock_div: ClockDiv::DivBy1,
@@ -260,6 +265,13 @@ impl Default for Config {
             bus_speed: BusSpeed::Standard,
             clock_low_timeout_us: None,
         }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

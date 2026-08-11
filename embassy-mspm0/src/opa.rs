@@ -107,13 +107,25 @@ pub struct Config {
     pub chopping: Chopping,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
             gain_bandwidth: GainBandwidth::High,
             rail_to_rail_input: true,
             chopping: Chopping::Disabled,
         }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

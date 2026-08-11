@@ -355,14 +355,26 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
             timeout: Timeout::Sec1,
             closed_window: ClosedWindowPercentage::Zero,
             // The hardware default, and the only one that still guards a sleeping device.
             stop_in_sleep: false,
         }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

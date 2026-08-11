@@ -222,15 +222,25 @@ impl ReferenceSource {
 }
 
 /// Which terminal the reference is applied to.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ReferenceTerminal {
     /// The reference is the threshold a rising input crosses from below.
-    #[default]
     Negative,
 
     /// The reference is the threshold a falling input crosses from above.
     Positive,
+}
+
+impl ReferenceTerminal {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::Negative;
+}
+
+impl Default for ReferenceTerminal {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// An 8-bit DAC code.
@@ -312,14 +322,26 @@ pub struct Reference {
     pub sampled: bool,
 }
 
-impl Default for Reference {
-    fn default() -> Self {
+impl Reference {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
             source: ReferenceSource::Vdda,
-            terminal: ReferenceTerminal::default(),
+            terminal: ReferenceTerminal::DEFAULT,
             code: DacCode::ZERO,
             sampled: false,
         }
+    }
+}
+
+impl Default for Reference {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

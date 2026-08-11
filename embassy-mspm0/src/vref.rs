@@ -120,8 +120,13 @@ pub enum ClockSel {
     LfClk,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
             // The reset value, and the one an ADC measuring against a 3.3 V rail usually wants.
             voltage: Voltage::Volts2_5,
@@ -129,6 +134,13 @@ impl Default for Config {
             // deep sleep has to say so.
             clock: ClockSel::BusClk,
         }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

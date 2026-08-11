@@ -70,14 +70,26 @@ pub struct Config {
     pub free_run_in_debug: bool,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
-            clock: ClockSel::default(),
+            clock: ClockSel::DEFAULT,
             divider: 1,
             prescaler: 1,
             free_run_in_debug: false,
         }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

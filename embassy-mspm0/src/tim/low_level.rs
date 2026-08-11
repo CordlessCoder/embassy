@@ -25,15 +25,25 @@ pub enum ConfigError {
 }
 
 /// What the counter does when it is enabled.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CounterOnEnable {
     /// Restart from the beginning of the period.
-    #[default]
     Reset,
 
     /// Carry on from the current counter value, so `stop` then `start` resumes.
     Preserve,
+}
+
+impl CounterOnEnable {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::Reset;
+}
+
+impl Default for CounterOnEnable {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// Timer configuration.
@@ -61,16 +71,28 @@ pub struct Config {
     pub free_run_in_debug: bool,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
-            clock: ClockSel::default(),
+            clock: ClockSel::DEFAULT,
             divider: 1,
             prescaler: 1,
-            counting_mode: CountingMode::default(),
-            counter_on_enable: CounterOnEnable::default(),
+            counting_mode: CountingMode::DEFAULT,
+            counter_on_enable: CounterOnEnable::DEFAULT,
             free_run_in_debug: false,
         }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

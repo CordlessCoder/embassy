@@ -380,14 +380,18 @@ pub struct Config {
     pub min_sleep: embassy_time::Duration,
 }
 
-impl Default for Config {
+impl Config {
+    /// The reset configuration, usable in a `const`.
     // A hundred bytes of `Clocks` and clock configuration is past what LLVM will inline at
     // `opt-level = "z"`, so without this the tree arrives at `init` through memory and stops being a
     // constant. Everything downstream then stays a run-time decision: the rates land in a static, and
     // with them which `WakeGuard` a driver takes and which sleep modes `enter_sleep` has to be able
     // to program. Worth up to 364 bytes of flash and 52 of RAM.
-    #[inline(always)]
-    fn default() -> Self {
+    ///
+    /// A `const` is what makes that certain. The attribute below asks the optimiser for the same
+    /// thing and has been enough so far, but it is a heuristic over a struct whose size is exactly
+    /// what defeats it; `const CONFIG: Config = Config::new()` cannot be defeated.
+    pub const fn new() -> Self {
         Self {
             vboost: sysctl::Vboost::OnDemand,
             clock: sysctl::clock::RESET_SETUP,
@@ -396,6 +400,13 @@ impl Default for Config {
             #[cfg(all(feature = "low-power", feature = "_time-driver"))]
             min_sleep: low_power::DEFAULT_MIN_SLEEP,
         }
+    }
+}
+
+impl Default for Config {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

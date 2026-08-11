@@ -365,11 +365,23 @@ pub struct TransferOptions {
     // TODO: Read and write stride.
 }
 
-impl Default for TransferOptions {
-    fn default() -> Self {
+impl TransferOptions {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
             mode: TransferMode::Single,
         }
+    }
+}
+
+impl Default for TransferOptions {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

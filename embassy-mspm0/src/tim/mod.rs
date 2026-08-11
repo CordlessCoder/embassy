@@ -170,7 +170,7 @@ impl TimerChannel for CompCh3 {
 }
 
 /// Clock source for the timer.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ClockSel {
     /// 32.768 kHz, the only source that keeps counting in STANDBY.
@@ -180,8 +180,18 @@ pub enum ClockSel {
     MfClk,
 
     /// The power domain's bus clock: MCLK in PD1, ULPCLK in PD0. Stops in any deep-sleep mode.
-    #[default]
     BusClk,
+}
+
+impl ClockSel {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::BusClk;
+}
+
+impl Default for ClockSel {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl ClockSel {
@@ -200,11 +210,10 @@ impl ClockSel {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CountingMode {
     /// The timer counts up to the reload value and then resets back at 0.
-    #[default]
     EdgeAlignedUp,
 
     /// The timer counts down to 0 and then resets back to the load value.
@@ -214,19 +223,40 @@ pub enum CountingMode {
     CenterAligned,
 }
 
+impl CountingMode {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::EdgeAlignedUp;
+}
+
+impl Default for CountingMode {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Which way an edge-aligned counter runs.
 ///
 /// The drivers that cannot express [`CountingMode::CenterAligned`] take this instead, so the mode they
 /// reject is not representable.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CountingDirection {
     /// Count up from zero.
-    #[default]
     Up,
 
     /// Count down from the load value.
     Down,
+}
+
+impl CountingDirection {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::Up;
+}
+
+impl Default for CountingDirection {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl CountingDirection {

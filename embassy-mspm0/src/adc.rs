@@ -253,14 +253,21 @@ pub struct Conversion {
     // TODO: BCS, TRIG, WINCOMP
 }
 
-impl Default for Conversion {
-    #[inline]
-    fn default() -> Self {
+impl Conversion {
+    /// The default conversion, usable in a `const`.
+    pub const fn new() -> Self {
         Self {
             vrsel: Vrsel::VddaVssa,
             stime: SampleTimeComparator::Scomp0,
             average: false,
         }
+    }
+}
+
+impl Default for Conversion {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -320,8 +327,13 @@ impl Config {
     pub const MAX_SAMPLE_PERIOD: NonZeroU16 = NonZeroU16::new((1 << 9) - 1).unwrap();
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// The reset-ish default, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. A `const` is what makes the folding certain rather than
+    /// dependent on this being inlined, which at `opt-level = "z"` has already failed once on a
+    /// struct this size.
+    pub const fn new() -> Self {
         Self {
             resolution: Resolution::Bits12,
             sample_clk: SampleClock::Sysosc,
@@ -338,6 +350,13 @@ impl Default for Config {
             sample_period_1: NonZeroU16::new(50).unwrap(),
             averaging: None,
         }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
