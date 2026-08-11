@@ -217,3 +217,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/vref: read the clock rate in place and time the startup wait in 32-bit arithmetic
 - mspm0/comp: read the clock rate in place and time the settling waits in 32-bit arithmetic, saving 2264 B in a binary that builds a comparator
 - mspm0/comp: compute a DAC code from millivolts without a 64-bit divide, saving 1004 B in a caller that asks at run time
+- docs: mspm0/tim: say that a live `SimplePwm` holds the chip out of deep sleep unless its clock survives one — the default clock does not

@@ -39,6 +39,9 @@ pub struct Config {
     pub counting_mode: CountingMode,
 
     /// Clock source driving the counter.
+    ///
+    /// This decides what the output survives. The default stops in every deep-sleep mode, and a live
+    /// driver holds the chip out of them — see [`SimplePwm`]'s own docs.
     pub clock: crate::tim::ClockSel,
 
     /// Divider applied to the clock source, 1 to 8.
@@ -158,6 +161,24 @@ pub struct PwmPins<'d, T: Instance> {
 ///
 /// **Do not "improve" this to `align(4)`.** That was measured too and brings the `memcpy` back — twelve
 /// bytes is over the threshold again. More alignment is worse here, which is not what anyone guesses.
+///
+/// # A live `SimplePwm` blocks deep sleep unless it is clocked to survive one
+///
+/// The counter stops in any mode its clock stops in, so the driver holds a [`WakeGuard`] for as long
+/// as it exists, keeping the chip shallower than that. A `SimplePwm` built once and never dropped
+/// holds that guard for the life of the program.
+///
+/// [`ClockSel::BusClk`] is the default and stops in every deep-sleep mode, so **the default
+/// configuration pins the device out of all of them**. Two LEDs on a PWM are enough to do it, and
+/// nothing reports it — the output looks right and the only symptom is the current.
+///
+/// [`ClockSel::LfClk`] on an instance that keeps counting in STANDBY1 takes no guard at all, and the
+/// waveform runs through the sleep. Which instances those are is per device, and
+/// `low_level::sleep_floor` is what answers it — it returns `None` for exactly that case.
+///
+/// [`WakeGuard`]: crate::sysctl::WakeGuard
+/// [`ClockSel::BusClk`]: crate::tim::ClockSel::BusClk
+/// [`ClockSel::LfClk`]: crate::tim::ClockSel::LfClk
 ///
 /// # What the instance parameter costs, and why erasing it is not the obvious win
 ///
