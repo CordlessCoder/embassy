@@ -219,6 +219,41 @@ impl FifoThreshold {
     }
 }
 
+/// How the line rate reaches the hardware.
+///
+/// One value rather than a rate and an optional override, because only one of those two was ever
+/// read: a pre-solved divider won and the rate beside it was ignored, with nothing to say so.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum BaudRate {
+    /// Solve for this rate on the device.
+    ///
+    /// **Not free.** The search divides, so it pulls in the 32-bit division and long-multiply
+    /// helpers a core with no divider needs: measured at `opt-level = "z"` with fat LTO, the same
+    /// program costs **664 bytes of flash and 40 of RAM more** than one handing a divider over.
+    /// That is a fifth of a small binary, and none of it is reachable once the rate is known up
+    /// front.
+    Rate(u32),
+
+    /// Apply a divider solved ahead of time, skipping the search.
+    ///
+    /// Build one with [`Baud::solve`] in a `const` when the clock and the rate are both known at
+    /// compile time.
+    Solved(Baud),
+}
+
+impl From<u32> for BaudRate {
+    fn from(rate: u32) -> Self {
+        Self::Rate(rate)
+    }
+}
+
+impl From<Baud> for BaudRate {
+    fn from(baud: Baud) -> Self {
+        Self::Solved(baud)
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// How a [`Uart`] drives its line.
@@ -236,22 +271,8 @@ pub struct Config {
     /// UART clock source.
     pub clock_source: ClockSel,
 
-    /// Baud rate.
-    ///
-    /// Ignored when [`Self::baud`] carries a pre-solved divider.
-    pub baudrate: u32,
-
-    /// A divider solved ahead of time, skipping the search on the device.
-    ///
-    /// Build one with [`Baud::solve`] in a `const` when the clock and baud rate are both known at
-    /// compile time, Leave as [`None`] to solve at runtime from [`Self::baudrate`].
-    ///
-    /// **Leaving it `None` is not free.** The search divides, so it pulls in the 32-bit division and
-    /// long-multiply helpers a core with no divider needs: measured at `opt-level = "z"` with fat LTO,
-    /// the same program costs **664 bytes of flash and 40 of RAM more** when it lets the divider be
-    /// searched for than when it hands one over. That is a fifth of a small binary, and none of it is
-    /// reachable once the rate is known up front.
-    pub baud: Option<Baud>,
+    /// The line rate, either as a number to solve for or as a divider already solved.
+    pub baud: BaudRate,
 
     /// Number of data bits.
     pub data_bits: DataBits,
@@ -317,9 +338,9 @@ pub struct Config {
 impl Config {
     /// Use a divider solved ahead of time, skipping the search on the device.
     ///
-    /// [`Self::baudrate`] is ignored once this is set.
+    /// Replaces whatever [`Self::baud`] held, rate or divider, since it is one or the other.
     pub const fn with_baud(mut self, baud: Baud) -> Self {
-        self.baud = Some(baud);
+        self.baud = BaudRate::Solved(baud);
         self
     }
 }
@@ -328,8 +349,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             clock_source: ClockSel::MfClk,
-            baudrate: 115200,
-            baud: None,
+            baud: BaudRate::Rate(115200),
             data_bits: DataBits::DataBits8,
             stop_bits: StopBits::Stop1,
             parity: Parity::ParityNone,
@@ -1074,7 +1094,6 @@ fn configure(
     // read folding, including the one deciding whether the baud search is reachable.
     let &Config {
         clock_source,
-        baudrate,
         baud,
         data_bits,
         stop_bits,
@@ -1196,8 +1215,8 @@ fn configure(
     // A pre-solved divider skips the search entirely, which is what keeps the software divider out
     // of the binary when the clock and baud rate are both compile-time constants.
     match baud {
-        Some(baud) => baud.apply(info.regs),
-        None => set_baudrate_inner(info.regs, clock, baudrate)?,
+        BaudRate::Solved(baud) => baud.apply(info.regs),
+        BaudRate::Rate(rate) => set_baudrate_inner(info.regs, clock, rate)?,
     }
 
     r.ctl0().modify(|w| {

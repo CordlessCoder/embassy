@@ -1,0 +1,38 @@
+thread 'main' panicked at src/tools/rustfmt/src/source_map.rs:31:13:
+bad span: `macro_rules!`: `macro_rules ! __mspm0_vectors_group0 { (WWDT0 $ ($ rest : tt) *) => { # [allow (non_snake_case)] # [unsafe (no_mangle)] unsafe extern "C" fn GROUP0 () { $ crate :: _group_demux :: group0 () ; } } ; (WWDT1 $ ($ rest : tt) *) => { # [allow (non_snake_case)] # [unsafe (no_mangle)] unsafe extern "C" fn GROUP0 () { $ crate :: _group_demux :: group0 () ; } } ; (DEBUGSS $ ($ rest : tt) *) => { # [allow (non_snake_case)] # [unsafe (no_mangle)] unsafe extern "C" fn GROUP0 () { $ crate :: _group_demux :: group0 () ; } } ; (FLASHCTL $ ($ rest : tt) *) => { # [allow (non_snake_case)] # [unsafe (no_mangle)] unsafe extern "C" fn GROUP0 () { $ crate :: _group_demux :: group0 () ; } } ; (SYSCTL $ ($ rest : tt) *) => { # [allow (non_snake_case)] # [unsafe (no_mangle)] unsafe extern "C" fn GROUP0 () { $ crate :: _group_demux :: group0 () ; } } ; ($ other : tt $ ($ rest : tt) *) => { $ crate :: __mspm0_vectors_group0 ! ($ ($ rest) *) ; } ; () => { } ; }`
+stack backtrace:
+   0:     0x7f80540e4545 - <std[8adf1e0a8fdad74e]::backtrace::Backtrace>::create
+   1:     0x7f80540e4495 - <std[8adf1e0a8fdad74e]::backtrace::Backtrace>::force_capture
+   2:     0x7f8053053dee - std[8adf1e0a8fdad74e]::panicking::update_hook::<alloc[9e757d82aeab4d68]::boxed::Box<rustc_driver_impl[64fa20c1c6c1d0c7]::install_ice_hook::{closure#1}>>::{closure#0}
+   3:     0x7f80540fa372 - std[8adf1e0a8fdad74e]::panicking::panic_with_hook
+   4:     0x7f80540d9272 - std[8adf1e0a8fdad74e]::panicking::panic_handler::{closure#0}
+   5:     0x7f80540d0409 - std[8adf1e0a8fdad74e]::sys::backtrace::__rust_end_short_backtrace::<std[8adf1e0a8fdad74e]::panicking::panic_handler::{closure#0}, !>
+   6:     0x7f80540dac4d - __rustc[921b188eb83a821]::rust_begin_unwind
+   7:     0x7f8050ce3b8c - core[f9b16b9dc2e8e3d7]::panicking::panic_fmt
+   8:     0x55e734d315be - <rustfmt_nightly[b091d890d2e52c23]::visitor::SnippetProvider as rustfmt_nightly[b091d890d2e52c23]::source_map::SpanUtils>::span_after::{closure#0}
+   9:     0x55e734dbcf4b - rustfmt_nightly[b091d890d2e52c23]::macros::rewrite_macro_def
+  10:     0x55e734d3ac53 - <rustfmt_nightly[b091d890d2e52c23]::visitor::FmtVisitor>::visit_item
+  11:     0x55e734d83966 - <rustfmt_nightly[b091d890d2e52c23]::visitor::FmtVisitor>::visit_items_with_reordering
+  12:     0x55e734d3fa20 - <rustfmt_nightly[b091d890d2e52c23]::visitor::FmtVisitor>::walk_mod_items
+  13:     0x55e734cb262a - <scoped_tls[83572d244c562f9b]::ScopedKey<rustc_span[7878bc114b1648f5]::SessionGlobals>>::with::<<rustfmt_nightly[b091d890d2e52c23]::Session<std[8adf1e0a8fdad74e]::io::stdio::Stdout>>::format_input_inner::{closure#0}, core[f9b16b9dc2e8e3d7]::result::Result<rustfmt_nightly[b091d890d2e52c23]::FormatReport, rustfmt_nightly[b091d890d2e52c23]::ErrorKind>>
+  14:     0x55e734cac7af - rustfmt[38dffbda7532d1b1]::format_and_emit_report::<std[8adf1e0a8fdad74e]::io::stdio::Stdout>
+  15:     0x55e734cc1dce - rustfmt[38dffbda7532d1b1]::execute
+  16:     0x55e734cbd16a - rustfmt[38dffbda7532d1b1]::main
+  17:     0x55e734cbb41b - std[8adf1e0a8fdad74e]::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18:     0x55e734cbbc19 - std[8adf1e0a8fdad74e]::rt::lang_start::<()>::{closure#0}
+  19:     0x7f8055aa2d13 - std[8adf1e0a8fdad74e]::rt::lang_start_internal
+  20:     0x55e734ccc218 - main
+  21:     0x7f804ee27c8e - futex_wake
+                               at /usr/src/debug/glibc/glibc/csu/../sysdeps/nptl/futex-internal.h:193:3
+  22:     0x7f804ee27c8e - __libc_start_call_main
+                               at /usr/src/debug/glibc/glibc/csu/../sysdeps/nptl/libc_start_call_main.h:75:7
+  23:     0x7f804ee27dcb - call_init
+                               at /usr/src/debug/glibc/glibc/csu/../csu/libc-start.c:144:34
+  24:     0x7f804ee27dcb - __libc_start_main_impl
+                               at /usr/src/debug/glibc/glibc/csu/../csu/libc-start.c:347:5
+  25:     0x55e734ba96f9 - <unknown>
+  26:                0x0 - <unknown>
+
+
+rustc version: 1.99.0-nightly (969b803cb 2026-08-09)
+platform: x86_64-unknown-linux-gnu
