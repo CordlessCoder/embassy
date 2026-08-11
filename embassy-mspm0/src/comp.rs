@@ -263,10 +263,14 @@ impl DacCode {
         }
 
         // Inverting `mv = ref * (n + 1) / 256` gives `n = mv * 256 / ref - 1`, rounded to nearest by
-        // adding half a step before the division. Done in `u64` because `mv * 512` overflows `u32`
-        // above about 8.4 V — which no supply here reaches, but the guard costs nothing at compile
-        // time and the alternative is a silent wrap if it ever does.
-        let scaled = (millivolts as u64 * 512 + reference_mv as u64) / (reference_mv as u64 * 2);
+        // adding half a step before the division. All of it fits `u32`: `mv * 512` needs more only
+        // above 8388 V. Saturating rather than `u64`, which would be a 64-bit divide by a run-time
+        // divisor and over a kilobyte of `compiler_builtins` in any caller that does not fold — and
+        // an over-range request saturates to `FULL_SCALE`, which is what the doc above promises.
+        let scaled = millivolts
+            .saturating_mul(512)
+            .saturating_add(reference_mv)
+            .saturating_div(reference_mv.saturating_mul(2));
 
         match scaled {
             0 => Self::ZERO,

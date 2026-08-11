@@ -216,3 +216,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/opa: read the one clock rate it needs in place, saving 688 B in a binary that builds a second amplifier
 - mspm0/vref: read the clock rate in place and time the startup wait in 32-bit arithmetic
 - mspm0/comp: read the clock rate in place and time the settling waits in 32-bit arithmetic, saving 2264 B in a binary that builds a comparator
+- mspm0/comp: compute a DAC code from millivolts without a 64-bit divide, saving 1004 B in a caller that asks at run time
