@@ -491,10 +491,16 @@ impl ChannelState {
 ///
 /// Changing the burst size mid transfer may have some odd behavior.
 pub(crate) unsafe fn init(_cs: CriticalSection, burst_size: BurstSize, round_robin: bool) {
-    pac::DMA.prio().modify(|prio| {
-        prio.set_burstsz(convert_burst_size(burst_size));
-        prio.set_roundrobin(round_robin);
-    });
+    // Reset leaves fixed priority and an uninterrupted block transfer, which is what `Config`
+    // defaults to, so a program that leaves it there has nothing to program. Folds away entirely
+    // when the config is a constant.
+    if !matches!(burst_size, BurstSize::Complete) || round_robin {
+        pac::DMA.prio().modify(|prio| {
+            prio.set_burstsz(convert_burst_size(burst_size));
+            prio.set_roundrobin(round_robin);
+        });
+    }
+
     pac::DMA.int_event(0).imask().modify(|w| {
         w.set_dataerr(true);
         w.set_addrerr(true);
