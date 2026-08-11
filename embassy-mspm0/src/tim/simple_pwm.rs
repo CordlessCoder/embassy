@@ -268,7 +268,6 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         Ok(this)
     }
 
-
     /// Let the counter run, driving every configured output.
     pub fn start(&mut self) {
         self.timer.start();
@@ -582,7 +581,7 @@ mod tests {
 /// Takes the register block rather than `&mut SimplePwm<T>` so that one copy serves every timer
 /// instance. See the note on [`SimplePwm`] about what a type parameter costs here.
 fn setup_channel(r: Tim, channel: Channel, counting_mode: CountingMode) {
-let n = channel.index();
+    let n = channel.index();
 
     r.counterregs(0).ccctl(n).modify(|w| w.set_coc(Coc::Compare));
 
