@@ -2261,16 +2261,21 @@ impl<'d> I2c<'d, Async> {
 }
 
 impl<'d> embedded_hal_async::i2c::I2c for I2c<'d, Async> {
-    async fn read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Self::Error> {
-        self.async_read(address, read).await
+    fn read(&mut self, address: u8, read: &mut [u8]) -> impl Future<Output = Result<(), Self::Error>> {
+        self.async_read(address, read)
     }
 
-    async fn write(&mut self, address: u8, write: &[u8]) -> Result<(), Self::Error> {
-        self.async_write(address, write).await
+    fn write(&mut self, address: u8, write: &[u8]) -> impl Future<Output = Result<(), Self::Error>> {
+        self.async_write(address, write)
     }
 
-    async fn write_read(&mut self, address: u8, write: &[u8], read: &mut [u8]) -> Result<(), Self::Error> {
-        self.async_write_read(address, write, read).await
+    fn write_read(
+        &mut self,
+        address: u8,
+        write: &[u8],
+        read: &mut [u8],
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        self.async_write_read(address, write, read)
     }
 
     async fn transaction(
@@ -2283,16 +2288,21 @@ impl<'d> embedded_hal_async::i2c::I2c for I2c<'d, Async> {
 }
 
 impl<'d> embedded_hal_async::i2c::I2c<embedded_hal::i2c::TenBitAddress> for I2c<'d, Async> {
-    async fn read(&mut self, address: u16, read: &mut [u8]) -> Result<(), Self::Error> {
-        self.async_read(Address::TenBit(address), read).await
+    fn read(&mut self, address: u16, read: &mut [u8]) -> impl Future<Output = Result<(), Self::Error>> {
+        self.async_read(Address::TenBit(address), read)
     }
 
-    async fn write(&mut self, address: u16, write: &[u8]) -> Result<(), Self::Error> {
-        self.async_write(Address::TenBit(address), write).await
+    fn write(&mut self, address: u16, write: &[u8]) -> impl Future<Output = Result<(), Self::Error>> {
+        self.async_write(Address::TenBit(address), write)
     }
 
-    async fn write_read(&mut self, address: u16, write: &[u8], read: &mut [u8]) -> Result<(), Self::Error> {
-        self.async_write_read(Address::TenBit(address), write, read).await
+    fn write_read(
+        &mut self,
+        address: u16,
+        write: &[u8],
+        read: &mut [u8],
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        self.async_write_read(Address::TenBit(address), write, read)
     }
 
     async fn transaction(
