@@ -1126,7 +1126,11 @@ impl<'d> MaybeAnyPin<'d> {
     }
 
     /// Borrow the pin for a shorter lifetime, as `Peri::reborrow` does.
+    ///
+    /// Only the DMA and buffered-UART drivers split a driver in two, and a UNICOMM device has
+    /// neither, so on those there is no caller.
     #[inline]
+    #[cfg_attr(unicomm, allow(dead_code))]
     pub(crate) fn reborrow(&mut self) -> MaybeAnyPin<'_> {
         MaybeAnyPin {
             pin_port: self.pin_port,
