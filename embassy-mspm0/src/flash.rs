@@ -474,6 +474,10 @@ fn unprotect(r: Regs, address: u32) {
     // moves with it.
     let physical = physical_sector(sector, sectors);
 
+    // Unreachable where `WEPROTA_SECTORS` is zero, because the guard above has already returned --
+    // which is a device with no `CMDWEPROTA` at all, and clippy reads the comparison as always false
+    // without following the early return that makes it moot.
+    #[allow(clippy::absurd_extreme_comparisons)]
     if physical < WEPROTA_SECTORS {
         r.cmdweprota().modify(|w| w.0 &= !(1 << physical));
         return;
