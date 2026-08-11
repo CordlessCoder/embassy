@@ -26,3 +26,36 @@ This means for a part such as `MSPM0G3507SPMR`, the feature name is `mspm0g3507p
 ## Interoperability
 
 This crate can run on any executor.
+
+## Idling on MSPM0 needs the prefetcher suspended
+
+**`CPU_ERR_03` applies to every chip this crate supports.** The instruction prefetcher can fetch all
+zeros when the device enters a low-power mode with a prefetch pending, and the advisory is written
+against low-power modes rather than only the deep ones — plain `SLEEP`, which is what a bare `WFI` or
+`WFE` enters, is in scope. It names the case that matters most: "a HW Event wake is another example of
+a process that will wake the device, but not flush the prefetcher."
+
+The workaround is to disable the prefetcher across the sleep, and **`embassy-executor`'s own Cortex-M
+executor does not do it** — it idles on `WFE` with the prefetcher running. Nothing in this crate can
+detect that: Cargo tells a build script nothing about a dependency's features, so there is no way to
+warn you at build time.
+
+So if the idle matters, use this crate's executor:
+
+```toml
+embassy-mspm0 = { version = "0.1.0", features = ["executor-thread", ...] }
+```
+
+```rust,ignore
+#[embassy_executor::main(executor = "embassy_mspm0::executor::Executor", entry = "cortex_m_rt::entry")]
+```
+
+It suspends the prefetcher across every idle. Measured on one application that is **eight bytes** of
+flash over the unguarded one. Add `low-power` on top and the idle also reaches a deep-sleep mode; leave
+it off and it is a plain, guarded `WFI`. Under RTIC, call `low_power::sleep` from `#[idle]` for the
+same thing.
+
+**Whether the erratum bites in practice is not established here.** The corruption needs the prefetched
+zeros to survive the wake, and an interrupt handler running from flash is likely to overwrite them,
+which is the likeliest reason nobody has reported it. That is an argument about probability, not a
+guarantee, and it has not been tested on silicon either way.
