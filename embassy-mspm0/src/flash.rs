@@ -83,26 +83,6 @@ pub const SECTOR_SIZE: usize = FLASH_SECTOR_SIZE as usize;
 /// wider command rather than a wider word — its datasheet still states a 64-bit flash word.
 pub const WORD_SIZE: usize = 8;
 
-/// `CMDCTL` as every command wants it, written before each one.
-///
-/// The TRM warns that the boot configuration routine may leave the command registers somewhere other
-/// than their reset values, so a command is built from a known state rather than from whatever the
-/// last caller left. Everything not set here is zero, which selects hardware address translation and
-/// so makes `CMDADDR` a system address.
-///
-/// **The two that are set reset that way, and writing a bare zero here is a trap.** They are what
-/// applies further pulses until the cells read back what was asked for. SLAU847 heads the register
-/// with a reset of zero and its own field table gives these two a reset of one; taking the header at
-/// its word would leave every word and sector programmed to whatever a single pulse achieved, with
-/// nothing reporting it. TI's driverlib never writes `CMDCTL` at all, which is how it steps around
-/// the same hole.
-const CMDCTL: regs::Cmdctl = {
-    let mut ctl = regs::Cmdctl(0);
-    ctl.set_preveren(true);
-    ctl.set_postveren(true);
-    ctl
-};
-
 /// Sectors covered by one `CMDWEPROTB` bit.
 const SECTORS_PER_WEPROTB_BIT: u32 = 8;
 
@@ -285,7 +265,25 @@ impl<'d, T: Instance> Flash<'d, T> {
     fn command(&mut self, address: u32, configure: impl FnOnce(Regs)) -> Result<(), Error> {
         let r = T::regs();
 
-        r.cmdctl().write_value(CMDCTL);
+        // Only the two fields this command's correctness rests on, and read-modify-write rather than
+        // a whole-register store.
+        //
+        // The TRM warns that the boot configuration routine may leave the command registers away
+        // from their reset values, and these are the two that would matter: `ADDRXLATEOVR` decides
+        // whether `CMDADDR` is a system address or a bank offset, so a stale one erases somewhere
+        // else entirely, and `ECCGENOVR` decides whether the ECC byte is computed from the data or
+        // taken from `CMDDATAECC`.
+        //
+        // Storing the whole register instead would mean claiming a reset value for the rest of it,
+        // and `CMDCTL` is the register where that claim cannot be made. Four of its bits — the two
+        // verify enables and the two mask disables — are described only by the L, C and H field
+        // tables; the G table calls the same bits reserved, TI's own `hw_flashctl.h` and every SVD
+        // omit them, and no TI code touches them. driverlib only ever read-modify-writes this
+        // register, which is what leaves whatever those bits are worth undisturbed.
+        r.cmdctl().modify(|w| {
+            w.set_addrxlateovr(false);
+            w.set_eccgenovr(false);
+        });
 
         // The prefetcher would otherwise speculate into a bank the controller is about to take, and
         // the cache would hold lines the operation invalidates -- the TRM asks for a flush after a
