@@ -379,6 +379,12 @@ pub struct Config {
 }
 
 impl Default for Config {
+    // A hundred bytes of `Clocks` and clock configuration is past what LLVM will inline at
+    // `opt-level = "z"`, so without this the tree arrives at `init` through memory and stops being a
+    // constant. Everything downstream then stays a run-time decision: the rates land in a static, and
+    // with them which `WakeGuard` a driver takes and which sleep modes `enter_sleep` has to be able
+    // to program. Worth up to 364 bytes of flash and 52 of RAM.
+    #[inline(always)]
     fn default() -> Self {
         Self {
             vboost: sysctl::Vboost::OnDemand,
