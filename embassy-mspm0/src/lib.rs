@@ -318,6 +318,14 @@ macro_rules! bind_interrupts {
 #[non_exhaustive]
 #[derive(Clone, Copy)]
 pub struct Config {
+    /// When the analog charge pump runs.
+    ///
+    /// Defaults to [`sysctl::Vboost::OnDemand`], which is what the device does on its own. Raise it where the
+    /// startup delay it adds to a comparator or an amplifier matters more than its current — see
+    /// [`sysctl::Vboost`] for what that delay is and for the erratum that asks for
+    /// [`sysctl::Vboost::OnAlways`] below 1.8 V.
+    pub vboost: sysctl::Vboost,
+
     /// The clock tree to program.
     ///
     /// Defaults to the reset tree: SYSOSC at its base frequency driving MCLK, LFCLK from the
@@ -373,6 +381,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            vboost: sysctl::Vboost::OnDemand,
             clock: sysctl::clock::RESET_SETUP,
             dma_burst_size: dma::BurstSize::Complete,
             dma_round_robin: false,
@@ -396,6 +405,10 @@ pub fn init(config: Config) -> Peripherals {
         // only failure left is an oscillator that never started, and formatting the error would pull
         // the whole `defmt` value-formatting path into every binary for a case that cannot be
         // recovered from anyway.
+        // Before the clock tree: starting HFXT raises the pump, and a policy applied afterwards would
+        // have let that first start pay the pump's startup time for nothing.
+        sysctl::set_vboost(config.vboost);
+
         let clocks = match sysctl::clock::apply(&config.clock) {
             Ok(clocks) => clocks,
             Err(_) => core::panic!("a configured clock source never started"),
@@ -495,6 +508,21 @@ pub enum ResetCause {
     CpurstDebugTriggered,
     /// Software-triggered CPURST
     CpurstSwTriggered,
+}
+
+/// Reset the device, and do not come back.
+///
+/// The counterpart to [`read_reset_cause`], which is how the code that runs afterwards finds out this
+/// is why. A [`sysctl::ResetLevel::Cpu`] or [`sysctl::ResetLevel::Boot`] reset reports `PorSwTriggered`.
+///
+/// SRAM is not cleared by any of these, but nothing may be assumed about it either: `.data` and
+/// `.bss` are reinitialised on the way back up, exactly as after a power cycle.
+///
+/// The two levels that enter and leave the bootstrap loader are deliberately absent. They are a
+/// firmware-update mechanism rather than a reset, and one of them leaves the device running something
+/// other than this application.
+pub fn reset(level: sysctl::ResetLevel) -> ! {
+    sysctl::reset_device(level)
 }
 
 /// Read the reset cause from the SYSCTL.RSTCAUSE register.

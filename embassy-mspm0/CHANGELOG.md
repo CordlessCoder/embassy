@@ -194,4 +194,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0: update mspm0-metapac, which says per device whether the brown-out supervisor has the warning levels at all
 - feat: mspm0/sysctl: add `BorThreshold`, `set_bor_threshold` and `bor_threshold` behind the new `bor-warning` feature, so the brown-out supervisor's warning levels can be used at all
 - fix: mspm0/low-power: restore the brown-out warning level across deep sleep on the families carrying `PMCU_ERR_03`, where it does not work in STANDBY
+- feat: mspm0/sysctl: add `Config::vboost`, which decides when the analog charge pump runs and so how long a comparator or amplifier takes to become ready
+- feat: mspm0: add `reset`, the software reset that `read_reset_cause` reports afterwards
 

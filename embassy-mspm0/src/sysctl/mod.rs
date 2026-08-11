@@ -606,6 +606,104 @@ const _: () = {
     core::assert!(bor_change_cycles(1) == 1);
 };
 
+/// When the analog charge pump runs.
+///
+/// VBOOST is what keeps the analog input muxes performing consistently across the supply range. The
+/// comparator, the amplifiers, the general-purpose amplifier, HFXT and SYSOSC's external-resistor FCL
+/// mode all draw on it.
+///
+/// **Nothing needs setting for correctness.** SYSCTL raises the pump itself when one of those is
+/// enabled, and drops it again afterwards. What this changes is *when* it starts.
+///
+/// # Why an application would raise it
+///
+/// A peripheral enabled while the pump is off does not report ready until both it and the pump are —
+/// so its startup time becomes the pump's, which is the longer of the two. Forcing the pump on ahead
+/// of time removes that from every subsequent enable, at the cost of its current in whatever modes
+/// are chosen. That matters here because the comparator and the amplifier wait out a
+/// datasheet enable time rather than a ready bit: those figures are the peripheral's own, so with the
+/// pump off the wait is shorter than the enable really takes.
+///
+/// # Errata
+/// - `PMCU_ERR_10` (L110x/L13xx) — below 1.8 V the pump is slow enough to delay everything it feeds.
+///   The advisory's workaround is to keep the supply at or above 1.8 V *and* select
+///   [`Vboost::OnAlways`], so a design running a battery down that far wants both.
+///
+/// One case is not the application's to choose: with SYSOSC in FCL external-resistor mode the pump is
+/// held on through the low-power modes by hardware whatever this says, so that the oscillator comes
+/// back quickly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Vboost {
+    /// Only while a peripheral that needs it is enabled. Lowest current, longest first enable.
+    ///
+    /// What the device does after a reset.
+    #[default]
+    OnDemand,
+
+    /// Always in RUN and SLEEP; in STOP and STANDBY only while such a peripheral is enabled.
+    OnActive,
+
+    /// In every mode but SHUTDOWN. No startup delay anywhere, and the pump's current everywhere.
+    OnAlways,
+}
+
+impl Vboost {
+    pub(crate) const fn to_vals(self) -> vals::Anacpumpcfg {
+        match self {
+            Vboost::OnDemand => vals::Anacpumpcfg::Ondemand,
+            Vboost::OnActive => vals::Anacpumpcfg::Onactive,
+            Vboost::OnAlways => vals::Anacpumpcfg::Onalways,
+        }
+    }
+}
+
+/// How much of the device a [`reset`](crate::reset) clears.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ResetLevel {
+    /// SYSRST: the CPU and the peripherals. The boot configuration routine does not re-run.
+    #[default]
+    Cpu,
+
+    /// BOOTRST: SYSRST, and the boot configuration routine runs again.
+    Boot,
+
+    /// A power-on reset, which is as close to a power cycle as software can get.
+    Por,
+}
+
+impl ResetLevel {
+    const fn to_vals(self) -> vals::ResetlevelLevel {
+        match self {
+            ResetLevel::Cpu => vals::ResetlevelLevel::Cpu,
+            ResetLevel::Boot => vals::ResetlevelLevel::Boot,
+            ResetLevel::Por => vals::ResetlevelLevel::Por,
+        }
+    }
+}
+
+/// Issue the reset command. Reached through [`crate::reset`].
+pub(crate) fn reset_device(level: ResetLevel) -> ! {
+    let sysctl = pac::SYSCTL;
+
+    sysctl.resetlevel().write(|w| w.set_level(level.to_vals()));
+    sysctl.resetcmd().write(|w| {
+        w.set_key(vals::ResetcmdKey::Key);
+        w.set_go(true);
+    });
+
+    // The reset is not instantaneous and this function may not return before it lands.
+    loop {
+        cortex_m::asm::nop();
+    }
+}
+
+/// Apply the VBOOST policy. Called by [`crate::init`] before anything that draws on the pump.
+pub(crate) fn set_vboost(vboost: Vboost) {
+    pac::SYSCTL.genclkcfg().modify(|w| w.set_anacpumpcfg(vboost.to_vals()));
+}
+
 /// Highest frequency MCLK may run at on this chip.
 pub const MAX_MCLK_HZ: u32 = crate::_generated::MAX_MCLK_HZ;
 
