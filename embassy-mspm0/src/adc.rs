@@ -573,17 +573,17 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
             w.set_sampclk(config.sample_clk.to_sampclk());
         });
 
-        let adcclk = adc_clock_hz(config.sample_clk);
+        let (sclkdiv, frange) = adc_clock_regs(config.sample_clk);
 
         r.ctl0().write(|w| {
             w.set_enc(false);
             // TODO: power down config
             w.set_pwrdn(vals::Pwrdn::Manual);
-            w.set_sclkdiv(sample_clock_div(adcclk));
+            w.set_sclkdiv(sclkdiv);
         });
 
         r.clkfreq().write(|w| {
-            w.set_frange(clock_range(adcclk));
+            w.set_frange(frange);
         });
 
         r.ctl1().write(|w| {
@@ -788,6 +788,16 @@ fn adc_clock_hz(source: SampleClock) -> u32 {
     );
 
     hz
+}
+
+/// The `CTL0.SCLKDIV` and `CLKFREQ.FRANGE` pair `source` implies.
+///
+/// One function rather than three calls in `setup`: a second instance then shares one body, instead
+/// of outlining the two clock helpers and duplicating the divider ladder at each call site.
+#[inline]
+fn adc_clock_regs(source: SampleClock) -> (vals::Sclkdiv, vals::Frange) {
+    let adcclk = adc_clock_hz(source);
+    (sample_clock_div(adcclk), clock_range(adcclk))
 }
 
 /// `fADCCLK`, the range this device's datasheet specifies for the selected sample clock.
