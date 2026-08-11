@@ -435,11 +435,18 @@ fn unprotect(r: Regs, address: u32) {
     let banks = sramflash.mainnumbanks();
 
     // Division by a runtime bank count would link a 32-bit divider into every binary that touches
-    // flash; there are four possible counts, so this is a multiply and a shift instead.
+    // flash, so the four possible counts are spelled out instead. Three of them fold to shifts.
+    //
+    // Three does not, and that is the whole reason this is written out: ARMv6-M has no `UMULL`, so
+    // the optimiser cannot turn a divide by three into a reciprocal multiply and emits a call. It
+    // is done by hand here. Exact for every sector count this register can describe -- `MAINFLASH_SZ`
+    // is twelve bits of kilobytes, so the count cannot exceed `4095 * 1024 / SECTOR_SIZE`, and the
+    // identity was checked against every value up to 65520. The product stays inside a `u32` until
+    // 98303 and the identity itself holds until 131072.
     let sectors_per_bank = match banks {
         Mainnumbanks::Onebank => sectors,
         Mainnumbanks::Twobanks => sectors / 2,
-        Mainnumbanks::Threebanks => sectors / 3,
+        Mainnumbanks::Threebanks => (sectors * 0xAAAB) >> 17,
         Mainnumbanks::Fourbanks => sectors / 4,
     };
 
@@ -513,9 +520,23 @@ fn physical_sector(sector: u32, _sectors: u32) -> u32 {
 }
 
 /// Whether `offset` starts on a boundary of `granularity`.
+///
+/// Both callers pass a constant, so the remainder folds to a mask. Passing a run-time granularity
+/// would link a 32-bit divider on a core that has no divide instruction.
 fn is_aligned(offset: u32, granularity: usize) -> bool {
     (offset as usize).is_multiple_of(granularity)
 }
+
+// The divide-by-three above is the one arm the optimiser cannot lower without a `UMULL` this core
+// does not have, so it is a hand-written reciprocal and its correctness is worth proving rather than
+// asserting. Every sector count reachable with the sector size this device is built for.
+const _: () = {
+    let mut sectors = 0u32;
+    while sectors <= 4095 * 1024 / SECTOR_SIZE as u32 {
+        core::assert!((sectors * 0xAAAB) >> 17 == sectors / 3);
+        sectors += 1;
+    }
+};
 
 /// Whether `len` bytes from `offset` are inside MAIN.
 fn check_range(offset: u32, len: usize) -> Result<(), Error> {
