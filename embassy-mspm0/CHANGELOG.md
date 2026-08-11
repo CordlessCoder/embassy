@@ -219,3 +219,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/comp: compute a DAC code from millivolts without a 64-bit divide, saving 1004 B in a caller that asks at run time
 - docs: mspm0/tim: say that a live `SimplePwm` holds the chip out of deep sleep unless its clock survives one — the default clock does not
 - mspm0/flash: work out the sectors per bank without a 32-bit divide, saving 404 B in any binary that erases or writes
+- **breaking**: mspm0: `executor-thread` and `executor-interrupt` no longer imply `low-power` — the HAL's executor now idles on a guarded `WFI` without it, and enabling both is what reaches a deep-sleep mode

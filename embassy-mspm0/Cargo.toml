@@ -156,12 +156,16 @@ nrst-pin-as-gpio = []
 ## Allow using the SWD pins as regular GPIO pins.
 swd-pins-as-gpio = []
 
-## Deep-sleep support: the [`low_power`] module, the sleep guards the drivers hold, and the executor
-## that idles into a sleep mode.
+## Deep-sleep support: the [`low_power`] module and the sleep guards the drivers hold.
 ##
 ## Needs no time source. [`Config::min_sleep`], the deep-sleep entry threshold, exists only alongside a
 ## `time-driver-*` feature, which is what brings `embassy-time` in — without one nothing schedules a
 ## wake, so there is no duration to gate on.
+##
+## **Not required by `executor-thread`/`executor-interrupt`.** Without it [`executor::Executor`] idles
+## on a plain `WFI` instead of choosing a sleep mode, and still suspends the prefetcher across it —
+## which is a `CPU_ERR_03` workaround every supported family needs and `embassy-executor`'s own
+## executor does not perform. Enable this on top when the idle should reach a deep-sleep mode.
 low-power = []
 
 ## Let the brown-out supervisor's warning levels be selected, adding `sysctl::BorThreshold` and its two
@@ -181,7 +185,7 @@ executor-thread = ["_executor"]
 
 executor-interrupt = ["_executor"]
 
-_executor = ["dep:embassy-executor", "low-power"]
+_executor = ["dep:embassy-executor"]
 
 # Bench instrumentation, not API: marker pins driven across stages of a wake, so an analyser can say which
 # part of one costs what. See `src/probe.rs`.

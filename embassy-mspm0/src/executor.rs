@@ -1,10 +1,24 @@
 //! MSPM0-specific `embassy-executor` platform.
 //!
-//! This module provides an `embassy-executor` platform specific for MSPM0 chips that integrates [`low_power::sleep()`](crate::low_power::sleep) in the main loop.
+//! This module provides an `embassy-executor` platform specific for MSPM0 chips, which idles into a
+//! sleep rather than spinning.
 //! Read the `embassy-executor` README for information about what "executor platforms" are and how they work.
+//!
+//! # What the idle does, and why it is not `embassy-executor`'s own
+//!
+//! With `low-power` it enters the deepest sleep the [`WakeGuard`](crate::sysctl::WakeGuard)s allow.
+//! Without it there are no guards to consult and no mode to pick, so the idle is a plain `WFI` —
+//! **but still one with the prefetcher suspended across it**, which is the reason to prefer this
+//! executor over `embassy-executor`'s own even when deep sleep is not wanted.
+//!
+//! `CPU_ERR_03` applies to every family this crate supports and is written against low-power modes
+//! rather than the deep ones, so a shallow idle is in scope. `embassy-executor`'s Cortex-M executor
+//! idles on `WFE` and takes no such guard. Measured on one application, the difference between the
+//! two idles is **8 bytes of flash**; deep sleep on top of that is another 140.
 //!
 //! To use it:
 //! - Enable the `executor-thread` and/or `executor-interrupt` feature on this crate.
+//! - Add `low-power` as well if the idle should reach a deep-sleep mode. It is no longer implied.
 //! - **Do not** enable features `platform-cortex-m`, `executor-thread` or `executor-interrupt` in the `embassy-executor` crate.
 //! - Tell the `main` macro to use this executor like this:
 //!
@@ -63,12 +77,14 @@ mod thread {
     /// Set by the pender to signal pending work; checked before sleeping since `WFI` ignores `SEV`.
     pub(crate) static SIGNAL_WORK_THREAD_MODE: AtomicBool = AtomicBool::new(false);
 
-    /// Thread-mode executor that deep-sleeps on idle via [`low_power::sleep`](crate::low_power::sleep).
+    /// Thread-mode executor that sleeps on idle.
     ///
     /// It runs on thread mode, at the lowest priority level, and sleeps when it has no more work to
-    /// do. How deep that sleep goes is decided by the [`WakeGuard`](crate::sysctl::WakeGuard)s the
-    /// drivers hold and, with a time driver, by `Config::min_sleep`; with nothing to block it the chip
-    /// reaches its deepest allowed level rather than plain `WFI`.
+    /// do. With `low-power`, how deep that sleep goes is decided by the
+    /// [`WakeGuard`](crate::sysctl::WakeGuard)s the drivers hold and, with a time driver, by
+    /// `Config::min_sleep`; with nothing to block it the chip reaches its deepest allowed level rather
+    /// than plain `WFI`. Without `low-power` it is a plain `WFI`, with the prefetcher suspended across
+    /// it either way — see this module's own docs for why that matters.
     ///
     /// The sleep is entered with interrupts masked, so a task woken between the poll and the sleep
     /// would otherwise be missed. `WFI` has no event register for a `SEV` to latch into, so the
@@ -131,7 +147,20 @@ mod thread {
                         if SIGNAL_WORK_THREAD_MODE.load(Ordering::Relaxed) {
                             SIGNAL_WORK_THREAD_MODE.store(false, Ordering::Relaxed);
                         } else {
+                            #[cfg(feature = "low-power")]
                             crate::low_power::sleep(cs);
+
+                            // Without `low-power` there are no sleep guards to consult and no mode to
+                            // pick, so the idle is a plain `WFI` -- but still a guarded one, because
+                            // `CPU_ERR_03` covers a shallow sleep as well.
+                            #[cfg(not(feature = "low-power"))]
+                            {
+                                let _ = cs;
+                                let _prefetch = crate::prefetch::PrefetchSuspend::new();
+                                cortex_m::asm::dsb();
+                                cortex_m::asm::wfi();
+                                cortex_m::asm::isb();
+                            }
                         }
                     });
                 }

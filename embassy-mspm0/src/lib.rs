@@ -33,6 +33,8 @@ pub mod low_power;
 pub mod mathacl;
 #[cfg(opa)]
 pub mod opa;
+#[cfg(any(feature = "low-power", feature = "_executor"))]
+mod prefetch;
 #[cfg(feature = "_probe")]
 pub mod probe;
 pub(crate) mod sync;
