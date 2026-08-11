@@ -1005,7 +1005,10 @@ fn generate_pincm_mapping() -> TokenStream {
         pub(crate) fn gpio_pincm(pin_port: u8) -> u8 {
             match pin_port {
                 #(#pincms),*,
-                _ => unreachable!(),
+                // SAFETY: every caller passes `SealedPin::pin_port`, which is a constant on a concrete
+                // pin and, on `AnyPin`, is guaranteed by `AnyPin::steal`'s contract to name a pin this
+                // chip has. The same contract already backs the unchecked waiter-list indexing.
+                _ => unsafe { core::hint::unreachable_unchecked() },
             }
         }
     }

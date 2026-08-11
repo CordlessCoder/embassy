@@ -1060,8 +1060,9 @@ impl AnyPin {
     ///
     /// # Safety
     /// - `pin_port` should not be in use by another driver.
-    /// - `pin_port` must name a pin this chip has. The edge waits index their port's waiter list
-    ///   without a bounds check, on the strength of this.
+    /// - `pin_port` must name a pin this chip has. Two things rest on it: the edge waits index their
+    ///   port's waiter list without a bounds check, and `gpio_pincm` tells the optimiser its `match`
+    ///   is exhaustive over the real pins. A value outside them is undefined behaviour, not a panic.
     #[inline]
     pub unsafe fn steal(pin_port: u8) -> Peri<'static, Self> {
         Peri::new_unchecked(Self { pin_port })
