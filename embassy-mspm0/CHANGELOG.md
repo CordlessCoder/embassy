@@ -191,3 +191,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/sysctl: derive both sleep-floor ladders from the mode's position rather than matching each one, taking 40 B off `floor_for_operation` and off every binary that holds a sleep guard
 - mspm0: update mspm0-metapac, which adds the flash geometry and sector-protection widths per device
 - feat: mspm0/flash: add a FLASHCTL driver over MAIN flash, implementing the `embedded-storage` traits
+- mspm0: update mspm0-metapac, which says per device whether the brown-out supervisor has the warning levels at all
