@@ -1589,6 +1589,14 @@ fn generate_peripheral_instances() -> TokenStream {
                 // `NonInvertingInput::ground`, which is position 8 and does not exist on the L series.
                 let opa = peripheral.opa.expect("an OPA instance with no mux data");
                 let ground = opa.pmux.iter().any(|entry| entry.input == OpaInput::Ground);
+                let dac12 = opa.pmux.iter().any(|entry| entry.input == OpaInput::Dac12);
+                let vref_plus = opa.pmux.iter().any(|entry| entry.input == OpaInput::VrefPlus);
+
+                // `Dac8` carries the comparator that feeds this amplifier, which differs by family --
+                // on the G series `OPAn` takes `COMPn`'s DAC and on the L series both take `COMP0`'s.
+                // Only its presence is used here; the pairing is what an API tying the two together
+                // would need.
+                let dac8 = opa.pmux.iter().any(|entry| matches!(entry.input, OpaInput::Dac8(_)));
 
                 // Which instance's ladder top this one can take as its non-inverting input, if any.
                 // The metadata names it per instance and gives the direction, so the pairing needs no
@@ -1604,7 +1612,7 @@ fn generate_peripheral_instances() -> TokenStream {
                     None => quote! {},
                 };
 
-                Some(quote! { impl_opa_instance!(#peri, #ground); #cascade })
+                Some(quote! { impl_opa_instance!(#peri, #ground, #dac12, #dac8, #vref_plus); #cascade })
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
             "crc" => Some(quote! { impl_crc_instance!(#peri); }),

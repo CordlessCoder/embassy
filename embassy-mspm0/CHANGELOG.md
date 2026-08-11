@@ -220,3 +220,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: mspm0/tim: say that a live `SimplePwm` holds the chip out of deep sleep unless its clock survives one — the default clock does not
 - mspm0/flash: work out the sectors per bank without a 32-bit divide, saving 404 B in any binary that erases or writes
 - **breaking**: mspm0: `executor-thread` and `executor-interrupt` no longer imply `low-power` — the HAL's executor now idles on a guarded `WFI` without it, and enabling both is what reaches a deep-sleep mode
+- mspm0/opa: refuse at compile time to select a DAC12, DAC8 or `VREF+` input position the device's amplifier does not have, as `ground()` already did

@@ -163,12 +163,23 @@ impl<'d, T: Instance> NonInvertingInput<'d, T> {
     /// an external voltage on that pad drives it.
     #[cfg(dac)]
     pub const fn dac12() -> Self {
+        const { core::assert!(T::HAS_DAC12, "this device's OPA has no DAC12 input position") };
         Self::internal(vals::Psel::Dac12out)
     }
 
     /// The 8-bit reference DAC of the paired COMP peripheral.
+    ///
+    /// Which comparator that is differs by family — on the G series `OPAn` takes `COMPn`'s, on the L
+    /// series both amplifiers take `COMP0`'s — and the DAC has to be running for this to carry
+    /// anything. Build a [`Comp`](crate::comp::Comp) with a
+    /// [`Reference`](crate::comp::Reference) and keep it alive across the measurement;
+    /// `Comp::new_reference_only` exists for exactly that.
+    ///
+    /// Nothing here checks that a comparator is live: the position is a mux selection, so an
+    /// unpowered DAC reads as a floating node rather than as an error.
     #[cfg(comp)]
     pub const fn dac8() -> Self {
+        const { core::assert!(T::HAS_DAC8, "this device's OPA has no DAC8 input position") };
         Self::internal(vals::Psel::Dac8out)
     }
 
@@ -184,6 +195,7 @@ impl<'d, T: Instance> NonInvertingInput<'d, T> {
     /// looking like a plausible measurement on the way.
     #[cfg(vref)]
     pub const fn vref() -> Self {
+        const { core::assert!(T::HAS_VREF_PLUS, "this device's OPA has no VREF+ input position") };
         Self::internal(vals::Psel::Vref)
     }
 
@@ -676,6 +688,24 @@ pub(crate) trait SealedInstance {
     /// amplifier reads a floating node rather than ground, and reports a plausible near-zero. Per
     /// instance because the mux maps are.
     const HAS_GROUND: bool;
+
+    /// Whether this instance's mux has the DAC12 position.
+    ///
+    /// Each of these is gated to match the constructor that reads it: a device without the peripheral
+    /// has no constructor to guard, and an ungated constant is dead code there.
+    #[cfg(dac)]
+    const HAS_DAC12: bool;
+
+    /// Whether this instance's mux has the paired comparator's 8-bit DAC.
+    #[cfg(comp)]
+    const HAS_DAC8: bool;
+
+    /// Whether this instance's mux has the `VREF+` pin node.
+    ///
+    /// Presence of the position, not of a voltage on it: the pin can be present and undriven, which
+    /// is what [`NonInvertingInput::vref`]'s own docs are about.
+    #[cfg(vref)]
+    const HAS_VREF_PLUS: bool;
 }
 
 /// OPA instance.
@@ -707,7 +737,7 @@ macro_rules! impl_opa_cascade {
 }
 
 macro_rules! impl_opa_instance {
-    ($inst:ident, $has_ground:expr) => {
+    ($inst:ident, $has_ground:expr, $has_dac12:expr, $has_dac8:expr, $has_vref_plus:expr) => {
         // No guard is held while the amplifier is merely configured, which is only sound while the
         // configuration registers survive deep sleep. True of PD0 on every device shipped so far;
         // checked so a device that moves the OPA fails to build instead of losing its configuration.
@@ -728,6 +758,12 @@ macro_rules! impl_opa_instance {
             }
 
             const HAS_GROUND: bool = $has_ground;
+            #[cfg(dac)]
+            const HAS_DAC12: bool = $has_dac12;
+            #[cfg(comp)]
+            const HAS_DAC8: bool = $has_dac8;
+            #[cfg(vref)]
+            const HAS_VREF_PLUS: bool = $has_vref_plus;
         }
         impl crate::opa::Instance for crate::peripherals::$inst {}
     };
