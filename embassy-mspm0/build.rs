@@ -71,7 +71,7 @@ fn generate_code(cfgs: &mut CfgSet) {
 
     g.extend(generate_singletons(&singletons));
     g.extend(generate_pincm_mapping());
-    g.extend(generate_pins_without_pullup());
+    g.extend(generate_pin_capability_tables());
     g.extend(generate_pin());
     g.extend(generate_timers());
     g.extend(generate_basic_timers(cfgs));
@@ -1003,27 +1003,53 @@ fn make_valid_identifier(s: &str) -> Singleton {
     Singleton { name, cfg: None }
 }
 
-/// The PINCM indices of pins whose structure has no pullup.
+/// Which PINCM indices support each per-structure pin feature.
 ///
-/// Open drain is the only structure without one, and it is `PA0` and `PA1` on every family but the
-/// H321x, which has no open-drain pins at all. So this is two entries or none, and it exists to make
-/// `PIPU` on one of those pins a `debug_assert!` rather than a silent no-op.
+/// SLAU846 table 8-1 gives these per IO structure and they do not overlap: drive strength is
+/// high-drive and high-speed only, hysteresis is open drain only, and open drain is the one
+/// structure with no pullup. **Writing any of them on a pin whose structure lacks it is accepted,
+/// reads back, and does nothing**, which is why each has a table rather than being assumed.
 ///
-/// Emitted unconditionally even when empty: an empty slice costs nothing in a release build, where
-/// the only thing that reads it compiles out.
-fn generate_pins_without_pullup() -> TokenStream {
-    let mut pincms: Vec<u8> = METADATA
-        .pins
-        .iter()
-        .filter(|mapping| mapping.structure == IoStructure::OpenDrain)
-        .map(|mapping| mapping.pincm - 1)
-        .collect();
-    pincms.sort_unstable();
-    pincms.dedup();
+/// Emitted even when empty. An empty slice costs nothing in a release build, where the only things
+/// that read these compile out with the `debug_assert!`s they serve.
+fn generate_pin_capability_tables() -> TokenStream {
+    let table = |name: &str, doc: &str, wanted: &[IoStructure]| {
+        let mut pincms: Vec<u8> = METADATA
+            .pins
+            .iter()
+            .filter(|mapping| wanted.contains(&mapping.structure))
+            .map(|mapping| mapping.pincm - 1)
+            .collect();
+        pincms.sort_unstable();
+        pincms.dedup();
+
+        let name = format_ident!("{}", name);
+        quote! {
+            #[doc = #doc]
+            pub const #name: &[u8] = &[#(#pincms),*];
+        }
+    };
+
+    let without_pullup = table(
+        "PINS_WITHOUT_PULLUP",
+        " PINCM indices whose IO structure implements no pullup.",
+        &[IoStructure::OpenDrain],
+    );
+    let with_drive_strength = table(
+        "PINS_WITH_DRIVE_STRENGTH",
+        " PINCM indices whose IO structure implements `PINCM.DRV`.",
+        &[IoStructure::HighDrive, IoStructure::HighSpeed],
+    );
+    let with_hysteresis = table(
+        "PINS_WITH_HYSTERESIS",
+        " PINCM indices whose IO structure implements `PINCM.HYSTEN`.",
+        &[IoStructure::OpenDrain],
+    );
 
     quote! {
-        /// PINCM indices whose IO structure implements no pullup.
-        pub const PINS_WITHOUT_PULLUP: &[u8] = &[#(#pincms),*];
+        #without_pullup
+        #with_drive_strength
+        #with_hysteresis
     }
 }
 

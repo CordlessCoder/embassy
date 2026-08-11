@@ -229,3 +229,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/gpio: `debug_assert!` that `Pull::Up` is not asked for on an open-drain pin, whose structure has no pullup and silently ignored it
 - **breaking**: mspm0/tim: `low_level::Timer::start` and `stop` take `&mut self`, and the sleep guard that keeps the counter counting is held only between them — a stopped timer no longer blocks deep sleep
 - **breaking**: mspm0/uart: `Config::baudrate` and `Config::baud` become one `Config::baud: BaudRate`, so a pre-solved divider can no longer sit beside a rate that is silently ignored
+- mspm0/gpio: `Flex::set_drive_strength` and `set_hysteresis`, each refusing in a debug build a pin whose IO structure does not implement it

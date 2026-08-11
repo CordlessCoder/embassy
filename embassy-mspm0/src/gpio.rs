@@ -100,6 +100,37 @@ fn has_pullup(pincm: u8) -> bool {
     !crate::_generated::PINS_WITHOUT_PULLUP.contains(&pincm)
 }
 
+/// Whether `pincm`'s IO structure implements `PINCM.DRV`.
+#[inline]
+fn has_drive_strength(pincm: u8) -> bool {
+    crate::_generated::PINS_WITH_DRIVE_STRENGTH.contains(&pincm)
+}
+
+/// Whether `pincm`'s IO structure implements `PINCM.HYSTEN`.
+#[inline]
+fn has_hysteresis(pincm: u8) -> bool {
+    crate::_generated::PINS_WITH_HYSTERESIS.contains(&pincm)
+}
+
+/// How hard an output drives.
+///
+/// **Only the high-drive and high-speed structures have this**, which is a handful of pins per
+/// device — SLAU846 8.2.6 says outright that "drive strength control is not available for standard
+/// drive and open drain IO types". Asking for it elsewhere is accepted and does nothing, so
+/// [`Flex::set_drive_strength`] catches that in a debug build.
+///
+/// Independent of the peripheral function selected on the pin, and changeable at any time.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DriveStrength {
+    /// The reset default, and all a standard-drive pin can do.
+    Low,
+
+    /// The high-drive output, which the datasheet's Digital IO section specifies per device — 20 mA
+    /// on the parts that describe it that way.
+    High,
+}
+
 /// A GPIO bank with up to 32 pins.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Port {
@@ -177,6 +208,41 @@ impl<'d, M: Mode> Flex<'d, M> {
             w.set_pipd(matches!(pull, Pull::Down));
             w.set_pipu(matches!(pull, Pull::Up));
         });
+    }
+
+    /// Set how hard the pin drives when it is an output.
+    ///
+    /// Panics in a debug build on a pin whose IO structure has no drive-strength control, which is
+    /// every one but high-drive and high-speed — see [`DriveStrength`].
+    #[inline]
+    pub fn set_drive_strength(&mut self, strength: DriveStrength) {
+        debug_assert!(
+            has_drive_strength(self.pin.pin_cm()),
+            "this pin's IO structure has no drive strength control, so setting it would do nothing"
+        );
+
+        pac::IOMUX
+            .pincm(self.pin.pin_cm() as usize)
+            .modify(|w| w.set_drv(matches!(strength, DriveStrength::High)));
+    }
+
+    /// Turn input hysteresis on or off.
+    ///
+    /// Panics in a debug build on a pin whose IO structure has no hysteresis control. Only the 5 V
+    /// tolerant open-drain structure has it, which is two pins on most devices and none on some.
+    ///
+    /// It is on by default there, and turning it off is what a fast edge from a clean driver wants;
+    /// leave it on for anything slow or noisy.
+    #[inline]
+    pub fn set_hysteresis(&mut self, enable: bool) {
+        debug_assert!(
+            has_hysteresis(self.pin.pin_cm()),
+            "this pin's IO structure has no hysteresis control, so setting it would do nothing"
+        );
+
+        pac::IOMUX
+            .pincm(self.pin.pin_cm() as usize)
+            .modify(|w| w.set_hysten(enable));
     }
 
     /// Put the pin into input mode.
@@ -893,6 +959,14 @@ pub struct Output<'d> {
     pin: Flex<'d>,
 }
 
+impl Output<'_> {
+    /// Set how hard the pin drives. See [`Flex::set_drive_strength`].
+    #[inline]
+    pub fn set_drive_strength(&mut self, strength: DriveStrength) {
+        self.pin.set_drive_strength(strength);
+    }
+}
+
 impl<'d> Output<'d> {
     /// Create GPIO output driver for a [Pin] with the provided [Level] configuration.
     #[inline]
@@ -965,6 +1039,16 @@ impl<'d> Output<'d> {
 /// `OutputOpenDrain::new_async`, which asks for the binding that installs one.
 pub struct OutputOpenDrain<'d, M: Mode = Blocking> {
     pin: Flex<'d, M>,
+}
+
+impl<M: Mode> OutputOpenDrain<'_, M> {
+    /// Turn input hysteresis on or off. See [`Flex::set_hysteresis`].
+    ///
+    /// This is the structure that has it, so the check behind that method never fires here.
+    #[inline]
+    pub fn set_hysteresis(&mut self, enable: bool) {
+        self.pin.set_hysteresis(enable);
+    }
 }
 
 impl<'d> OutputOpenDrain<'d, Blocking> {
