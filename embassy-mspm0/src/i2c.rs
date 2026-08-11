@@ -44,7 +44,7 @@ use embassy_hal_internal::drop::OnDrop;
 use mspm0_metapac::i2c;
 
 use crate::Peri;
-use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
+use crate::gpio::{MaybeAnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Binding;
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
@@ -837,8 +837,8 @@ impl Address {
 pub struct I2c<'d, M: Mode> {
     info: &'static Info,
     state: &'static State,
-    scl: Option<Peri<'d, AnyPin>>,
-    sda: Option<Peri<'d, AnyPin>>,
+    scl: MaybeAnyPin<'d>,
+    sda: MaybeAnyPin<'d>,
     wake_floor: Option<SleepLevel>,
     /// What the peripheral is configured to, kept so [`I2c::reset_peripheral`] can restore it.
     resolved: Resolved,
@@ -902,11 +902,11 @@ impl<'d, M: Mode> I2c<'d, M> {
         let was_enabled = self.info.interrupt.is_enabled();
         self.info.interrupt.disable();
 
-        if let Some(ref sda) = self.sda {
+        if let Some(sda) = self.sda.pin() {
             sda.update_pf(config.sda_pf());
         }
 
-        if let Some(ref scl) = self.scl {
+        if let Some(scl) = self.scl.pin() {
             scl.update_pf(config.scl_pf());
         }
 
@@ -1133,7 +1133,7 @@ impl<'d, M: Mode> I2c<'d, M> {
         }
         let half = self.resolved.half_period_cycles as u32;
 
-        let (Some(scl), Some(sda)) = (self.scl.as_ref(), self.sda.as_ref()) else {
+        let (Some(scl), Some(sda)) = (self.scl.pin(), self.sda.pin()) else {
             return Err(Error::Bus);
         };
 
@@ -2321,8 +2321,8 @@ impl<'d, M: Mode> Drop for I2c<'d, M> {
         // refused until the transaction finishes (SLAU846 table 25-10) and nothing reports when that is —
         // so releasing the pads is what takes this instance off the bus. Whatever the peripheral is still
         // doing reaches nothing, and the next `I2c::new` on this instance resets it before configuring.
-        self.scl.as_ref().map(|x| x.set_as_disconnected());
-        self.sda.as_ref().map(|x| x.set_as_disconnected());
+        self.scl.pin().map(|x| x.set_as_disconnected());
+        self.sda.pin().map(|x| x.set_as_disconnected());
     }
 }
 
@@ -2421,8 +2421,8 @@ impl<'d, M: Mode> I2c<'d, M> {
         let mut this = Self {
             info: T::info(),
             state: T::state(),
-            scl: scl_inner,
-            sda: sda_inner,
+            scl: MaybeAnyPin::new(scl_inner),
+            sda: MaybeAnyPin::new(sda_inner),
             wake_floor: None,
             resolved,
             _phantom: PhantomData,

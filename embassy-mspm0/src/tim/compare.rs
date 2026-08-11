@@ -8,7 +8,7 @@ use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
+use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Act, Ccpiv, Ccpo, Coc};
@@ -142,7 +142,7 @@ impl<'d, T: Instance, C: TimerChannel> ComparePin<'d, T, C> {
 /// Channels without a pin still raise events, which is the usual way to use this as a timed wake.
 pub struct Compare<'d, T: Instance> {
     timer: Timer<'d, T>,
-    pins: [Option<Peri<'d, AnyPin>>; 4],
+    pins: [MaybeAnyPin<'d>; 4],
 }
 
 /// One channel's pin and action, taken before the pin types are erased.
@@ -211,7 +211,7 @@ impl<'d, T: Instance> Compare<'d, T> {
 
         let mut this = Self {
             timer,
-            pins: channels.map(|c| c.map(|(pin, _)| pin)),
+            pins: channels.map(|c| MaybeAnyPin::new(c.map(|(pin, _)| pin))),
         };
 
         for channel in Channel::ALL {
@@ -279,7 +279,7 @@ impl<'d, T: Instance> Compare<'d, T> {
 
 impl<T: Instance> Drop for Compare<'_, T> {
     fn drop(&mut self) {
-        for pin in self.pins.iter().flatten() {
+        for pin in self.pins.iter().filter_map(MaybeAnyPin::pin) {
             pin.set_as_disconnected();
         }
     }

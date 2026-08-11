@@ -6,7 +6,7 @@ use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
+use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Ccond, Coc, Cpv, Fp, Isel};
@@ -210,7 +210,7 @@ pub struct CapturePins<'d, T: Instance> {
 /// Input capture driver.
 pub struct InputCapture<'d, T: Instance> {
     timer: Timer<'d, T>,
-    pins: [Option<Peri<'d, AnyPin>>; 4],
+    pins: [MaybeAnyPin<'d>; 4],
 }
 
 /// One channel's settings, taken before the pin types are erased.
@@ -277,7 +277,7 @@ impl<'d, T: Instance> InputCapture<'d, T> {
 
         let mut this = Self {
             timer,
-            pins: channels.map(|c| c.map(|(pin, _, _)| pin)),
+            pins: channels.map(|c| MaybeAnyPin::new(c.map(|(pin, _, _)| pin))),
         };
 
         for channel in Channel::ALL {
@@ -349,17 +349,25 @@ impl<'d, T: Instance> InputCapture<'d, T> {
         let regs = this.timer.regs();
         let settings = Channel::ALL.map(|channel| channel_settings(regs, channel));
 
-        let [ch0, ch1, ch2, ch3] = core::mem::replace(&mut this.pins, [const { None }; 4]);
+        let [ch0, ch1, ch2, ch3] = core::mem::replace(&mut this.pins, [const { MaybeAnyPin::none() }; 4]);
 
         // SAFETY: `this` is never dropped and the timer is not touched again, so it is moved out once.
         let timer = unsafe { core::ptr::read(&this.timer) };
 
         // Spelled out rather than mapped through a closure: each channel is its own type.
         let pins = CapturePins {
-            ch0: ch0.map(|pin| CapturePin::from_erased(pin, settings[0].0, settings[0].1)),
-            ch1: ch1.map(|pin| CapturePin::from_erased(pin, settings[1].0, settings[1].1)),
-            ch2: ch2.map(|pin| CapturePin::from_erased(pin, settings[2].0, settings[2].1)),
-            ch3: ch3.map(|pin| CapturePin::from_erased(pin, settings[3].0, settings[3].1)),
+            ch0: ch0
+                .into_peri()
+                .map(|pin| CapturePin::from_erased(pin, settings[0].0, settings[0].1)),
+            ch1: ch1
+                .into_peri()
+                .map(|pin| CapturePin::from_erased(pin, settings[1].0, settings[1].1)),
+            ch2: ch2
+                .into_peri()
+                .map(|pin| CapturePin::from_erased(pin, settings[2].0, settings[2].1)),
+            ch3: ch3
+                .into_peri()
+                .map(|pin| CapturePin::from_erased(pin, settings[3].0, settings[3].1)),
         };
 
         (timer.release(), pins)
@@ -413,7 +421,7 @@ impl<W: Word> CaptureChannel<'_, W> {
 
 impl<T: Instance> Drop for InputCapture<'_, T> {
     fn drop(&mut self) {
-        for pin in self.pins.iter().flatten() {
+        for pin in self.pins.iter().filter_map(MaybeAnyPin::pin) {
             pin.set_as_disconnected();
         }
     }

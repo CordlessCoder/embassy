@@ -6,7 +6,7 @@
 use core::marker::PhantomData;
 
 use crate::Peri;
-use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
+use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull, SealedPin};
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Act, Ccpiv, Ccpo, Coc, Swfrcact};
 pub use crate::tim::low_level::ConfigError;
@@ -182,7 +182,7 @@ pub struct PwmPins<'d, T: Instance> {
 #[repr(align(2))]
 pub struct SimplePwm<'d, T: Instance> {
     timer: Timer<'d, T>,
-    pins: [Option<Peri<'d, AnyPin>>; 4],
+    pins: [MaybeAnyPin<'d>; 4],
 }
 
 impl<'d, T: General2ChannelInstance> SimplePwm<'d, T> {
@@ -197,7 +197,12 @@ impl<'d, T: General2ChannelInstance> SimplePwm<'d, T> {
     ) -> Result<Self, ConfigError> {
         Self::build(
             timer,
-            [ch0.map(PwmPin::erase), ch1.map(PwmPin::erase), None, None],
+            [
+                MaybeAnyPin::new(ch0.map(PwmPin::erase)),
+                MaybeAnyPin::new(ch1.map(PwmPin::erase)),
+                MaybeAnyPin::none(),
+                MaybeAnyPin::none(),
+            ],
             config,
         )
     }
@@ -218,10 +223,10 @@ impl<'d, T: General4ChannelInstance> SimplePwm<'d, T> {
         Self::build(
             timer,
             [
-                ch0.map(PwmPin::erase),
-                ch1.map(PwmPin::erase),
-                ch2.map(PwmPin::erase),
-                ch3.map(PwmPin::erase),
+                MaybeAnyPin::new(ch0.map(PwmPin::erase)),
+                MaybeAnyPin::new(ch1.map(PwmPin::erase)),
+                MaybeAnyPin::new(ch2.map(PwmPin::erase)),
+                MaybeAnyPin::new(ch3.map(PwmPin::erase)),
             ],
             config,
         )
@@ -229,7 +234,7 @@ impl<'d, T: General4ChannelInstance> SimplePwm<'d, T> {
 }
 
 impl<'d, T: Instance> SimplePwm<'d, T> {
-    fn build(timer: Peri<'d, T>, pins: [Option<Peri<'d, AnyPin>>; 4], config: Config) -> Result<Self, ConfigError> {
+    fn build(timer: Peri<'d, T>, pins: [MaybeAnyPin<'d>; 4], config: Config) -> Result<Self, ConfigError> {
         let timer = Timer::new(
             timer,
             TimerConfig {
@@ -306,16 +311,16 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
     pub fn release(self) -> (Peri<'d, T>, PwmPins<'d, T>) {
         let mut this = core::mem::ManuallyDrop::new(self);
 
-        let [ch0, ch1, ch2, ch3] = core::mem::replace(&mut this.pins, [const { None }; 4]);
+        let [ch0, ch1, ch2, ch3] = core::mem::replace(&mut this.pins, [const { MaybeAnyPin::none() }; 4]);
 
         // SAFETY: `this` is never dropped and the timer is not touched again, so it is moved out once.
         let timer = unsafe { core::ptr::read(&this.timer) };
 
         let pins = PwmPins {
-            ch0: ch0.map(PwmPin::from_erased),
-            ch1: ch1.map(PwmPin::from_erased),
-            ch2: ch2.map(PwmPin::from_erased),
-            ch3: ch3.map(PwmPin::from_erased),
+            ch0: ch0.into_peri().map(PwmPin::from_erased),
+            ch1: ch1.into_peri().map(PwmPin::from_erased),
+            ch2: ch2.into_peri().map(PwmPin::from_erased),
+            ch3: ch3.into_peri().map(PwmPin::from_erased),
         };
 
         (timer.release(), pins)
@@ -324,7 +329,7 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
 
 impl<T: Instance> Drop for SimplePwm<'_, T> {
     fn drop(&mut self) {
-        for pin in self.pins.iter().flatten() {
+        for pin in self.pins.iter().filter_map(MaybeAnyPin::pin) {
             pin.set_as_disconnected();
         }
     }

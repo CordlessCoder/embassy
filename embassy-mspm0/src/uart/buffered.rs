@@ -9,7 +9,7 @@ use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use embassy_hal_internal::interrupt::InterruptExt;
 use embedded_hal_nb::nb;
 
-use crate::gpio::{AnyPin, SealedPin};
+use crate::gpio::{AnyPin, MaybeAnyPin, SealedPin};
 use crate::interrupt::typelevel::Binding;
 use crate::pac::uart::Uart as Regs;
 use crate::sync::irq_waker::IrqWaker;
@@ -160,16 +160,16 @@ impl<'d> BufferedUart<'d> {
             BufferedUartTx {
                 info: self.tx.info,
                 state: self.tx.state,
-                tx: self.tx.tx.as_mut().map(Peri::reborrow),
-                cts: self.tx.cts.as_mut().map(Peri::reborrow),
+                tx: self.tx.tx.reborrow(),
+                cts: self.tx.cts.reborrow(),
                 reborrowed: true,
                 _retention_guard: MaybeWakeGuard::none(),
             },
             BufferedUartRx {
                 info: self.rx.info,
                 state: self.rx.state,
-                rx: self.rx.rx.as_mut().map(Peri::reborrow),
-                rts: self.rx.rts.as_mut().map(Peri::reborrow),
+                rx: self.rx.rx.reborrow(),
+                rts: self.rx.rts.reborrow(),
                 reborrowed: true,
                 wake_guard: MaybeWakeGuard::none(),
                 _retention_guard: MaybeWakeGuard::none(),
@@ -185,8 +185,8 @@ impl<'d> BufferedUart<'d> {
 pub struct BufferedUartRx<'d> {
     info: &'static Info,
     state: &'static BufferedState,
-    rx: Option<Peri<'d, AnyPin>>,
-    rts: Option<Peri<'d, AnyPin>>,
+    rx: MaybeAnyPin<'d>,
+    rts: MaybeAnyPin<'d>,
     reborrowed: bool,
     wake_guard: MaybeWakeGuard,
     /// Held for as long as the driver exists; see
@@ -240,11 +240,11 @@ impl<'d> BufferedUartRx<'d> {
 
     /// Reconfigure the driver
     pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        if let Some(ref rx) = self.rx {
+        if let Some(rx) = self.rx.pin() {
             rx.update_pf(config.rx_pf());
         }
 
-        if let Some(ref rts) = self.rts {
+        if let Some(rts) = self.rts.pin() {
             rts.update_pf(config.rts_pf());
         }
 
@@ -313,8 +313,8 @@ impl Drop for BufferedUartRx<'_> {
                 self.info.regs.cpu_int(0).iclr().write(|w| w.set_rtout(true));
             }
 
-            self.rx.as_ref().map(|x| x.set_as_disconnected());
-            self.rts.as_ref().map(|x| x.set_as_disconnected());
+            self.rx.pin().map(|x| x.set_as_disconnected());
+            self.rts.pin().map(|x| x.set_as_disconnected());
         }
     }
 }
@@ -326,8 +326,8 @@ impl Drop for BufferedUartRx<'_> {
 pub struct BufferedUartTx<'d> {
     info: &'static Info,
     state: &'static BufferedState,
-    tx: Option<Peri<'d, AnyPin>>,
-    cts: Option<Peri<'d, AnyPin>>,
+    tx: MaybeAnyPin<'d>,
+    cts: MaybeAnyPin<'d>,
     reborrowed: bool,
     /// Held for as long as the driver exists; see
     /// [`SleepInfo::floor_to_keep_configured`](crate::sysctl::SleepInfo::floor_to_keep_configured).
@@ -377,11 +377,11 @@ impl<'d> BufferedUartTx<'d> {
 
     /// Reconfigure the driver
     pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        if let Some(ref tx) = self.tx {
+        if let Some(tx) = self.tx.pin() {
             tx.update_pf(config.tx_pf());
         }
 
-        if let Some(ref cts) = self.cts {
+        if let Some(cts) = self.cts.pin() {
             cts.update_pf(config.cts_pf());
         }
 
@@ -452,8 +452,8 @@ impl Drop for BufferedUartTx<'_> {
                 self.info.regs.cpu_int(0).iclr().write(|w| w.set_eot(true));
             }
 
-            self.tx.as_ref().map(|x| x.set_as_disconnected());
-            self.cts.as_ref().map(|x| x.set_as_disconnected());
+            self.tx.pin().map(|x| x.set_as_disconnected());
+            self.cts.pin().map(|x| x.set_as_disconnected());
         }
     }
 }
@@ -691,16 +691,16 @@ impl<'d> BufferedUart<'d> {
             tx: BufferedUartTx {
                 info,
                 state,
-                tx,
-                cts,
+                tx: MaybeAnyPin::new(tx),
+                cts: MaybeAnyPin::new(cts),
                 reborrowed: false,
                 _retention_guard: super::retention_guard(info),
             },
             rx: BufferedUartRx {
                 info,
                 state,
-                rx,
-                rts,
+                rx: MaybeAnyPin::new(rx),
+                rts: MaybeAnyPin::new(rts),
                 reborrowed: false,
                 wake_guard: MaybeWakeGuard::none(),
                 _retention_guard: super::retention_guard(info),
@@ -762,8 +762,8 @@ impl<'d> BufferedUartRx<'d> {
         let mut this = Self {
             info: T::info(),
             state: T::buffered_state(),
-            rx,
-            rts,
+            rx: MaybeAnyPin::new(rx),
+            rts: MaybeAnyPin::new(rts),
             reborrowed: false,
             wake_guard: MaybeWakeGuard::none(),
             _retention_guard: super::retention_guard(T::info()),
@@ -959,8 +959,8 @@ impl<'d> BufferedUartTx<'d> {
         let mut this = Self {
             info: T::info(),
             state: T::buffered_state(),
-            tx,
-            cts,
+            tx: MaybeAnyPin::new(tx),
+            cts: MaybeAnyPin::new(cts),
             reborrowed: false,
             _retention_guard: super::retention_guard(T::info()),
         };

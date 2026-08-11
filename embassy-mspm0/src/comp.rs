@@ -63,7 +63,7 @@ use core::task::Poll;
 use embassy_hal_internal::{Peri, PeripheralType};
 use mspm0_metapac::comp::{Comp as Regs, vals};
 
-use crate::gpio::{AnyPin, SealedPin};
+use crate::gpio::{AnyPin, MaybeAnyPin, SealedPin};
 use crate::mode::{Async, Blocking, Mode as DriverMode};
 use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{LowPowerInstance, MaybeWakeGuard, SleepLevel};
@@ -466,9 +466,9 @@ pub enum Edge {
 /// lost at every instance count a part reaches. [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm)
 /// carries the figures and what did pay.
 pub struct Comp<'d, T: Instance, M: DriverMode> {
-    positive: Option<Peri<'d, AnyPin>>,
-    negative: Option<Peri<'d, AnyPin>>,
-    output: Option<Peri<'d, AnyPin>>,
+    positive: MaybeAnyPin<'d>,
+    negative: MaybeAnyPin<'d>,
+    output: MaybeAnyPin<'d>,
     _guard: MaybeWakeGuard,
     _phantom: PhantomData<(T, M)>,
 }
@@ -693,9 +693,9 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
         });
 
         Ok(Self {
-            positive: positive.map(|(pin, _)| pin),
-            negative: negative.map(|(pin, _)| pin),
-            output: None,
+            positive: MaybeAnyPin::new(positive.map(|(pin, _)| pin)),
+            negative: MaybeAnyPin::new(negative.map(|(pin, _)| pin)),
+            output: MaybeAnyPin::none(),
             _guard: MaybeWakeGuard::new(Self::sleep_floor(negative_channel)),
             _phantom: PhantomData,
         })
@@ -755,7 +755,7 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
     /// Drive the comparator's output onto a pin.
     pub fn set_output_pin(&mut self, pin: Peri<'d, impl OutputPin<T>>) {
         SealedOutputPin::setup(&*pin);
-        self.output = Some(pin.into());
+        self.output = MaybeAnyPin::new(Some(pin.into()));
     }
 }
 
@@ -775,9 +775,9 @@ impl<T: Instance, M: DriverMode> Drop for Comp<'_, T, M> {
             w.set_key(vals::PwrenKey::Key);
         });
 
-        for pin in [self.positive.as_ref(), self.negative.as_ref(), self.output.as_ref()]
+        for pin in [&self.positive, &self.negative, &self.output]
             .into_iter()
-            .flatten()
+            .filter_map(MaybeAnyPin::pin)
         {
             pin.set_as_disconnected();
         }

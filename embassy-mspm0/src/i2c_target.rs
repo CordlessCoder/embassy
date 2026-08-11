@@ -9,7 +9,7 @@ use core::task::Poll;
 use embassy_embedded_hal::SetConfig;
 use mspm0_metapac::i2c::vals::CpuIntIidxStat;
 
-use crate::gpio::{AnyPin, SealedPin};
+use crate::gpio::{AnyPin, MaybeAnyPin, SealedPin};
 use crate::i2c::{Address, ClockSel, ConfigError, Info, Instance, InterruptHandler, SclPin, SdaPin, State};
 use crate::interrupt::InterruptExt;
 use crate::pac::i2c::vals;
@@ -121,8 +121,8 @@ pub enum ReadStatus {
 pub struct I2cTarget<'d> {
     info: &'static Info,
     state: &'static State,
-    scl: Option<Peri<'d, AnyPin>>,
-    sda: Option<Peri<'d, AnyPin>>,
+    scl: MaybeAnyPin<'d>,
+    sda: MaybeAnyPin<'d>,
 
     /// The clock source, divider and rate this instance was configured for.
     ///
@@ -141,11 +141,11 @@ impl<'d> SetConfig for I2cTarget<'d> {
     fn set_config(&mut self, config: &Self::Config) -> Result<(), Self::ConfigError> {
         self.info.interrupt.disable();
 
-        if let Some(ref sda) = self.sda {
+        if let Some(sda) = self.sda.pin() {
             sda.update_pf(config.0.sda_pf());
         }
 
-        if let Some(ref scl) = self.scl {
+        if let Some(scl) = self.scl.pin() {
             scl.update_pf(config.0.scl_pf());
         }
 
@@ -214,8 +214,8 @@ impl<'d> I2cTarget<'d> {
         Ok(Self {
             info: T::info(),
             state: T::state(),
-            scl,
-            sda,
+            scl: MaybeAnyPin::new(scl),
+            sda: MaybeAnyPin::new(sda),
             resolved,
             target_config,
             wake_guard: MaybeWakeGuard::none(),
@@ -604,7 +604,7 @@ impl<'d> Drop for I2cTarget<'d> {
         // Ensure peripheral is disabled and pins are reset
         self.info.regs.target(0).tctr().modify(|w| w.set_active(false));
 
-        self.scl.as_ref().map(|x| x.set_as_disconnected());
-        self.sda.as_ref().map(|x| x.set_as_disconnected());
+        self.scl.pin().map(|x| x.set_as_disconnected());
+        self.sda.pin().map(|x| x.set_as_disconnected());
     }
 }

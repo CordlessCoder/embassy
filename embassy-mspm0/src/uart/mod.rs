@@ -24,7 +24,7 @@ use embassy_embedded_hal::SetConfig;
 use embassy_hal_internal::PeripheralType;
 
 use crate::Peri;
-use crate::gpio::{AnyPin, PfType, Pull, SealedPin};
+use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Blocking, Mode};
 use crate::pac::uart::{Uart as Regs, vals};
@@ -423,8 +423,8 @@ impl embedded_io::Error for Error {
 pub struct UartRx<'d, M: Mode> {
     info: &'static Info,
     state: &'static State,
-    rx: Option<Peri<'d, AnyPin>>,
-    rts: Option<Peri<'d, AnyPin>>,
+    rx: MaybeAnyPin<'d>,
+    rts: MaybeAnyPin<'d>,
     /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
     _retention_guard: MaybeWakeGuard,
     _phantom: PhantomData<M>,
@@ -486,11 +486,11 @@ impl<'d, M: Mode> UartRx<'d, M> {
 
     /// Reconfigure the driver
     pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        if let Some(ref rx) = self.rx {
+        if let Some(rx) = self.rx.pin() {
             rx.update_pf(config.rx_pf());
         }
 
-        if let Some(ref rts) = self.rts {
+        if let Some(rts) = self.rts.pin() {
             rts.update_pf(config.rts_pf());
         }
 
@@ -505,8 +505,8 @@ impl<'d, M: Mode> UartRx<'d, M> {
 
 impl<'d, M: Mode> Drop for UartRx<'d, M> {
     fn drop(&mut self) {
-        self.rx.as_ref().map(|x| x.set_as_disconnected());
-        self.rts.as_ref().map(|x| x.set_as_disconnected());
+        self.rx.pin().map(|x| x.set_as_disconnected());
+        self.rts.pin().map(|x| x.set_as_disconnected());
     }
 }
 
@@ -517,8 +517,8 @@ impl<'d, M: Mode> Drop for UartRx<'d, M> {
 pub struct UartTx<'d, M: Mode> {
     info: &'static Info,
     state: &'static State,
-    tx: Option<Peri<'d, AnyPin>>,
-    cts: Option<Peri<'d, AnyPin>>,
+    tx: MaybeAnyPin<'d>,
+    cts: MaybeAnyPin<'d>,
     /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
     _retention_guard: MaybeWakeGuard,
     _phantom: PhantomData<M>,
@@ -641,11 +641,11 @@ impl<'d, M: Mode> UartTx<'d, M> {
 
     /// Reconfigure the driver
     pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        if let Some(ref tx) = self.tx {
+        if let Some(tx) = self.tx.pin() {
             tx.update_pf(config.tx_pf());
         }
 
-        if let Some(ref cts) = self.cts {
+        if let Some(cts) = self.cts.pin() {
             cts.update_pf(config.cts_pf());
         }
 
@@ -660,8 +660,8 @@ impl<'d, M: Mode> UartTx<'d, M> {
 
 impl<'d, M: Mode> Drop for UartTx<'d, M> {
     fn drop(&mut self) {
-        self.tx.as_ref().map(|x| x.set_as_disconnected());
-        self.cts.as_ref().map(|x| x.set_as_disconnected());
+        self.tx.pin().map(|x| x.set_as_disconnected());
+        self.cts.pin().map(|x| x.set_as_disconnected());
     }
 }
 
@@ -913,8 +913,8 @@ impl<'d, M: Mode> UartRx<'d, M> {
         let mut this = Self {
             info: T::info(),
             state: T::state(),
-            rx,
-            rts,
+            rx: MaybeAnyPin::new(rx),
+            rts: MaybeAnyPin::new(rts),
             _retention_guard: retention_guard(T::info()),
             _phantom: PhantomData,
         };
@@ -943,8 +943,8 @@ impl<'d, M: Mode> UartTx<'d, M> {
         let mut this = Self {
             info: T::info(),
             state: T::state(),
-            tx,
-            cts,
+            tx: MaybeAnyPin::new(tx),
+            cts: MaybeAnyPin::new(cts),
             _retention_guard: retention_guard(T::info()),
             _phantom: PhantomData,
         };
@@ -980,16 +980,16 @@ impl<'d, M: Mode> Uart<'d, M> {
             tx: UartTx {
                 info,
                 state,
-                tx,
-                cts,
+                tx: MaybeAnyPin::new(tx),
+                cts: MaybeAnyPin::new(cts),
                 _retention_guard: retention_guard(info),
                 _phantom: PhantomData,
             },
             rx: UartRx {
                 info,
                 state,
-                rx,
-                rts,
+                rx: MaybeAnyPin::new(rx),
+                rts: MaybeAnyPin::new(rts),
                 _retention_guard: retention_guard(info),
                 _phantom: PhantomData,
             },

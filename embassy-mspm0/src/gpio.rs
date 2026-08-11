@@ -1069,6 +1069,90 @@ impl AnyPin {
     }
 }
 
+/// An optional [`AnyPin`], in one byte.
+///
+/// `Option<Peri<'d, AnyPin>>` costs **two** bytes to carry one byte of payload: every `u8` is a valid
+/// `pin_port` as far as the compiler knows, so `Option` has no niche to use and adds a discriminant.
+/// A driver holding four of them — the three timer drivers and the buffered UART each do — pays four
+/// bytes for nothing. This spends the one `pin_port` value no chip can produce instead.
+///
+/// **Why a sentinel rather than a niche on `AnyPin` itself.** Biasing `pin_port` by one so that zero
+/// becomes free was tried first and is a trap: `pin_cm` feeds `pin_port` into `gpio_pincm`, a generated
+/// `match` over every pin, which LLVM emits as a **240-byte lookup table** in `.rodata`. The subtract
+/// the bias adds costs it the range knowledge that table depends on, and the match expands into a
+/// comparison chain — measured at **+384 bytes of `.text` to save 240 of `.rodata`**. A sentinel keeps
+/// `pin_port` exactly what it was, so the table survives.
+pub(crate) struct MaybeAnyPin<'d> {
+    /// `port * 32 + bit`, or [`MaybeAnyPin::NONE`].
+    pin_port: u8,
+    /// Owns the pin for `'d`, as the `Peri` this replaces did.
+    _lifetime: PhantomData<&'d mut AnyPin>,
+}
+
+impl<'d> MaybeAnyPin<'d> {
+    /// No pin. `port * 32 + bit` reaches 95 on the widest part, so this is unreachable by construction.
+    const NONE: u8 = u8::MAX;
+
+    /// Take ownership of `pin`, if there is one.
+    #[inline]
+    pub(crate) fn new(pin: Option<Peri<'d, AnyPin>>) -> Self {
+        Self {
+            pin_port: match pin {
+                Some(pin) => pin.pin_port(),
+                None => Self::NONE,
+            },
+            _lifetime: PhantomData,
+        }
+    }
+
+    /// No pin.
+    #[inline]
+    pub(crate) const fn none() -> Self {
+        Self {
+            pin_port: Self::NONE,
+            _lifetime: PhantomData,
+        }
+    }
+
+    /// Give the pin back, so a driver can hand it to its caller.
+    #[inline]
+    pub(crate) fn into_peri(self) -> Option<Peri<'d, AnyPin>> {
+        let pin_port = self.pin_port;
+
+        // SAFETY: `self` owned this pin for `'d` and is consumed here, so the token is moved rather
+        // than duplicated.
+        self.is_some()
+            .then(|| unsafe { Peri::new_unchecked(AnyPin { pin_port }) })
+    }
+
+    /// Borrow the pin for a shorter lifetime, as `Peri::reborrow` does.
+    #[inline]
+    pub(crate) fn reborrow(&mut self) -> MaybeAnyPin<'_> {
+        MaybeAnyPin {
+            pin_port: self.pin_port,
+            _lifetime: PhantomData,
+        }
+    }
+
+    /// Whether a pin was given.
+    #[inline]
+    pub(crate) fn is_some(&self) -> bool {
+        self.pin_port != Self::NONE
+    }
+
+    /// The pin, for the register-level methods on [`SealedPin`].
+    ///
+    /// Handed back by value rather than by reference because [`AnyPin`] is one byte and every method
+    /// on it only reads that byte. The copy does not duplicate ownership in any way that matters:
+    /// `self` still owns the pin for `'d`, and the result cannot outlive the borrow.
+    #[inline]
+    pub(crate) fn pin(&self) -> Option<AnyPin> {
+        self.is_some().then(|| AnyPin {
+            pin_port: self.pin_port,
+        })
+    }
+}
+
 impl_peripheral!(AnyPin);
 
 impl Pin for AnyPin {}
