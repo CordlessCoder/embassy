@@ -257,6 +257,12 @@ impl<'d, T: Instance> Flash<'d, T> {
     /// cannot be had from [`Flash::blocking_read`].
     ///
     /// A word programmed with all ones answers `true` as well, having nothing to distinguish it.
+    ///
+    /// **So this does not answer "has anything been stored here".** A sparsely populated image is
+    /// mostly `0xFF`, and every one of those words reports blank — a freshly written region comes
+    /// back as partly erased. Program a marker onto whatever is stored and test for the marker, which
+    /// is what TI's own EEPROM emulation does. What this is for is confirming an erase, and reading
+    /// back a region before programming it.
     pub fn blocking_is_blank(&mut self, offset: u32) -> Result<bool, Error> {
         check_range(offset, WORD_SIZE)?;
 
