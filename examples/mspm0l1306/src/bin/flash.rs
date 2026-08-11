@@ -8,8 +8,11 @@
 //! reports blank and a programmed one does not, that a word reads back exactly the bytes it was
 //! given, and that the driver refuses an offset or a length that is not a whole flash word.
 //!
-//! The last phase reprograms a word that was never erased. The device is entitled to fail it and
-//! entitled to corrupt the word instead, so the result is printed rather than judged.
+//! The last two phases reprogram a word that was not erased first. SLAU847 §6.3.3 makes them
+//! different cases, and only the second is the dangerous one: re-writing *identical* data is masked
+//! bit by bit and passes silently, while a write needing any bit to go 0 -> 1 cannot be done at all
+//! and should be reported. Both results are printed rather than judged, because what the silicon
+//! does decides whether the driver should enable `CMDCTL.DATAVEREN`.
 //!
 //! No wiring.
 
@@ -127,11 +130,30 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    // Programming a word for the second time since its erase. Not judged: the controller may report
-    // it, and may equally program the bits it can and leave the word wrong.
+    // The benign case: the same word programmed again with the data it already holds. §6.3.3.1's bit
+    // masking gives already-correct bits no pulses, so this is expected to pass — it still spends one
+    // of the word line's writes before an erase is required.
     match flash.blocking_write(SECTOR, &PATTERN[..8]) {
-        Ok(()) => warn!("second write to the same word: accepted"),
-        Err(error) => info!("second write to the same word: {}", error),
+        Ok(()) => info!("second write, identical data: accepted, as expected"),
+        Err(error) => warn!("second write, identical data: {}", error),
+    }
+
+    // The dangerous case, and the one that decides `DATAVEREN`: every bit of this is a one, and the
+    // word holds zeros, so it cannot be programmed without an erase. The controller should report it
+    // rather than leave the word half written.
+    match flash.blocking_write(SECTOR, &[0xFF; 8]) {
+        Err(error) => info!("second write, needs 0 -> 1: refused with {}", error),
+        Ok(()) => {
+            warn!("second write, needs 0 -> 1: ACCEPTED — the word is now whatever the pulses managed");
+            fails += 1;
+        }
+    }
+
+    // What the word actually holds afterwards, which says whether anything was corrupted by the two
+    // attempts above.
+    let mut after = [0u8; 8];
+    if flash.blocking_read(SECTOR, &mut after).is_ok() {
+        info!("word after both attempts: {=[u8]:#04x}", after);
     }
 
     if fails == 0 {

@@ -29,11 +29,20 @@
 //! promise. TI's own EEPROM emulation sidesteps it by programming a header word onto every record
 //! and never inferring anything from an unprogrammed one.
 //!
-//! # One program per word per erase
+//! # One program per word per erase, and the driver enforces it
 //!
 //! A flash word is eight bytes and can be programmed once between erases, whatever the sector's
 //! remaining lifetime. That is why [`embedded_storage::nor_flash::MultiwriteNorFlash`] is not
 //! implemented: it promises the opposite.
+//!
+//! **Left to itself the controller does not report a write it cannot perform.** Measured: writing
+//! all-ones over a programmed word returns success and changes nothing, so the data is lost with no
+//! error anywhere. `CMDCTL.DATAVEREN` is what turns that into [`Error::NotErased`], and this driver
+//! sets it — TI's own code never does, and its absence is why the failure is silent.
+//!
+//! Re-writing a word with the *same* data it already holds still succeeds, which is correct: no bit
+//! has to change, and SLAU847 §6.3.3.1's masking gives it no pulses. It still spends one of the word
+//! line's writes before an erase is required.
 //!
 //! # There is nothing to await
 //!
@@ -117,6 +126,9 @@ pub enum Error {
     Mode,
 
     /// A program tried to return a stored zero to one, which only an erase can do.
+    ///
+    /// Reported because the driver sets `CMDCTL.DATAVEREN`. Without it the controller accepts such a
+    /// write, performs none of it and says nothing.
     NotErased,
 
     /// The controller reported a failure it does not break down further.
@@ -283,6 +295,13 @@ impl<'d, T: Instance> Flash<'d, T> {
         r.cmdctl().modify(|w| {
             w.set_addrxlateovr(false);
             w.set_eccgenovr(false);
+
+            // Reports a program that would need a stored zero to return to one, rather than
+            // accepting it and doing nothing -- which is measurably what happens without it. Costs
+            // no pulses and no word-line write, since the check is made before the operation runs,
+            // and it does not refuse a legitimate first write: every other case in the flash example
+            // still passes with it on.
+            w.set_dataveren(true);
         });
 
         // The prefetcher would otherwise speculate into a bank the controller is about to take, and

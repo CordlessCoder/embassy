@@ -196,4 +196,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/low-power: restore the brown-out warning level across deep sleep on the families carrying `PMCU_ERR_03`, where it does not work in STANDBY
 - feat: mspm0/sysctl: add `Config::vboost`, which decides when the analog charge pump runs and so how long a comparator or amplifier takes to become ready
 - feat: mspm0: add `reset`, the software reset that `read_reset_cause` reports afterwards
+- fix: mspm0/flash: report a program that would need a stored zero to return to one, which the controller otherwise accepts, performs none of, and says nothing about
 
