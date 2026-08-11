@@ -287,11 +287,12 @@ pub struct Config {
     /// | through an OPA, gain x32 | 1.5 us |
     /// | through the general-purpose amplifier | 2.5 us |
     /// | the supply monitor | 3 us |
-    /// | the temperature sensor, to settle | 2.5 us typical, 10 us maximum |
+    /// | the temperature sensor, to settle | 10 us on the L-series, 12.5 us on the G-series |
     ///
-    /// The default is fifty cycles, about 1.5 us on the clock tree this crate defaults to — ten times
-    /// what a low-impedance pin needs, and **short of every internal source in that table**. A higher
-    /// source impedance wants more too: 50 ohms is lower than most sensors.
+    /// The driver holds SAMPCLK at or just under 8 MHz, so the default of fifty cycles is about
+    /// 6.25 us. That covers every source in the table except the temperature sensor, which is the
+    /// one that needs [`Config::sample_period_1`] or a raised default. A higher source impedance
+    /// wants more as well: 50 ohms is lower than most sensors.
     ///
     /// Two comparators exist so a sequence can mix them, taking the short window for the pins and the
     /// long one for whatever needs it, rather than paying the longest for every conversion.
@@ -324,16 +325,15 @@ impl Default for Config {
         Self {
             resolution: Resolution::Bits12,
             sample_clk: SampleClock::Sysosc,
-            // Fifty sample clocks, which at the 32 MHz SYSOSC this defaults to is about 1.5 us. The
-            // datasheet's `tSample` for 12-bit mode is 156 ns at a 50 ohm source, so this is roughly
-            // ten times the minimum -- margin worth having, because that figure assumes a source
+            // Fifty sample clocks, which is 6.25 us at the 8 MHz SAMPCLK the divider aims for. The
+            // datasheet's `tSample` for 12-bit mode is 156 ns at a 50 ohm source, so this is forty
+            // times the minimum -- margin worth having, because that figure assumes a source
             // impedance almost nothing real has, and the window has to charge the sampling capacitor
             // through whatever the input actually is.
             //
-            // **It is not enough for any of the internal sources**, whose figures are far longer than
-            // an external pin's: 2.5 us through the general-purpose amplifier, 3 us for the supply
-            // monitor, and up to 10 us for the temperature sensor to settle. See
-            // [`Config::sample_period_0`].
+            // It covers the internal sources too, bar one: 2.5 us through the general-purpose
+            // amplifier and 3 us for the supply monitor both fit, and the temperature sensor's 10 to
+            // 12.5 us does not. See [`Config::sample_period_0`].
             sample_period_0: NonZeroU16::new(50).unwrap(),
             sample_period_1: NonZeroU16::new(50).unwrap(),
             averaging: None,

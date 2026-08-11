@@ -223,3 +223,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/opa: refuse at compile time to select a DAC12, DAC8 or `VREF+` input position the device's amplifier does not have, as `ground()` already did
 - mspm0/adc: encode `Vrsel` through a match rather than its `repr`, and drop the run-time bounds check that could never fail
 - mspm0/dma: allow 128-bit transfers on the devices whose DMA implements them
+- docs: mspm0/adc: correct the default sample window to 6.25 us, which clears every internal source except the temperature sensor
