@@ -75,11 +75,18 @@ impl ClockSel {
     /// evaluated at compile time. `BusClk` is ULPCLK rather than MCLK because every I2C instance is in
     /// PD0 — asserted per instance in `impl_i2c_instance!`, so this does not have to ask for the domain.
     pub const fn frequency(self, clocks: &crate::sysctl::Clocks) -> u32 {
+        self.rate(clocks.mfclk, clocks.ulpclk)
+    }
+
+    /// [`Self::frequency`] from the two rates it picks between.
+    ///
+    /// Taking them loose lets [`Config::resolve`] hold the critical section for the read alone.
+    const fn rate(self, mfclk: u32, ulpclk: u32) -> u32 {
         match self {
             // MFCLK is held at 4 MHz by SYSCTL whatever SYSOSC is doing, and reads as 0 when it was
             // never enabled, in which case the peripheral would not be clocked at all.
-            Self::MfClk => clocks.mfclk,
-            Self::BusClk => clocks.ulpclk,
+            Self::MfClk => mfclk,
+            Self::BusClk => ulpclk,
         }
     }
 }
@@ -385,12 +392,22 @@ impl Config {
     /// This is deliberately the *only* place the I2C setup path divides. Cortex-M0+ has no divide
     /// instruction, so each division site that survives optimization drags in a ~400 byte software
     /// divider; funnelling them here means a pre-solved [`Timing`] removes every one of them.
+    ///
+    /// Only the three rates come out of the critical section; the arithmetic stays outside it.
+    /// `critical_section::with` does not inline, so anything left inside the closure is emitted once and
+    /// shared between call sites, where it can no longer see that the caller's config is a constant.
+    /// Folding is what removes the divisions, so resolving in there cost a second [`I2c`] 482 bytes of
+    /// software divider. Both attributes are needed: either one alone is worth nothing.
+    #[inline(always)]
     pub(crate) fn resolve(&self) -> Result<Resolved, ConfigError> {
-        crate::sysctl::with_clocks(|clocks| self.resolve_on(clocks))
+        let (mfclk, ulpclk, mclk) = crate::sysctl::with_clocks(|clocks| (clocks.mfclk, clocks.ulpclk, clocks.mclk));
+
+        self.resolve_on(mfclk, ulpclk, mclk)
     }
 
-    /// [`Self::resolve`] against a tree already in hand.
-    fn resolve_on(&self, clocks: &crate::sysctl::Clocks) -> Result<Resolved, ConfigError> {
+    /// [`Self::resolve`] against rates already in hand.
+    #[inline(always)]
+    fn resolve_on(&self, mfclk: u32, ulpclk: u32, mclk: u32) -> Result<Resolved, ConfigError> {
         // A pre-solved timing already carries its clock source, the divider, the resulting rate and the
         // timer period, so nothing below needs computing.
         if let Some(timing) = self.timing {
@@ -398,7 +415,7 @@ impl Config {
                 clock_source: timing.clock_source(),
                 clock_div: timing.clock_div,
                 clock_hz: timing.clock_hz(),
-                source_hz: timing.clock_source().frequency(clocks),
+                source_hz: timing.clock_source().rate(mfclk, ulpclk),
                 tpr: timing.tpr(),
                 clock_low_timeout: match self.clock_low_timeout_us {
                     Some(us) => Some(solve_clock_low_timeout(us, timing.clock_hz())?),
@@ -426,7 +443,7 @@ impl Config {
             ClockSel::MfClk
         };
 
-        let source_hz = clock_source.frequency(clocks);
+        let source_hz = clock_source.rate(mfclk, ulpclk);
         let clock_hz = source_hz / divider;
 
         // The source must be ~20x the bus speed.
@@ -458,8 +475,8 @@ impl Config {
                 Some(us) => Some(solve_clock_low_timeout(us, clock_hz)?),
                 None => None,
             },
-            half_period_cycles: half_period_cycles(clocks.mclk, clock_hz, tpr),
-            settle_cycles: settle_cycles(clocks.mclk, clock_hz),
+            half_period_cycles: half_period_cycles(mclk, clock_hz, tpr),
+            settle_cycles: settle_cycles(mclk, clock_hz),
         })
     }
 }

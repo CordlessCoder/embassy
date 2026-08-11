@@ -209,3 +209,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/gpio: look the pin-to-PINCM mapping up in a table rather than a `match`, which the optimiser was free to compile either way
 - mspm0/gpio: carry an optional pin in one byte rather than two, saving 4-96 B of flash and 8 B of RAM in the drivers that store several
 - mspm0/tim: release a driver's pins through one shared routine, saving 60-72 B in a binary that drives more than one timer
+- mspm0/i2c: resolve a configuration outside the clock tree's critical section, saving 1236-1508 B in a binary that builds a second I2C
