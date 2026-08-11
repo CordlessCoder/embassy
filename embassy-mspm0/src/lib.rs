@@ -444,8 +444,7 @@ pub fn init(config: Config) -> Peripherals {
             crate::interrupt::typelevel::GPIOA::enable();
         }
 
-        // SAFETY: Peripherals::take_with_cs will only be run once or panic.
-        unsafe { dma::init(cs, config.dma_burst_size, config.dma_round_robin) };
+        dma::init(cs, config.dma_burst_size, config.dma_round_robin);
 
         #[cfg(all(feature = "low-power", feature = "_time-driver"))]
         low_power::set_min_sleep(config.min_sleep);

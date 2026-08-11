@@ -64,6 +64,8 @@ impl<'d> Channel<'d> {
         _ch: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
+        arm_error_events();
+
         Self {
             id: T::ID,
             sw_wake_floor: <T as crate::sysctl::LowPowerInstance>::SLEEP
@@ -487,10 +489,15 @@ impl ChannelState {
     }
 }
 
-/// SAFETY: Must only be called once.
+/// Program the channel arbitration policy.
 ///
-/// Changing the burst size mid transfer may have some odd behavior.
-pub(crate) unsafe fn init(_cs: CriticalSection, burst_size: BurstSize, round_robin: bool) {
+/// Nothing here arms an interrupt: the error events and the NVIC line are [`Channel::new`]'s business,
+/// because that is where a binding proves a handler exists. `init` runs in every binary, including the
+/// ones that never build a channel.
+///
+/// Changing the burst size mid transfer may have some odd behavior, so this expects to run once, before
+/// any channel exists.
+pub(crate) fn init(_cs: CriticalSection, burst_size: BurstSize, round_robin: bool) {
     // Reset leaves fixed priority and an uninterrupted block transfer, which is what `Config`
     // defaults to, so a program that leaves it there has nothing to program. Folds away entirely
     // when the config is a constant.
@@ -500,13 +507,28 @@ pub(crate) unsafe fn init(_cs: CriticalSection, burst_size: BurstSize, round_rob
             prio.set_roundrobin(round_robin);
         });
     }
+}
 
-    pac::DMA.int_event(0).imask().modify(|w| {
-        w.set_dataerr(true);
-        w.set_addrerr(true);
+/// Arm the transfer error events and let the NVIC line through.
+///
+/// Called from [`Channel::new`], which takes a [`Binding`](interrupt::typelevel::Binding) and so cannot
+/// be reached without a handler behind the line. Doing it in `crate::init` instead unmasked the
+/// interrupt in every binary, with `DefaultHandler` behind it wherever nothing bound one — an
+/// unreachable state, since no transfer can raise an error before a channel exists, but the one place
+/// this HAL armed a source it could not prove was handled.
+///
+/// Idempotent: a second channel repeats both writes, which is why the first is a read-modify-write
+/// under a critical section rather than a whole-register store. [`on_irq`] edits the same register.
+fn arm_error_events() {
+    critical_section::with(|_cs| {
+        pac::DMA.int_event(0).imask().modify(|w| {
+            w.set_dataerr(true);
+            w.set_addrerr(true);
+        });
     });
 
-    interrupt::DMA.enable();
+    // SAFETY: the caller holds a binding for this interrupt, so a handler is linked.
+    unsafe { interrupt::DMA.enable() };
 }
 
 pub(crate) trait SealedWord {

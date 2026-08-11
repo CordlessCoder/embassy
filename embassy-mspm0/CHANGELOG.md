@@ -203,3 +203,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/gpio: build an edge wait as a future of its own rather than a generator, saving 100-172 B of flash and 16-96 B of RAM in a binary that waits on a pin, and shortening the wake path
 - mspm0/i2c: hand the `embedded_hal_async::i2c` reads and writes straight to the driver's own futures, saving 368 B of flash and 24 B of RAM in a binary that uses the trait
 - mspm0/examples: make `_probe` a per-binary feature in the low-power example crates, so a plain build no longer carries marker calls through the GPIO interrupt handler
+- fix: mspm0/dma: arm the transfer error events and the NVIC line when a channel is built rather than in `init`, so a binary that binds no DMA handler no longer unmasks the interrupt
