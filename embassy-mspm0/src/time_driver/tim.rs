@@ -11,6 +11,7 @@ use mspm0_metapac::interrupt;
 use mspm0_metapac::tim::Tim;
 
 use crate::interrupt::typelevel::Interrupt;
+use crate::sysctl::MaybeWakeGuard;
 use crate::tim::low_level::{self, CounterOnEnable};
 use crate::tim::{Channel, ClockSel, CountingMode, General2ChannelInstance, SealedInstance, Word};
 use crate::{peripherals, tim};
@@ -178,7 +179,7 @@ impl TimxDriver {
         //
         // `None` here means the timer survives everything and nothing is blocked, which is the case
         // `time-driver-any` selects for.
-        core::mem::forget(low_level::wake_guard::<T>(ClockSel::LfClk));
+        core::mem::forget(MaybeWakeGuard::new(low_level::sleep_floor::<T>(ClockSel::LfClk)));
 
         let regs = regs();
 

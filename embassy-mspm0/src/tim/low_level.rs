@@ -5,7 +5,9 @@ use core::mem::ManuallyDrop;
 use crate::Peri;
 use crate::pac::tim::vals::{Cm, Cvae, CxC, PwrenKey, Repeat, ResetKey};
 use crate::pac::tim::{Tim, regs};
-use crate::sysctl::{MaybeWakeGuard, SleepLevel};
+use crate::sysctl::MaybeWakeGuard;
+#[cfg(any(feature = "low-power", feature = "_time-driver"))]
+use crate::sysctl::SleepLevel;
 use crate::tim::{Channel, ClockSel, CountingMode, Instance, Word};
 
 /// Why a frequency cannot be programmed.
@@ -161,8 +163,26 @@ const _: () = {
 /// carries the figures and what did pay.
 pub struct Timer<'d, T: Instance> {
     _timer: Peri<'d, T>,
-    /// Held for the driver's lifetime, not per operation: a counter that stops has lost time.
-    _wake_guard: MaybeWakeGuard,
+
+    /// Held for the driver's lifetime, and about the *configuration* rather than the count: a
+    /// peripheral whose registers do not survive a mode has to be kept out of it, or it comes back
+    /// set up as something else. `None` for every PD0 instance, whose registers are never lost.
+    _config_guard: MaybeWakeGuard,
+
+    /// Held only between [`start`](Self::start) and [`stop`](Self::stop), and about the *count*: a
+    /// counter that stops has lost time, and a stopped one has no time to lose.
+    running_guard: MaybeWakeGuard,
+
+    /// The floor [`start`](Self::start) takes, worked out once.
+    ///
+    /// Recomputing it per start would read the live clock tree under a critical section, which is
+    /// more than the whole rest of `start` costs.
+    ///
+    /// Behind the cfg because of what computing it *calls*, not because of the byte it occupies:
+    /// `sleep_floor` reaches the clock tree through `critical_section::with`, which does not inline,
+    /// so a build with no deep sleep to guard against pays 60 bytes for a figure it never reads.
+    #[cfg(feature = "low-power")]
+    operation_floor: Option<SleepLevel>,
 }
 
 impl<'d, T: Instance> Timer<'d, T> {
@@ -172,7 +192,10 @@ impl<'d, T: Instance> Timer<'d, T> {
 
         Self {
             _timer: timer,
-            _wake_guard: wake_guard::<T>(config.clock),
+            _config_guard: MaybeWakeGuard::new(T::SLEEP.floor_to_keep_configured()),
+            running_guard: MaybeWakeGuard::none(),
+            #[cfg(feature = "low-power")]
+            operation_floor: sleep_floor::<T>(config.clock),
         }
     }
 
@@ -188,24 +211,45 @@ impl<'d, T: Instance> Timer<'d, T> {
 
         teardown::<T>();
 
-        // SAFETY: `this` is never dropped and neither field is touched again, so each is moved out
-        // exactly once.
+        // SAFETY: `this` is never dropped and no field is touched again, so each is moved out or
+        // dropped exactly once.
         unsafe {
-            core::ptr::drop_in_place(&mut this._wake_guard);
+            core::ptr::drop_in_place(&mut this._config_guard);
+            core::ptr::drop_in_place(&mut this.running_guard);
             core::ptr::read(&this._timer)
         }
     }
 
     /// Let the counter advance.
+    ///
+    /// Takes the sleep guard that keeps the counter counting, and holds it until
+    /// [`stop`](Self::stop). The guard comes first: between taking it and setting `EN` the counter
+    /// is not yet running, where the other order would leave it running unguarded.
+    ///
+    /// Assigning rather than releasing first matters on a `start` called while already running. The
+    /// new guard is taken before the old one is dropped, so the block never reaches zero in between.
     #[inline]
-    pub fn start(&self) {
+    pub fn start(&mut self) {
+        // A block rather than an attribute on the assignment, because an attribute on a bare
+        // expression is still unstable.
+        #[cfg(feature = "low-power")]
+        {
+            self.running_guard = MaybeWakeGuard::new(self.operation_floor);
+        }
+
         T::info().regs.counterregs(0).ctrctl().modify(|w| w.set_en(true));
     }
 
     /// Halt the counter, keeping its value.
+    ///
+    /// Releases the guard [`start`](Self::start) took, so a stopped timer stops holding the chip out
+    /// of the sleep modes its clock would not survive. Stopping comes first, for the same reason the
+    /// guard comes first in `start`.
     #[inline]
-    pub fn stop(&self) {
+    pub fn stop(&mut self) {
         T::info().regs.counterregs(0).ctrctl().modify(|w| w.set_en(false));
+
+        self.running_guard.release();
     }
 
     /// Current counter value.
@@ -409,6 +453,7 @@ pub(crate) fn configure<T: Instance>(config: &Config) {
 ///
 /// Depends on the configured tree, so this reads the live clocks rather than answering at compile
 /// time as it did while the tree was fixed.
+#[cfg(any(feature = "low-power", feature = "_time-driver"))]
 pub(crate) fn sleep_floor<T: Instance>(clock: ClockSel) -> Option<SleepLevel> {
     let clock_hz = crate::sysctl::with_clocks(|clocks| clock.frequency(clocks, T::SLEEP.power_domain));
 
@@ -419,11 +464,6 @@ pub(crate) fn sleep_floor<T: Instance>(clock: ClockSel) -> Option<SleepLevel> {
     }
 
     T::SLEEP.floor_for_operation(clock_hz)
-}
-
-/// Take a guard holding [`sleep_floor`], if that clock choice costs anything at all.
-pub(crate) fn wake_guard<T: Instance>(clock: ClockSel) -> MaybeWakeGuard {
-    MaybeWakeGuard::new(sleep_floor::<T>(clock))
 }
 
 /// Every channel's up-direction capture/compare flag.

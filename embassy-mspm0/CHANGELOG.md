@@ -227,3 +227,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/adc: expose the internal temperature sensor as an ADC channel, with `temp_calibration_code()` for the per-unit factory trim value
 - mspm0/adc: `TempSensor` carries the device's temperature-sensor constants and converts a reading to millidegrees, the calibration reference being one of three across the portfolio
 - mspm0/gpio: `debug_assert!` that `Pull::Up` is not asked for on an open-drain pin, whose structure has no pullup and silently ignored it
+- **breaking**: mspm0/tim: `low_level::Timer::start` and `stop` take `&mut self`, and the sleep guard that keeps the counter counting is held only between them — a stopped timer no longer blocks deep sleep
