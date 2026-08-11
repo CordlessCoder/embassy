@@ -27,6 +27,11 @@
 //!
 //! # What to check
 //!
+//! - **Build it without `_probe`, which is what this crate now defaults to.** The feature puts marker
+//!   calls inside the GPIO handler, and the handler is inside the `entry` window — it is worth
+//!   **120 cycles per handler entry**, a third of what `entry` used to read. Every figure taken here
+//!   before 2026-08-11 was instrumented, so the deltas in those comparisons stand and the absolutes do
+//!   not.
 //! - **`min`, not `mean`.** The time driver's interrupt lands inside a window now and then; the minimum
 //!   is the path with nothing else in it. `dispatch` is bimodal by about one pass of the executor loop,
 //!   depending on where the injecting task sits in the run queue, so compare minima across builds.

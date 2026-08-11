@@ -11,7 +11,7 @@ publish = false
 #
 # `unsafe-atomics-single-core` shortens a GPIO wake, which is current drawn before the chip can sleep
 # again. It needs `default-features = false`, hence the explicit `rt`.
-embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", default-features = false, features = ["mspm0g3507pm", "defmt", "rt", "time-driver-any", "time", "executor-thread", "executor-interrupt", "unstable-pac", "_probe", "unsafe-atomics-single-core"] }
+embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", default-features = false, features = ["mspm0g3507pm", "defmt", "rt", "time-driver-any", "time", "executor-thread", "executor-interrupt", "unstable-pac", "unsafe-atomics-single-core"] }
 embassy-executor = { version = "0.10.0", path = "../../embassy-executor" }
 embassy-sync = { version = "0.8.0", path = "../../embassy-sync", features = ["defmt"] }
 embassy-time = { version = "0.5.1", path = "../../embassy-time", features = ["defmt"] }
@@ -27,6 +27,16 @@ defmt = "1.0.1"
 defmt-rtt = { version = "1.0.0", features = ["disable-blocking-mode"] }
 
 embedded-io-async = { version = "0.7.0" }
+
+[features]
+# Bench instrumentation, off by default and opt-in per binary. It puts marker calls inside the GPIO
+# handler, which is 120 cycles on every wake — left on crate-wide it made `wake_cycles` measure itself,
+# and every entry figure taken here before 2026-08-11 describes an instrumented handler.
+_probe = ["embassy-mspm0/_probe"]
+
+[[bin]]
+name = "wake_latency_probe"
+required-features = ["_probe"]
 
 [profile.release]
 # Matches what actually gets flashed. Without these a release build has no LTO and

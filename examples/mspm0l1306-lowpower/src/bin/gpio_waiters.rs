@@ -12,9 +12,6 @@
 //! listens, so **this runs with rig C wired and needs no rewiring**. `PA16` is driven by this example
 //! through an open-drain output with its pull-up, so its level can be moved; `PA17` is only ever an input.
 //!
-//! This crate builds with `_probe`, whose markers are these same pins — harmless, because a marker does
-//! nothing until `probe::arm` is called and this binary never calls it.
-//!
 //! # Cases
 //!
 //! | case | what it proves |

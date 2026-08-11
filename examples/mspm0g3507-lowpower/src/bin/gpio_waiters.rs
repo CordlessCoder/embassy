@@ -18,9 +18,6 @@
 //! `PB17` is driven by this example through an open-drain output with its pull-up, so its level can be
 //! moved; the other two are only ever inputs.
 //!
-//! This crate builds with `_probe`, but a marker does nothing until `probe::arm` is called and this binary
-//! never calls it.
-//!
 //! # Cases
 //!
 //! | case | what it proves |
