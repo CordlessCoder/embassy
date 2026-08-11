@@ -300,7 +300,7 @@ impl<'d, T: Instance> Opa<'d, T> {
     /// If the clock tree left SYSOSC powered down, or geared below its 32 MHz base while
     /// [`Config::rail_to_rail_input`] is set — see the module docs.
     pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
-        let sysosc = crate::sysctl::clocks().sysosc;
+        let sysosc = crate::sysctl::with_clocks(|clocks| clocks.sysosc);
         assert!(sysosc != 0, "the OPA needs SYSOSC running (SLAU846 §21.2.5)");
         if config.rail_to_rail_input {
             assert!(
