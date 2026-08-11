@@ -712,6 +712,7 @@ impl<'d> BufferedUart<'d> {
         Ok(this)
     }
 
+    #[inline(always)]
     fn enable_and_configure(
         &mut self,
         tx_buffer: &'d mut [u8],
@@ -774,6 +775,7 @@ impl<'d> BufferedUartRx<'d> {
         Ok(this)
     }
 
+    #[inline(always)]
     fn enable_and_configure(&mut self, rx_buffer: &'d mut [u8], config: &Config) -> Result<(), ConfigError> {
         let info = self.info;
         let state = self.state;
@@ -1078,6 +1080,7 @@ impl<'d> BufferedUartTx<'d> {
         .await
     }
 
+    #[inline(always)]
     fn enable_and_configure(&mut self, tx_buffer: &'d mut [u8], config: &Config) -> Result<(), ConfigError> {
         let info = self.info;
         let state = self.state;

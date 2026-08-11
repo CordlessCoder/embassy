@@ -923,6 +923,7 @@ impl<'d, M: Mode> UartRx<'d, M> {
         Ok(this)
     }
 
+    #[inline(always)]
     fn enable_and_configure(&mut self, config: &Config) -> Result<(), ConfigError> {
         let info = self.info;
 
@@ -953,6 +954,7 @@ impl<'d, M: Mode> UartTx<'d, M> {
         Ok(this)
     }
 
+    #[inline(always)]
     fn enable_and_configure(&mut self, config: &Config) -> Result<(), ConfigError> {
         let info = self.info;
         let state = self.state;
@@ -999,6 +1001,7 @@ impl<'d, M: Mode> Uart<'d, M> {
         Ok(this)
     }
 
+    #[inline(always)]
     fn enable_and_configure(&mut self, config: &Config) -> Result<(), ConfigError> {
         let info = self.rx.info;
         let state = self.rx.state;
@@ -1054,6 +1057,7 @@ fn enable(regs: Regs) {
     });
 }
 
+#[inline(always)]
 fn configure(
     info: &Info,
     state: &State,
@@ -1065,11 +1069,28 @@ fn configure(
 ) -> Result<(), ConfigError> {
     let r = info.regs;
 
+    // Read out by value up front. Several of the register writes below are closures, and a closure
+    // that borrows `config` puts its address into a callee — which is enough to stop every field
+    // read folding, including the one deciding whether the baud search is reachable.
+    let &Config {
+        clock_source,
+        baudrate,
+        baud,
+        data_bits,
+        stop_bits,
+        parity,
+        msb_order,
+        loop_back_enable,
+        fifo,
+        low_power_rx_wake,
+        ..
+    } = config;
+
     if !enable_rx && !enable_tx {
         return Err(ConfigError::RxOrTxNotEnabled);
     }
 
-    if config.low_power_rx_wake {
+    if low_power_rx_wake {
         if !info.sleep.power_domain.is_powered_in_deep_sleep() {
             return Err(ConfigError::NoDeepSleepWake);
         }
@@ -1078,7 +1099,7 @@ fn configure(
     }
 
     // SLAU846B says that clocks should be enabled before disabling the uart.
-    r.clksel().write(|w| match config.clock_source {
+    r.clksel().write(|w| match clock_source {
         ClockSel::LfClk => {
             w.set_lfclk_sel(true);
             w.set_mfclk_sel(false);
@@ -1098,16 +1119,17 @@ fn configure(
 
     // Read the tree once rather than per arm, and take the rates from it instead of assuming the
     // reset values: MFCLK in particular reads as absent when the clock configuration left it off.
-    let clock = crate::sysctl::with_clocks(|clocks| match config.clock_source {
+    let domain = info.sleep.power_domain;
+    let clock = crate::sysctl::with_clocks(|clocks| match clock_source {
         ClockSel::LfClk => clocks.lfclk,
         ClockSel::MfClk => clocks.mfclk,
-        ClockSel::BusClk => clocks.bus_clock(info.sleep.power_domain),
+        ClockSel::BusClk => clocks.bus_clock(domain),
     });
 
     state.clock.store(clock, Ordering::Relaxed);
 
     info.regs.ctl0().modify(|w| {
-        w.set_lbe(config.loop_back_enable);
+        w.set_lbe(loop_back_enable);
         // Errata UART_ERR_02, must set RXE to allow use of EOT.
         w.set_rxe(enable_rx | enable_tx);
         w.set_txe(enable_tx);
@@ -1117,10 +1139,10 @@ fn configure(
         w.set_rtsen(enable_rts);
         w.set_ctsen(enable_cts);
         // oversampling is set later
-        w.set_fen(config.fifo.is_some());
+        w.set_fen(fifo.is_some());
         // Majority voting and glitch suppression are both off and neither is configurable yet.
         w.set_majvote(false);
-        w.set_msbfirst(matches!(config.msb_order, BitOrder::MsbFirst));
+        w.set_msbfirst(matches!(msb_order, BitOrder::MsbFirst));
     });
 
     // A FIFO is only worth having if the interrupt batches across it. At one entry the handler runs once
@@ -1129,7 +1151,7 @@ fn configure(
     //
     // With the FIFOs off there is one byte of depth and no level to reach, so the choice only applies
     // when they are on.
-    let (rx_level, tx_level) = if let Some(threshold) = config.fifo {
+    let (rx_level, tx_level) = if let Some(threshold) = fifo {
         (threshold.rx(info.sleep.power_domain), threshold.tx())
     } else {
         (vals::Iflssel::AtLeastOne, vals::Iflssel::AtLeastOne)
@@ -1141,17 +1163,17 @@ fn configure(
         // A receive level above one entry needs the timeout armed, or a partial FIFO waits for bytes
         // that never come and the last few of a message are never delivered. Zero, the reset value,
         // disables it entirely and is what makes `RTOUT` unable to fire.
-        w.set_rxtosel(if config.fifo.is_some() { RX_TIMEOUT_BITS } else { 0 });
+        w.set_rxtosel(if fifo.is_some() { RX_TIMEOUT_BITS } else { 0 });
     });
 
     info.regs.lcrh().modify(|w| {
-        let eps = if matches!(config.parity, Parity::ParityEven) {
+        let eps = if matches!(parity, Parity::ParityEven) {
             vals::Eps::Even
         } else {
             vals::Eps::Odd
         };
 
-        let wlen = match config.data_bits {
+        let wlen = match data_bits {
             DataBits::DataBits5 => vals::Wlen::Databit5,
             DataBits::DataBits6 => vals::Wlen::Databit6,
             DataBits::DataBits7 => vals::Wlen::Databit7,
@@ -1160,9 +1182,9 @@ fn configure(
 
         // Used in LIN mode only
         w.set_brk(false);
-        w.set_pen(config.parity != Parity::ParityNone);
+        w.set_pen(parity != Parity::ParityNone);
         w.set_eps(eps);
-        w.set_stp2(matches!(config.stop_bits, StopBits::Stop2));
+        w.set_stp2(matches!(stop_bits, StopBits::Stop2));
         w.set_wlen(wlen);
         // appears to only be used in RS-485 mode.
         w.set_sps(false);
@@ -1173,9 +1195,9 @@ fn configure(
 
     // A pre-solved divider skips the search entirely, which is what keeps the software divider out
     // of the binary when the clock and baud rate are both compile-time constants.
-    match config.baud {
+    match baud {
         Some(baud) => baud.apply(info.regs),
-        None => set_baudrate_inner(info.regs, clock, config.baudrate)?,
+        None => set_baudrate_inner(info.regs, clock, baudrate)?,
     }
 
     r.ctl0().modify(|w| {
