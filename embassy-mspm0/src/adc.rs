@@ -331,7 +331,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         // A sampling future dropped half way through leaves a conversion running.
         while r.ctl0().read().enc() {}
 
-        Self::setup_sequence([(channel.get_hw_channel(), conversion)].into_iter());
+        Self::setup_one(channel.get_hw_channel(), conversion);
 
         r.ctl0().modify(|w| {
             w.set_enc(true);
@@ -413,7 +413,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
 
         // Wait until ADC is not converting to start - an active conversion might've been cancelled.
         Self::wait_for_conversion().await;
-        Self::setup_sequence([(channel.get_hw_channel(), conversion)].into_iter());
+        Self::setup_one(channel.get_hw_channel(), conversion);
 
         // Write is used to zero the other MEMRES interrupt bits.
         r.cpu_int(0).imask().write(|w| {
@@ -623,39 +623,59 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         });
     }
 
-    fn setup_sequence(sequence: impl ExactSizeIterator<Item = (u8, Conversion)>) {
+    /// Program one `MEMCTL` entry.
+    fn write_memctl(i: usize, ch: u8, conversion: Conversion) {
         let r = T::info().regs;
+
+        assert!(
+            (conversion.vrsel as u8) < ADC_VRSEL,
+            "Reference voltage selection out of bounds"
+        );
+
+        // Read back rather than kept on the driver: the rate lives in `CTL1` from `Config`, and a
+        // copy here could disagree with what is actually programmed.
+        assert!(
+            !conversion.average || r.ctl1().read().avgn() != vals::Avgn::Disable,
+            "Conversion::average needs Config::averaging set"
+        );
+
+        r.memctl(i).write(|w| {
+            w.set_chansel(ch);
+            // TODO: Conversion function to not be repr dependent
+            w.set_vrsel(vals::Vrsel::from_bits(conversion.vrsel as u8));
+            w.set_stime(convert_stime(conversion.stime));
+            w.set_avgen(conversion.average);
+            w.set_bcsen(false);
+            w.set_trig(vals::Trig::AutoNext);
+            w.set_wincomp(false);
+        });
+    }
+
+    /// Set the conversion window to `MEMCTL[0..=last]`.
+    fn set_window(last: usize) {
+        T::info().regs.ctl2().modify(|w| {
+            w.set_startadd(0);
+            w.set_endadd(last as u8);
+        });
+    }
+
+    /// A sequence of one, without building an iterator for it.
+    ///
+    /// Single-channel reads are the common case. Going through `setup_sequence` left a one-element
+    /// loop whose iterator stopped being inlined once a second instance gave it a second call site.
+    fn setup_one(ch: u8, conversion: Conversion) {
+        Self::write_memctl(0, ch, conversion);
+        Self::set_window(0);
+    }
+
+    fn setup_sequence(sequence: impl ExactSizeIterator<Item = (u8, Conversion)>) {
         let len = sequence.len();
 
         for (i, (ch, conversion)) in sequence.enumerate() {
-            assert!(
-                (conversion.vrsel as u8) < ADC_VRSEL,
-                "Reference voltage selection out of bounds"
-            );
-
-            // Read back rather than kept on the driver: the rate lives in `CTL1` from `Config`, and a
-            // copy here could disagree with what is actually programmed.
-            assert!(
-                !conversion.average || r.ctl1().read().avgn() != vals::Avgn::Disable,
-                "Conversion::average needs Config::averaging set"
-            );
-
-            r.memctl(i).write(|w| {
-                w.set_chansel(ch);
-                // TODO: Conversion function to not be repr dependent
-                w.set_vrsel(vals::Vrsel::from_bits(conversion.vrsel as u8));
-                w.set_stime(convert_stime(conversion.stime));
-                w.set_avgen(conversion.average);
-                w.set_bcsen(false);
-                w.set_trig(vals::Trig::AutoNext);
-                w.set_wincomp(false);
-            });
+            Self::write_memctl(i, ch, conversion);
         }
 
-        r.ctl2().modify(|w| {
-            w.set_startadd(0);
-            w.set_endadd((len - 1) as u8);
-        });
+        Self::set_window(len - 1);
     }
 
     /// Return `impl Future` to reduce async state machine size.

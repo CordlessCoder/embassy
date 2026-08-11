@@ -211,3 +211,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/tim: release a driver's pins through one shared routine, saving 60-72 B in a binary that drives more than one timer
 - mspm0/i2c: resolve a configuration outside the clock tree's critical section, saving 1236-1508 B in a binary that builds a second I2C
 - mspm0/uart: read the configuration by value rather than through the register-write closures, saving 824-912 B in a binary that builds a second UART
+- mspm0/adc: read a single channel without building a sequence for it, saving 136 B in any binary that reads one
