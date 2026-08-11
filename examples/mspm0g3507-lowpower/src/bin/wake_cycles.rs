@@ -33,9 +33,12 @@
 //! - **The interrupt has to be taken inside the window.** `inject` ends with `dsb`/`isb` for that reason —
 //!   without them the store is still in flight, the handler lands in the next window, and `entry` reads a
 //!   flat 12 cycles.
-//! - **`dispatch` moving when the executor does not.** The hand-off figure is the only one that contains
-//!   no HAL code, so it should not move when only `embassy-mspm0` changes. It is a check on the
-//!   measurement, not a result.
+//! - **`dispatch` moving when the executor does not.** The hand-off figure contains no HAL code, so it
+//!   should not move when only `embassy-mspm0` changes. It is a check on the measurement, not a result
+//!   — but only for a change that leaves `entry` and `poll` alone. It is `dispatch − (entry + poll)`,
+//!   a residual rather than its own measurement, so anything that shortens `poll` without shortening
+//!   `dispatch` by as much shows up here as the hand-off getting slower. Read it as a control only
+//!   when the segments it is derived from have not moved.
 //!
 //! Rebuild against a different `embassy-mspm0` feature set to compare wake mechanisms — the choice is
 //! crate-wide, so that means editing this crate's `Cargo.toml` and reflashing, one build per variant.
