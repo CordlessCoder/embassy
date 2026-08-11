@@ -197,4 +197,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/sysctl: add `Config::vboost`, which decides when the analog charge pump runs and so how long a comparator or amplifier takes to become ready
 - feat: mspm0: add `reset`, the software reset that `read_reset_cause` reports afterwards
 - fix: mspm0/flash: report a program that would need a stored zero to return to one, which the controller otherwise accepts, performs none of, and says nothing about
+- mspm0/crc: document which named CRC each `Config` gives — the common CRC-32 needs `bit_reversed`, and the default is a different standard variant rather than a wrong answer
 

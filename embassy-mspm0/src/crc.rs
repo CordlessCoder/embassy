@@ -25,6 +25,29 @@
 //! [`Crc::feed_words`] instead — but nothing here can check that pairing, which is why it is not done
 //! automatically.
 //!
+//! # Which named CRC you get
+//!
+//! [`Config::bit_reversed`] is what selects between the reflected variants and the unreflected ones,
+//! and it reflects the output as well as the input — the register name says only "bit reverse", so
+//! this is measured rather than read. The final inversion several standards apply is the caller's:
+//! the engine stops at the raw remainder.
+//!
+//! Check values for `"123456789"`, seeded all-ones, confirmed on silicon:
+//!
+//! | polynomial | `bit_reversed` | raw result | inverted |
+//! |---|---|---|---|
+//! | `0x1021` | `false` | `0x29B1` CRC-16/CCITT-FALSE | |
+//! | `0x1021` | `true` | `0x6F91` CRC-16/MCRF4XX | `0x906E` CRC-16/X-25 |
+//! | `0x04C11DB7` | `false` | `0x0376E6E7` CRC-32/MPEG-2 | `0xFC891918` CRC-32/BZIP2 |
+//! | `0x04C11DB7` | `true` | | `0xCBF43926` CRC-32, the zlib and Ethernet one |
+//!
+//! So **the common CRC-32 needs `bit_reversed`**, and leaving it at its default gives a different
+//! named variant rather than a wrong answer.
+//!
+//! [`Config::output_byteswap`] swaps the result's bytes and nothing else, for wire formats that want
+//! it the other way round. [`Config::input_endianness`] has no effect on [`Crc::feed_bytes`], which
+//! stores one byte at a time — it decides the order within a [`Crc::feed_u16`] or [`Crc::feed_u32`].
+//!
 //! # What differs per device
 //!
 //! Three register blocks, and they differ in what they can compute rather than only in layout:
