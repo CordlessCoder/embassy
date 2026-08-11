@@ -395,11 +395,10 @@ pub fn init(config: Config) -> Peripherals {
         };
         sysctl::set_clocks(cs, clocks);
 
-        // TODO: Errata PMCU_ERR_03 states that BOR thresholds other than 0 don't work in STANDBY.
-        // It is only listed for L110x/L13xx, so we can expose this option on other MCUs.
-        pac::SYSCTL.borthreshold().modify(|w| {
-            w.set_level(0);
-        });
+        // The brown-out supervisor is left where the device booted it, which is the reset level on
+        // every MSPM0. Raising it is `sysctl::set_bor_threshold`, and a level that only takes effect
+        // on the `BORCLRCMD` write cannot be set here anyway -- the write this used to make selected
+        // the level the part was already enforcing and never activated it, so it did nothing at all.
 
         gpio::init(pac::GPIOA);
         #[cfg(gpio_pb)]
