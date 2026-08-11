@@ -132,8 +132,9 @@ fn deepest_allowed() -> Option<SleepLevel> {
 pub unsafe fn sleep(cs: CriticalSection) {
     trace!("Attempting to enter low-power sleep");
 
-    // Some of the prefetcher errata applies even for a plain WFI
-    // FIXME: This could be a problem for embassy-executor's default executor.
+    // `CPU_ERR_03` is written against "low power modes" rather than the deep ones, so the guard is
+    // taken before the `WFI` below as well as before a deep sleep. See its note on `PrefetchSuspend`:
+    // an application idling through `embassy-executor`'s own executor does not get this.
     let _prefetch = PrefetchSuspend::new();
 
     match deepest_allowed().filter(|_| min_sleep_met(cs)) {
@@ -257,6 +258,25 @@ impl BorSuspend {
 
 /// Workaround for CPU_ERR_02, CPU_ERR_03, PMCU_ERR_13 - the prefetcher has at least one errata in
 /// sleep for every currently supported MCU.
+///
+/// Ungated because `CPU_ERR_03` covers every family this crate supports, `PMCU_ERR_13` is narrower
+/// (STOP2 and STANDBY0), and `CPU_ERR_02` is not a sleep erratum at all — it says a prefetch disable
+/// does not take effect while a flash access is pending, which is why the register read below is
+/// here.
+///
+/// # This only covers the sleeps this module performs
+///
+/// `CPU_ERR_03` is written against "low power modes", not against the deep ones, and MSPM0 counts
+/// plain SLEEP among them — so a bare `WFI` or `WFE` is in scope. It also names the wake this matters
+/// most for: "a HW Event wake is another example of a process that will wake the device, but not
+/// flush the prefetcher."
+///
+/// **`embassy-executor`'s own Cortex-M executor idles on `WFE` and takes no such guard**, so an
+/// application using it rather than [`crate::executor::Executor`] runs the erratum's exposed case on
+/// every idle. Whether that is reachable in practice is not established here: the corruption needs
+/// the prefetched zeros to survive the wake, and an interrupt handler running from flash is likely to
+/// overwrite them, which is why nothing has been seen. That is an argument about likelihood and not a
+/// guarantee, and it has not been tested on silicon either way.
 struct PrefetchSuspend(pac::cpuss::regs::Ctl);
 
 impl PrefetchSuspend {

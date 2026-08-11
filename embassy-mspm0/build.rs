@@ -1045,8 +1045,6 @@ fn generate_pin() -> TokenStream {
 
         let port = Ident::new(&format!("Port{}", port_letter), Span::call_site());
 
-        // TODO: Feature gate pins that can be used as NRST
-
         // `None` is a gap in the vendor data, not a pin that cannot wake; arm it rather than making the
         // SHUTDOWN-wake API uncompilable on the families whose sysconfig omits `io_wakeup`.
         let wake_capable = pin.wakeup.unwrap_or(true).then(|| {
