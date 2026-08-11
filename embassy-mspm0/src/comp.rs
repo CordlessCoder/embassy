@@ -397,15 +397,27 @@ impl State {
 /// Derived from MCLK because it is a busy-wait on the CPU, and MCLK is the CPU clock in RUN. Split
 /// out so the arithmetic is checked rather than buried in a delay call — a factor-of-1000 slip here
 /// is the one error no build would catch, and the same helper in `vref.rs` is where that was learnt.
+///
+/// Whole microseconds times cycles per microsecond. The exact form needs 64 bits — 80 MHz times
+/// 10 us overflows a `u32` before the division brings it back — and a 64-bit divide on this core is
+/// over a kilobyte of `compiler_builtins`. Splitting MCLK into whole megahertz and the remainder
+/// keeps every divisor constant and the arithmetic in 32 bits, at the cost of rounding the request
+/// up to a whole microsecond. Saturating, because a wrapped product would round the wait down.
+///
+/// **The remainder is what makes this usable below 1 MHz.** Rounding MCLK up to whole megahertz
+/// instead costs nothing at 32 MHz and waits 28 times too long on an LFCLK-sourced MCLK, which is
+/// the tree a low-power application picks.
 const fn wait_cycles(mclk: u32, ns: u32) -> u32 {
     if ns == 0 {
         return 0;
     }
 
-    // In `u64` because 80 MHz times 10 us overflows a `u32` before the division brings it back.
-    let cycles = (mclk as u64 * ns as u64).div_ceil(1_000_000_000);
+    let us = ns.div_ceil(1_000);
+    let cycles = us
+        .saturating_mul(mclk / 1_000_000)
+        .saturating_add(us.saturating_mul(mclk % 1_000_000).div_ceil(1_000_000));
 
-    if cycles == 0 { 1 } else { cycles as u32 }
+    if cycles == 0 { 1 } else { cycles }
 }
 
 // The unit conversion in `wait_cycles` is the one error here no build would catch: too large and the
@@ -420,6 +432,16 @@ const _: () = {
     core::assert!(wait_cycles(32_000_000, 10_000) == 320);
     // An absent datasheet row waits nothing at all, rather than one cycle.
     core::assert!(wait_cycles(32_000_000, 0) == 0);
+    // Never short of the exact answer, at the figures the metapac carries and the rates this runs
+    // at. Covering the wait is the property the rounding has to preserve; equality is not.
+    core::assert!(wait_cycles(80_000_000, 1_500) >= 120);
+    core::assert!(wait_cycles(80_000_000, 10_000) >= 800);
+    core::assert!(wait_cycles(4_000_000, 1_500) >= 6);
+    core::assert!(wait_cycles(32_768, 10_000) >= 1);
+    // And not wildly over on a sub-megahertz MCLK, which rounding the rate up to whole megahertz
+    // was: 10 us at 32768 Hz is one cycle, and that form asked for ten.
+    core::assert!(wait_cycles(32_768, 10_000) == 1);
+    core::assert!(wait_cycles(500_000, 10_000) == 5);
 };
 
 /// Proof that this instance's interrupt is bound to its [`InterruptHandler`].
@@ -681,7 +703,7 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
             Speed::Fast => T::ENABLE_FAST_NS,
             Speed::UltraLowPower => T::ENABLE_ULP_NS,
         };
-        cortex_m::asm::delay(wait_cycles(crate::sysctl::clocks().mclk, enable_ns));
+        cortex_m::asm::delay(crate::sysctl::with_clocks(|clocks| wait_cycles(clocks.mclk, enable_ns)));
 
         // `COMP_ERR_05`: enabling raises both edge flags, so without this the first wait returns
         // immediately on an edge that never happened. Harmless where the erratum does not apply --
@@ -744,7 +766,9 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
     /// DAC both see. Driving it out to a pin is several times slower, and this driver does not.
     pub fn set_dac_code(&mut self, code: DacCode) {
         T::regs().ctl3().write(|w| w.set_daccode(DACCODE, code.to_bits()));
-        cortex_m::asm::delay(wait_cycles(crate::sysctl::clocks().mclk, T::DAC_SETTLE_NS));
+        cortex_m::asm::delay(crate::sysctl::with_clocks(|clocks| {
+            wait_cycles(clocks.mclk, T::DAC_SETTLE_NS)
+        }));
     }
 
     /// The code the reference DAC is programmed with.
