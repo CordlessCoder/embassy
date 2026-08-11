@@ -43,32 +43,18 @@ bind_interrupts!(struct Irqs {
     ADC0 => adc::InterruptHandler<peripherals::ADC0>;
 });
 
-/// The temperature the factory calibration was taken at.
+/// The supply this board runs at, which is what the conversion measures against.
 ///
-/// `TSTRIM` from the datasheet: 30 C typical, and specified only as 27 to 33 C, which is the floor
-/// on how accurate any of this can be.
-const TRIM_DEG_C: i32 = 30;
-
-/// Degrees Celsius per ADC count, with 16 fractional bits.
-///
-/// One count is 3300 mV / 4096 = 0.8057 mV, and the sensor's slope `TSc` is -1.8 mV/C, so a count
-/// is 0.44759 C. The sign is applied where it is used: the sensor's output falls as the die warms,
-/// so a code below the calibration code means a temperature above the trim temperature.
-///
-/// The whole calculation stays in this fixed-point form, which is what keeps it to multiplies and
-/// shifts. ARMv6-M has no divide instruction and no `UMULL` for a reciprocal, so a division by a
-/// constant that is not a power of two links a routine from `compiler_builtins` -- measured at
-/// 476 bytes here, on a binary of about 4 kB, just to split the result for printing.
-///
-/// `round(0.4475911 * 65536)`. The rounding costs 0.003 C at the extremes of this sensor's range,
-/// which is three orders of magnitude inside its accuracy.
-const DEG_C_PER_COUNT_Q16: i32 = 29_333;
+/// The one figure the driver cannot supply, and on a part whose trim was taken against the supply
+/// it scales the answer. A board running off something other than 3.3 V has to say so here.
+const SUPPLY_MV: u32 = 3300;
 
 /// Sample window, in ADC sample clock cycles.
 ///
-/// The driver holds SAMPCLK at 8 MHz, so a cycle is 125 ns and the datasheet's 12.5 us minimum is
-/// 100 cycles. TI's own configuration for this measurement asks for 50 us, and this follows it:
-/// the conversion is not on a hot path and the margin costs nothing worth counting.
+/// `TempSensor::RECOMMENDED_SAMPLE_NS` is the figure to clear and the driver holds SAMPCLK at
+/// 8 MHz, so a cycle is 125 ns and this part's requirement is 100 cycles. TI's own configuration
+/// for this measurement asks for 50 us, and this follows it: the conversion is not on a hot path
+/// and the margin costs nothing worth counting.
 const SAMPLE_CYCLES: u16 = 400;
 
 #[embassy_executor::main]
@@ -86,28 +72,24 @@ async fn main(_spawner: Spawner) -> ! {
     // Matches the reference the factory calibration was taken against.
     conversion.vrsel = Vrsel::VddaVssa;
 
-    let calibration = temp_calibration_code();
-    info!("calibration code: {} (the sensor's reading at 30 C)", calibration);
+    let resolution = adc.resolution();
+
+    info!(
+        "calibration code {} against {} mV, slope {} uV/C, trim {} C",
+        temp_calibration_code(),
+        TempSensor::CALIBRATION_REFERENCE_MV,
+        TempSensor::SLOPE_UV_PER_C,
+        TempSensor::TRIM_CELSIUS,
+    );
 
     loop {
         let code = adc.irq_read(&mut sensor, conversion).await;
+        let milli_c = TempSensor::celsius_millidegrees(code, resolution, SUPPLY_MV);
 
-        let delta = code as i32 - calibration as i32;
-        let temp_q16 = (TRIM_DEG_C << 16) - delta * DEG_C_PER_COUNT_Q16;
-
-        // Split for printing without dividing: the whole part is the top 16 bits, and scaling the
-        // bottom 16 by 1000 puts three decimal places in the same top-16 position. Taking the
-        // magnitude first keeps the fractional part meaningful below zero, where an arithmetic
-        // shift would otherwise round the whole part away from the fraction.
-        let sign = if temp_q16 < 0 { "-" } else { "" };
-        let magnitude = temp_q16.unsigned_abs();
-        let whole = magnitude >> 16;
-        let thousandths = ((magnitude & 0xFFFF) * 1000) >> 16;
-
-        info!(
-            "{}{}.{:03} C (code {}, {} from calibration)",
-            sign, whole, thousandths, code, delta
-        );
+        // Reported in thousandths rather than with a decimal point, because placing one costs a
+        // division by a thousand and this core has no instruction for it -- 476 bytes of
+        // `compiler_builtins`, on a binary of about 4 kB, for the sake of the dot.
+        info!("{} mC (code {})", milli_c, code);
 
         Timer::after_millis(500).await;
     }
