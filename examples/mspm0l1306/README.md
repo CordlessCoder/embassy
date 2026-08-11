@@ -38,3 +38,69 @@ Embassy Chat: https://matrix.to/#/#embassy-rs:matrix.org
 
 `i2c_rejects` checks the addresses and configurations the I2C driver refuses, all of which are settled
 before the peripheral touches the bus, so it needs no wiring and no target.
+
+## Measurement examples
+
+Two binaries measure the HAL rather than demonstrate it, and they are behind a `bench` feature because
+they link **no logger at all**:
+
+```
+DEFMT_LOG=off cargo build --release --features bench --bin wake_edge
+```
+
+The `DEFMT_LOG=off` is not optional for these two. Every other binary here links `defmt-rtt`, whose
+buffer is a kilobyte of RAM and whose encoder runs inside a critical section — and a probe attached to
+drain it holds the device out of the idle being measured. Keeping the logger out is most of what makes
+them measurements. Flash them with `probe-rs download` and start them with `probe-rs reset`, so nothing
+stays attached while they run.
+
+| Example | What it measures | Needs |
+|---|---|---|
+| `wake_edge` | edge-to-response through the async GPIO path, from an idle executor | analyser on two pins |
+| `clock_witness` | the core rate, as a control for anything timed | analyser on one pin |
+
+### `wake_edge`
+
+The executor idles, a press on **S1** wakes it, and a pin toggles as the first thing after the wait
+returns. The interval is the whole software path: interrupt entry, the port handler, the waker, the
+executor hand-off and the poll that completes.
+
+| channel | pin | header | carries |
+|---|---|---|---|
+| D0 | `PA18` — S1 | J2.26 | the stimulus. Idles low; a press drives it to 3V3 |
+| D1 | `PA16` | J2.24 | the response. Toggles once per edge |
+
+Ground the analyser to the board. Nothing else is wired and no second board is involved.
+
+**S1 is active high where S2 is active low** — J11 gives `PA18` an external pulldown and the switch
+connects it to 3V3. Copying `button.rs`'s `Pull::Up` and falling edge onto this pin gives a wait that
+never completes *and* no edge on the analyser, because the internal pull-up holds the pin at the level
+the press drives it to. The capture comes back clean and empty, which looks exactly like a dead lead.
+
+Take the first response after a quiet period. Switch bounce produces further edges within a few
+milliseconds and only the first is a wake from idle.
+
+### `clock_witness`
+
+Toggles the same pin with a fixed cycle delay between edges, so the half-period is a measure of the
+core rate and nothing else. It exists because a latency difference between two builds is meaningless
+until you know they ran at the same speed: **run it before believing any timing comparison.** One
+source built against two versions of the HAL, half-periods agreeing to 0.1 µs in 5 ms, is what says a
+difference in `wake_edge` is software rather than clocks.
+
+### What these read on the reference board
+
+Measured 2026-08-11 on an LP-MSPM0L1306, analyser at 50 MS/s, stable toolchain, the release profile in
+this crate's `Cargo.toml`, and the default clock configuration.
+
+| | median | min | max | σ | n | flash | RAM |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `wake_edge` | **13.90 µs** | 13.90 | 13.94 | 11 ns | 28 | 2140 | 104 |
+
+Every stimulus edge produced exactly one response and no release edge produced one. The 40 ns spread is
+two sample periods, so the measurement sits at the analyser's resolution rather than the firmware's.
+
+For scale, the same application written against `embassy-mspm0` as it stood at `08b2f06d0` measured
+**42.06 µs, 3264 bytes of flash and 176 bytes of RAM** on the same board and toolchain, with
+`clock_witness` confirming both ran the core at the same rate. That is a dated comparison against one
+commit, not a standing claim; re-running both arms is the point of these examples existing.

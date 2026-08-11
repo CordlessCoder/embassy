@@ -23,6 +23,21 @@ defmt-rtt = { version = "1.0.0", features = ["disable-blocking-mode"] }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 panic-semihosting = "0.6.0"
 
+[features]
+# The measurement binaries, which link no logger at all. That is what they are for -- RTT's buffer is a
+# kilobyte of RAM and a probe attached to drain it holds the device out of the idle being measured --
+# and it is also why they are the only binaries here that need `DEFMT_LOG=off` to link. Gating them
+# keeps a plain `cargo build` working for everything else.
+bench = []
+
+[[bin]]
+name = "wake_edge"
+required-features = ["bench"]
+
+[[bin]]
+name = "clock_witness"
+required-features = ["bench"]
+
 [profile.release]
 # Matches what actually gets flashed. Without these a release build has no LTO and
 # `opt-level = 3`, which is roughly 3x larger and makes size comparisons meaningless.
