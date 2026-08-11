@@ -78,7 +78,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_pin_trait_impls());
     g.extend(generate_groups());
     g.extend(generate_gpio_port_interrupts());
-    g.extend(generate_dma_channel_count());
+    g.extend(generate_dma_channel_count(cfgs));
     g.extend(generate_adc_constants(cfgs));
     g.extend(generate_opa_adc_channels());
     g.extend(generate_trng_constants());
@@ -640,8 +640,23 @@ fn generate_gpio_port_interrupts() -> TokenStream {
     }
 }
 
-fn generate_dma_channel_count() -> TokenStream {
+fn generate_dma_channel_count(cfgs: &mut CfgSet) -> TokenStream {
+    cfgs.declare("dma_long_long");
+
     let count = METADATA.dma_channels.len();
+
+    // On the peripheral rather than per channel, because that is where the fact lives: TI builds the
+    // DMA as two IPs and only the newer one has the 128-bit width, which it gives to its basic and
+    // full-feature channels alike. A per-channel answer would be uniformly true or false while looking
+    // as though it varied, which invites a check that means nothing.
+    if METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.dma)
+        .any(|dma| dma.long_long_transfers)
+    {
+        cfgs.enable("dma_long_long");
+    }
 
     quote! { pub const DMA_CHANNELS: usize = #count; }
 }

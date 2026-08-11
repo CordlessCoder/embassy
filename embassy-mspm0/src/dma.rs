@@ -296,18 +296,33 @@ impl Word for u64 {
     }
 }
 
-// TODO: u128 (LONGLONG) support. G350x does support it, but other parts do not such as C110x. More metadata is
-// needed to properly enable this.
-// impl SealedWord for u128 {
-//     fn width() -> vals::Wdth {
-//         vals::Wdth::LONGLONG
-//     }
-// }
-// impl Word for u128 {
-//     fn size() -> isize {
-//         16
-//     }
-// }
+/// Available on the seven families whose DMA is the variant that implements the 128-bit width.
+///
+/// TI builds the DMA as two IPs and only the newer one carries `LONGLONG`, which it gives to its basic
+/// and full-feature channels alike — so it is a property of the device, not of the channel.
+///
+/// Gated rather than attempted. `DMASRCWDTH` and `DMADSTWDTH` are three bits wide on every device, so
+/// the encoding lands in the register on a part that does not implement it, and nothing published says
+/// what the transfer then moves.
+///
+/// A note here used to say the G350x had this and the C110x did not. **The G350x does not**: its
+/// datasheet dashes the row, its feature list stops at 64 bits, its header defines no
+/// `DMA_SYS_MMR_LLONG` and its SVD does not enumerate the encoding. The claim most likely came from
+/// SLAU846 §5.2.3, which describes all five widths because that chapter documents both IP variants at
+/// once, flagging the value as "not present in all devices" in a line that is easy to read past.
+#[cfg(dma_long_long)]
+impl SealedWord for u128 {
+    fn width() -> vals::Wdth {
+        vals::Wdth::Longlong
+    }
+}
+
+#[cfg(dma_long_long)]
+impl Word for u128 {
+    fn size() -> isize {
+        16
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
