@@ -8,7 +8,7 @@ use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull, SealedPin};
+use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull};
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Act, Ccpiv, Ccpo, Coc};
@@ -279,9 +279,7 @@ impl<'d, T: Instance> Compare<'d, T> {
 
 impl<T: Instance> Drop for Compare<'_, T> {
     fn drop(&mut self) {
-        for pin in self.pins.iter().filter_map(MaybeAnyPin::pin) {
-            pin.set_as_disconnected();
-        }
+        crate::tim::disconnect_pins(&self.pins);
     }
 }
 

@@ -294,6 +294,18 @@ impl SealedChannel for CompCh1 {}
 impl SealedChannel for CompCh2 {}
 impl SealedChannel for CompCh3 {}
 
+/// Release every pin a driver holds, on the way out.
+///
+/// A free function over the erased pins rather than three identical loops: a `Drop` impl is generic
+/// over the instance even when its body is not, so written inline this is one copy per driver per
+/// timer a binary builds. The destructor path is where most of that duplication was — more than a
+/// third of it on an application driving three timers.
+pub(crate) fn disconnect_pins(pins: &[crate::gpio::MaybeAnyPin<'_>; 4]) {
+    for pin in pins.iter().filter_map(crate::gpio::MaybeAnyPin::pin) {
+        crate::gpio::SealedPin::set_as_disconnected(&pin);
+    }
+}
+
 pub(crate) struct Info {
     pub(crate) regs: Tim,
     /// Whether this instance has the 8-bit prescaler in `CPS`.

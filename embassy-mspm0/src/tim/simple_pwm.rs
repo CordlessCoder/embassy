@@ -328,9 +328,7 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
 
 impl<T: Instance> Drop for SimplePwm<'_, T> {
     fn drop(&mut self) {
-        for pin in self.pins.iter().filter_map(MaybeAnyPin::pin) {
-            pin.set_as_disconnected();
-        }
+        crate::tim::disconnect_pins(&self.pins);
     }
 }
 
