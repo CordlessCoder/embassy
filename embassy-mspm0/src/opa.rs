@@ -255,6 +255,16 @@ pub enum LadderBottom {
 ///
 /// Power to the peripheral is enabled on construction and removed on drop. Use the topology methods
 /// to configure and enable the amplifier.
+///
+/// # The instance parameter duplicates every method body
+///
+/// `T` puts a copy of each method in the binary for every instance it is used with, and a chip has
+/// several of these. Nothing shows it in a symbol listing: the bodies inline into the caller.
+///
+/// **Erasing it is not automatically the fix.** Monomorphising folds the register addresses to
+/// immediates, so a shared body has to carry them as arguments instead — measured on the timer, that
+/// lost at every instance count a part reaches. [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm)
+/// carries the figures and what did pay.
 pub struct Opa<'d, T: Instance> {
     _peri: Peri<'d, T>,
     chop: vals::Chop,

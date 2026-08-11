@@ -291,6 +291,16 @@ impl Default for Config {
 }
 
 /// Analog to Digital driver.
+///
+/// # The instance parameter duplicates every method body
+///
+/// `T` puts a copy of each method in the binary for every instance it is used with, and a chip has
+/// several of these. Nothing shows it in a symbol listing: the bodies inline into the caller.
+///
+/// **Erasing it is not automatically the fix.** Monomorphising folds the register addresses to
+/// immediates, so a shared body has to carry them as arguments instead — measured on the timer, that
+/// lost at every instance count a part reaches. [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm)
+/// carries the figures and what did pay.
 pub struct Adc<'d, T: Instance, M: Mode> {
     #[allow(unused)]
     adc: crate::Peri<'d, T>,

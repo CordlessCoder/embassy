@@ -204,3 +204,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/i2c: hand the `embedded_hal_async::i2c` reads and writes straight to the driver's own futures, saving 368 B of flash and 24 B of RAM in a binary that uses the trait
 - mspm0/examples: make `_probe` a per-binary feature in the low-power example crates, so a plain build no longer carries marker calls through the GPIO interrupt handler
 - fix: mspm0/dma: arm the transfer error events and the NVIC line when a channel is built rather than in `init`, so a binary that binds no DMA handler no longer unmasks the interrupt
+- mspm0/tim: share one copy of a PWM channel's compare setup across timer instances, saving 16-36 B in a binary that drives more than one

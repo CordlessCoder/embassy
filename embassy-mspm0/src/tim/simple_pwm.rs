@@ -158,6 +158,27 @@ pub struct PwmPins<'d, T: Instance> {
 ///
 /// **Do not "improve" this to `align(4)`.** That was measured too and brings the `memcpy` back — twelve
 /// bytes is over the threshold again. More alignment is worse here, which is not what anyone guesses.
+///
+/// # What the instance parameter costs, and why erasing it is not the obvious win
+///
+/// `T` puts a copy of every method body in the binary for each timer it is instantiated with. Measured
+/// on a G-series part with one, two and three PWM timers driving the same application: **+352 bytes for
+/// the second instance and +428 for the third**, and the marginal cost rises rather than staying flat.
+/// Nothing shows it in a symbol listing — the bodies inline into the caller — so a total is the only
+/// place it appears.
+///
+/// **Erasing the parameter was tried and made things worse.** Passing the instance's register block and
+/// metadata to a shared `low_level::configure` instead of monomorphising it cost **+224 bytes at one
+/// timer, +180 at two and +156 at three**, by reference; passing them by value rather than behind an
+/// `&'static Info` recovered about a third of that and still lost at every instance count. The reason is
+/// that a monomorphised body folds the register addresses to immediates, and a shared one has to carry
+/// them as runtime arguments — so duplication buys constant-folding, and the trade only turns over at an
+/// instance count no MSPM0 reaches.
+///
+/// What did pay is narrower: `setup_channel` is a free function over the register block rather than a
+/// method, which is worth 16 bytes at two instances and 36 at three because it is called up to four
+/// times per instance as well as once per timer. **Measure per function; the type parameter is not
+/// itself the cost.**
 #[repr(align(2))]
 pub struct SimplePwm<'d, T: Instance> {
     timer: Timer<'d, T>,
@@ -232,56 +253,16 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
             None => this.set_frequency(config.frequency)?,
         }
 
+        let regs = this.timer.regs();
         for channel in Channel::ALL {
             if this.pins[channel.index()].is_some() {
-                this.setup_channel(channel, config.counting_mode);
+                setup_channel(regs, channel, config.counting_mode);
             }
         }
 
         Ok(this)
     }
 
-    /// Program one channel's compare block for PWM output, following SLAU847F 28.2.5.2.1.
-    fn setup_channel(&mut self, channel: Channel, counting_mode: CountingMode) {
-        let r = self.timer.regs();
-        let n = channel.index();
-
-        r.counterregs(0).ccctl(n).modify(|w| w.set_coc(Coc::Compare));
-
-        r.commonregs(0).ccpd().modify(|w| w.set_c0ccp(n, true));
-
-        // The actions are fixed for the channel's lifetime: duty moves the compare value, and the two
-        // extremes use the forced-output override. Starts at 0%.
-        r.counterregs(0).ccact(n).write(|w| {
-            match counting_mode {
-                CountingMode::EdgeAlignedUp => {
-                    w.set_zact(Act::CcpHigh);
-                    w.set_cuact(Act::CcpLow);
-                }
-                CountingMode::EdgeAlignedDown => {
-                    w.set_lact(Act::CcpHigh);
-                    w.set_cdact(Act::CcpLow);
-                }
-                // Both edges come from the compare, one per direction, which is what centres the
-                // pulse on the load endpoint rather than pinning it to the start of the period.
-                CountingMode::CenterAligned => {
-                    w.set_cuact(Act::CcpHigh);
-                    w.set_cdact(Act::CcpLow);
-                }
-            }
-
-            w.set_swfrcact(Swfrcact::CcpLow);
-        });
-
-        r.counterregs(0).octl(n).write(|w| {
-            w.set_ccpo(Ccpo::Funcval);
-            w.set_ccpiv(Ccpiv::Low);
-            w.set_ccpoinv(false);
-        });
-
-        // SLAU847F 28.2.5.2.1 step 8 says write 1 here; 28.3.32 and driverlib agree 1 is "forced low".
-        r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, false));
-    }
 
     /// Let the counter run, driving every configured output.
     pub fn start(&mut self) {
@@ -591,6 +572,50 @@ mod tests {
 }
 
 /// Duty value that means 100%, for the channel handles that have no instance to ask.
+/// Program one channel's compare block for PWM output, following SLAU847F 28.2.5.2.1.
+///
+/// Takes the register block rather than `&mut SimplePwm<T>` so that one copy serves every timer
+/// instance. See the note on [`SimplePwm`] about what a type parameter costs here.
+fn setup_channel(r: Tim, channel: Channel, counting_mode: CountingMode) {
+let n = channel.index();
+
+    r.counterregs(0).ccctl(n).modify(|w| w.set_coc(Coc::Compare));
+
+    r.commonregs(0).ccpd().modify(|w| w.set_c0ccp(n, true));
+
+    // The actions are fixed for the channel's lifetime: duty moves the compare value, and the two
+    // extremes use the forced-output override. Starts at 0%.
+    r.counterregs(0).ccact(n).write(|w| {
+        match counting_mode {
+            CountingMode::EdgeAlignedUp => {
+                w.set_zact(Act::CcpHigh);
+                w.set_cuact(Act::CcpLow);
+            }
+            CountingMode::EdgeAlignedDown => {
+                w.set_lact(Act::CcpHigh);
+                w.set_cdact(Act::CcpLow);
+            }
+            // Both edges come from the compare, one per direction, which is what centres the
+            // pulse on the load endpoint rather than pinning it to the start of the period.
+            CountingMode::CenterAligned => {
+                w.set_cuact(Act::CcpHigh);
+                w.set_cdact(Act::CcpLow);
+            }
+        }
+
+        w.set_swfrcact(Swfrcact::CcpLow);
+    });
+
+    r.counterregs(0).octl(n).write(|w| {
+        w.set_ccpo(Ccpo::Funcval);
+        w.set_ccpiv(Ccpiv::Low);
+        w.set_ccpoinv(false);
+    });
+
+    // SLAU847F 28.2.5.2.1 step 8 says write 1 here; 28.3.32 and driverlib agree 1 is "forced low".
+    r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, false));
+}
+
 fn max_duty(regs: Tim) -> u32 {
     let load = regs.counterregs(0).load().read();
 

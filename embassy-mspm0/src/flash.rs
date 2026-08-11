@@ -146,6 +146,13 @@ impl NorFlashError for Error {
 }
 
 /// Flash controller driver.
+///
+/// # The instance parameter costs nothing here, today
+///
+/// `T` would duplicate every method body per instance, but every supported device has exactly one of
+/// these. A part with two would start paying, and
+/// [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm) has the measurements and the reason
+/// erasing the parameter is not automatically the fix.
 pub struct Flash<'d, T: Instance> {
     _peri: Peri<'d, T>,
 }

@@ -139,6 +139,13 @@ impl Default for Config {
 /// is off.
 ///
 /// [`Adc`]: crate::adc::Adc
+///
+/// # The instance parameter costs nothing here, today
+///
+/// `T` would duplicate every method body per instance, but every supported device has exactly one of
+/// these. A part with two would start paying, and
+/// [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm) has the measurements and the reason
+/// erasing the parameter is not automatically the fix.
 pub struct Vref<'d, T: Instance> {
     _instance: Peri<'d, T>,
     _phantom: PhantomData<&'d mut ()>,

@@ -181,6 +181,13 @@ pub struct Config {
 ///
 /// Powered on construction and off on drop. The generator holds no state between [`Crc::reset`]
 /// calls beyond the running checksum.
+///
+/// # The instance parameter costs nothing here, today
+///
+/// `T` would duplicate every method body per instance, but every supported device has exactly one of
+/// these. A part with two would start paying, and
+/// [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm) has the measurements and the reason
+/// erasing the parameter is not automatically the fix.
 pub struct Crc<'d, T: Instance> {
     _peri: Peri<'d, T>,
 }
