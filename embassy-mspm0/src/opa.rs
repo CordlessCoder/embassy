@@ -313,6 +313,22 @@ pub struct OpaInternalOutput<'a, T: Instance> {
     _phantom: PhantomData<&'a mut T>,
 }
 
+/// The upstream stage's output within a standing [`Cascade`].
+///
+/// Both stages of a chain amplify at once, and each reaches its own ADC channel, so the first
+/// stage's smaller gain can be sampled without taking the chain down. Reading both inside one
+/// stimulus gives a clipped high-gain sample its low-gain companion from the same event, rather
+/// than from a retry or a gain change.
+///
+/// Sample it by passing a mutable reference to the ADC, the same as the other two handles.
+///
+/// Unlike them it disables nothing when dropped. The stage it names belongs to the
+/// [`OpaPair`], which switches it off at the next configuration call, [`OpaPair::disable`], or
+/// its own drop.
+pub struct OpaTap<'a, T: Instance> {
+    _phantom: PhantomData<&'a mut T>,
+}
+
 impl<'d, T: Instance> Opa<'d, T> {
     /// Create a new OPA driver.
     ///
@@ -531,8 +547,10 @@ pub trait CascadeInto<T: Instance>: Instance {}
 ///
 /// The pair owns both drivers so a topology can be torn down and rebuilt between measurements without
 /// surrendering anything — which is what an application alternating between two sensors needs. Each
-/// configuration method takes `&mut self` and hands back a short-lived output handle, so the borrow
+/// configuration method takes `&mut self` and hands back short-lived output handles, so the borrow
 /// checker allows exactly one topology at a time and reconfiguring is just calling another method.
+///
+/// The two chain methods hand back a [`Cascade`], which reads either stage.
 ///
 /// [`OpaPair::release`] gives the two [`Opa`] drivers back.
 ///
@@ -540,8 +558,9 @@ pub trait CascadeInto<T: Instance>: Instance {}
 ///
 /// Each configuration method switches both amplifiers off before applying the new one. Dropping an
 /// output handle disables the stage it names — but in a chain the *upstream* stage stays on until the
-/// next configuration call, [`OpaPair::disable`], or the pair being dropped. Call
-/// [`OpaPair::disable`] if a gap between measurements is long enough to care about.
+/// next configuration call, [`OpaPair::disable`], or the pair being dropped. That is what lets
+/// [`OpaTap`] be read without owning anything. Call [`OpaPair::disable`] if a gap between
+/// measurements is long enough to care about.
 pub struct OpaPair<'d, A: Instance, B: Instance> {
     a: Opa<'d, A>,
     b: Opa<'d, B>,
@@ -579,13 +598,13 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
 
     /// Chain `A` into `B`: `A` amplifies `input`, and `B` amplifies `A`'s ladder top.
     ///
-    /// The returned handle is `B`'s output, routed to the ADC.
+    /// Both stages are readable — see [`Cascade`].
     pub fn chain_a_into_b<'x>(
         &'x mut self,
         input: impl Into<NonInvertingInput<'x, A>>,
         first: Stage,
         second: Stage,
-    ) -> OpaInternalOutput<'x, B>
+    ) -> Cascade<'x, A, B>
     where
         A: CascadeInto<B>,
     {
@@ -593,21 +612,24 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
 
         self.upstream = Some(self.a.enable(Opa::<A>::stage_cfg(input.into(), first)));
 
-        OpaInternalOutput {
-            _guard: self.b.enable(Opa::<B>::stage_cfg(NonInvertingInput::cascade(), second)),
-            _phantom: PhantomData,
+        Cascade {
+            upstream: OpaTap { _phantom: PhantomData },
+            output: OpaInternalOutput {
+                _guard: self.b.enable(Opa::<B>::stage_cfg(NonInvertingInput::cascade(), second)),
+                _phantom: PhantomData,
+            },
         }
     }
 
     /// Chain `B` into `A`: `B` amplifies `input`, and `A` amplifies `B`'s ladder top.
     ///
-    /// The returned handle is `A`'s output, routed to the ADC.
+    /// Both stages are readable — see [`Cascade`].
     pub fn chain_b_into_a<'x>(
         &'x mut self,
         input: impl Into<NonInvertingInput<'x, B>>,
         first: Stage,
         second: Stage,
-    ) -> OpaInternalOutput<'x, A>
+    ) -> Cascade<'x, B, A>
     where
         B: CascadeInto<A>,
     {
@@ -615,9 +637,12 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
 
         self.upstream = Some(self.b.enable(Opa::<B>::stage_cfg(input.into(), first)));
 
-        OpaInternalOutput {
-            _guard: self.a.enable(Opa::<A>::stage_cfg(NonInvertingInput::cascade(), second)),
-            _phantom: PhantomData,
+        Cascade {
+            upstream: OpaTap { _phantom: PhantomData },
+            output: OpaInternalOutput {
+                _guard: self.a.enable(Opa::<A>::stage_cfg(NonInvertingInput::cascade(), second)),
+                _phantom: PhantomData,
+            },
         }
     }
 
@@ -643,6 +668,32 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
                 _phantom: PhantomData,
             },
         )
+    }
+}
+
+/// A standing chain, and both of its outputs.
+///
+/// `Up` amplifies the input and `Down` amplifies `Up`'s ladder top, so the two readings differ by
+/// `Down`'s gain. Which amplifier is which follows the chain direction rather than the instance
+/// name, and each carries its own ADC channel, so a caller reads a stage by naming it here rather
+/// than by knowing what it is routed to.
+///
+/// The chain stands for as long as this does. Dropping it disables the downstream stage; the
+/// upstream one belongs to the [`OpaPair`] and outlives it, as [`OpaPair`]'s own docs describe.
+pub struct Cascade<'a, Up: Instance, Down: Instance> {
+    upstream: OpaTap<'a, Up>,
+    output: OpaInternalOutput<'a, Down>,
+}
+
+impl<'a, Up: Instance, Down: Instance> Cascade<'a, Up, Down> {
+    /// The chain's output, `Down`'s amplification of `Up`.
+    pub fn output(&mut self) -> &mut OpaInternalOutput<'a, Down> {
+        &mut self.output
+    }
+
+    /// The first stage's output, live at the same time and at the lower gain.
+    pub fn upstream(&mut self) -> &mut OpaTap<'a, Up> {
+        &mut self.upstream
     }
 }
 
@@ -827,6 +878,18 @@ macro_rules! impl_opa_adc_channel {
         }
         impl<'a> crate::adc::SealedAdcChannel<crate::peripherals::$adc>
             for crate::opa::OpaInternalOutput<'a, crate::peripherals::$inst>
+        {
+            fn channel(&self) -> u8 {
+                $ch
+            }
+        }
+
+        impl<'a> crate::adc::AdcChannel<crate::peripherals::$adc>
+            for crate::opa::OpaTap<'a, crate::peripherals::$inst>
+        {
+        }
+        impl<'a> crate::adc::SealedAdcChannel<crate::peripherals::$adc>
+            for crate::opa::OpaTap<'a, crate::peripherals::$inst>
         {
             fn channel(&self) -> u8 {
                 $ch

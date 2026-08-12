@@ -8,6 +8,10 @@
 //! application alternating between two sensors reconfigures per measurement: chain one way, chain the
 //! other, or run both amplifiers independently, without giving up either peripheral.
 //!
+//! Both stages of a chain are sampled, which is what an auto-ranging front end wants: the first
+//! stage's x2 is the companion reading for a clipped x4, taken from the same signal rather than
+//! from a second measurement at a different gain.
+//!
 //! Wiring: a voltage on `PA25` (`OPA0_IN0+`) and another on `PA18` (`OPA1_IN0+`). Both must sit
 //! inside the amplifier's input range at the gain in use — x4 of anything above a quarter of the
 //! supply clips.
@@ -41,18 +45,22 @@ async fn main(_spawner: Spawner) {
 
     info!("opa_cascade: start");
 
-    // Chained: OPA0 takes its pin at x2, OPA1 amplifies OPA0's ladder top at x2. Output is OPA1's.
+    // Chained: OPA0 takes its pin at x2, OPA1 amplifies OPA0's ladder top at x2. Both stages are
+    // live, so both are read — the output at x4 and the first stage at x2, off the same input.
     {
-        let mut out = front.chain_a_into_b(sensor_a.reborrow(), Stage::Pga(Gain::X2), Stage::Pga(Gain::X2));
-        let counts = adc.blocking_read(&mut out, Conversion::default());
-        info!("chained a->b, x4 total: {} counts", counts);
+        let mut chain = front.chain_a_into_b(sensor_a.reborrow(), Stage::Pga(Gain::X2), Stage::Pga(Gain::X2));
+        let out = adc.blocking_read(chain.output(), Conversion::default());
+        let tap = adc.blocking_read(chain.upstream(), Conversion::default());
+        info!("chained a->b: x4 {} counts, x2 tap {} counts", out, tap);
     }
 
     // The other way round, which the same hardware supports: OPA1 takes its pin, OPA0 amplifies it.
+    // The tap follows the chain direction, so here it names OPA1 where above it named OPA0.
     {
-        let mut out = front.chain_b_into_a(sensor_b.reborrow(), Stage::Pga(Gain::X2), Stage::Pga(Gain::X2));
-        let counts = adc.blocking_read(&mut out, Conversion::default());
-        info!("chained b->a, x4 total: {} counts", counts);
+        let mut chain = front.chain_b_into_a(sensor_b.reborrow(), Stage::Pga(Gain::X2), Stage::Pga(Gain::X2));
+        let out = adc.blocking_read(chain.output(), Conversion::default());
+        let tap = adc.blocking_read(chain.upstream(), Conversion::default());
+        info!("chained b->a: x4 {} counts, x2 tap {} counts", out, tap);
     }
 
     // Un-chained: both amplifiers on their own sensor, sampled one after the other.

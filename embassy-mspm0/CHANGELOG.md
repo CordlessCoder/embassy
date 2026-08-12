@@ -231,3 +231,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking**: mspm0/uart: `Config::baudrate` and `Config::baud` become one `Config::baud: BaudRate`, so a pre-solved divider can no longer sit beside a rate that is silently ignored
 - mspm0/gpio: `Flex::set_drive_strength` and `set_hysteresis`, each refusing in a debug build a pin whose IO structure does not implement it
 - mspm0: every configuration type gains a `const fn new()`, so an application can define one in a `const` and have it fold by construction rather than by inlining
+- **breaking**: mspm0/opa: `OpaPair::chain_a_into_b` and `chain_b_into_a` return a `Cascade`, whose `upstream()` reads the first stage's output while the chain stands
