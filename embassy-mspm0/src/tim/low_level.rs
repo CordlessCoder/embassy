@@ -425,6 +425,23 @@ pub(crate) fn configure<T: Instance>(config: &Config) {
         w.set_key(PwrenKey::Key);
     });
 
+    // SLAU846 §2.2.6 and the same note in all four TRMs: after setting `PWREN.ENABLE`, wait at least
+    // **4 ULPCLK cycles** before accessing the rest of the peripheral's registers, while the bus
+    // isolation signals update. `MCLKCFG.UDIV` can halve ULPCLK, so 8 MCLK cycles is the worst case
+    // across the portfolio.
+    //
+    // Without it the `CLKSEL` write below is dropped and the timer sits powered and enabled with no
+    // source selected — a counter that never advances. It reached the time driver on any tree where
+    // `clock::apply` has work to do; the reset tree happened to be slow enough to survive.
+    //
+    // Polling is not an alternative. The note covers "the rest of" the registers, so `PWREN` itself
+    // stays readable and reads back true while writes behind it are still being lost.
+    //
+    // The count is generous on purpose: `asm::delay` runs iterations rather than cycles, about five
+    // each here, so this is roughly 80 MCLK cycles against a requirement of 8. Do not trim it toward
+    // the TRM's figure — the units are not the same.
+    cortex_m::asm::delay(16);
+
     // SLAU847D 23.2.1 "TIMCLK Configuration": source, then dividers, then enable the clock.
     r.clksel().write(|w| match config.clock {
         ClockSel::LfClk => w.set_lfclk_sel(true),
