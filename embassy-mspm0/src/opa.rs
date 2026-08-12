@@ -53,7 +53,7 @@ use embassy_hal_internal::PeripheralType;
 
 use crate::Peri;
 use crate::pac::opa::{regs, vals};
-use crate::sysctl::MaybeWakeGuard;
+use crate::sysctl::{MaybeWakeGuard, SleepLevel};
 
 /// Gain-bandwidth selection (CFGBASE.GBW).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -384,14 +384,20 @@ impl<'d, T: Instance> Opa<'d, T> {
         }
     }
 
+    /// The deepest sleep this amplifier tolerates while enabled, or `None` if it tolerates any.
+    ///
+    /// SLAU846 and SLAU847 table 2-2: an enabled OPA is supported in RUN0, SLEEP0, STOP0 and STOP1, its
+    /// support circuits wanting SYSOSC's 4 MHz output — which is `floor_for_operation` at 4 MHz.
+    /// Rail-to-rail input additionally wants the 32 MHz base, which STOP gears away, so it
+    /// forbids deep sleep entirely.
+    fn operation_floor(&self) -> Option<SleepLevel> {
+        let sysosc_hz = if self.rri { 32_000_000 } else { 4_000_000 };
+        <T as crate::sysctl::LowPowerInstance>::SLEEP.floor_for_operation(sysosc_hz)
+    }
+
     /// Configure and switch the amplifier on, returning the sleep guard that covers it.
     fn enable(&self, mut cfg: regs::Cfg) -> MaybeWakeGuard {
-        // SLAU846 and SLAU847 table 2-2: an enabled OPA is supported in RUN0, SLEEP0, STOP0 and STOP1, its
-        // support circuits wanting SYSOSC's 4 MHz output — which is `floor_for_operation` at 4 MHz.
-        // Rail-to-rail input additionally wants the 32 MHz base, which STOP gears away, so it
-        // forbids deep sleep entirely.
-        let sysosc_hz = if self.rri { 32_000_000 } else { 4_000_000 };
-        let guard = MaybeWakeGuard::new(<T as crate::sysctl::LowPowerInstance>::SLEEP.floor_for_operation(sysosc_hz));
+        let guard = MaybeWakeGuard::new(self.operation_floor());
 
         let r = T::regs();
         cfg.set_chop(self.chop);
@@ -618,6 +624,7 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
                 _guard: self.b.enable(Opa::<B>::stage_cfg(NonInvertingInput::cascade(), second)),
                 _phantom: PhantomData,
             },
+            output_floor: self.b.operation_floor(),
         }
     }
 
@@ -643,6 +650,7 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
                 _guard: self.a.enable(Opa::<A>::stage_cfg(NonInvertingInput::cascade(), second)),
                 _phantom: PhantomData,
             },
+            output_floor: self.a.operation_floor(),
         }
     }
 
@@ -683,6 +691,9 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
 pub struct Cascade<'a, Up: Instance, Down: Instance> {
     upstream: OpaTap<'a, Up>,
     output: OpaInternalOutput<'a, Down>,
+
+    /// Kept so [`UpstreamOnly::start_output`] can retake the guard `Down`'s own handle released.
+    output_floor: Option<SleepLevel>,
 }
 
 impl<'a, Up: Instance, Down: Instance> Cascade<'a, Up, Down> {
@@ -694,6 +705,79 @@ impl<'a, Up: Instance, Down: Instance> Cascade<'a, Up, Down> {
     /// The first stage's output, live at the same time and at the lower gain.
     pub fn upstream(&mut self) -> &mut OpaTap<'a, Up> {
         &mut self.upstream
+    }
+
+    /// Switch the second stage off, leaving the first amplifying and readable.
+    ///
+    /// For an application that mostly wants the lower gain: the expensive stage stops drawing
+    /// current and stops holding its sleep guard, while the first keeps its settled output on its
+    /// own ADC channel. [`UpstreamOnly::start_output`] brings it back.
+    pub fn stop_output(self) -> UpstreamOnly<'a, Up, Down> {
+        let Self {
+            upstream,
+            output,
+            output_floor,
+        } = self;
+
+        // Dropping the handle is what disables `Down` and releases its guard, so this is the same
+        // teardown any other route out of a `Cascade` takes.
+        drop(output);
+
+        UpstreamOnly {
+            upstream,
+            output_floor,
+            _down: PhantomData,
+        }
+    }
+}
+
+/// A cascade whose second stage is switched off, with the first still running.
+///
+/// The chain's configuration is untouched, so [`start_output`](Self::start_output) pays only the
+/// amplifier's enable time rather than programming anything. Reaching this state through
+/// [`OpaPair`]'s chain methods instead would switch *both* stages off first and cost the settling of
+/// the one that never needed to stop.
+///
+/// The second stage's output cannot be named here, which is the point: a disabled amplifier still
+/// answers its ADC channel, so a handle that outlived the enable would read a plausible number from
+/// nothing.
+pub struct UpstreamOnly<'a, Up: Instance, Down: Instance> {
+    upstream: OpaTap<'a, Up>,
+    output_floor: Option<SleepLevel>,
+    _down: PhantomData<&'a mut Down>,
+}
+
+impl<'a, Up: Instance, Down: Instance> UpstreamOnly<'a, Up, Down> {
+    /// The first stage's output, still amplifying.
+    pub fn upstream(&mut self) -> &mut OpaTap<'a, Up> {
+        &mut self.upstream
+    }
+
+    /// Switch the second stage back on and wait for it to settle.
+    pub fn start_output(self) -> Cascade<'a, Up, Down> {
+        let Self {
+            upstream,
+            output_floor,
+            ..
+        } = self;
+
+        // Guard first, then enable, so no sleep can be entered against an amplifier that is already
+        // running. Same order as `Opa::enable`.
+        let guard = MaybeWakeGuard::new(output_floor);
+
+        let r = Down::regs();
+        r.ctl().write(|w| w.set_enable(true));
+        // Bounded by the hardware: `RDY` follows within the datasheet's enable time.
+        while !r.stat().read().rdy() {}
+
+        Cascade {
+            upstream,
+            output: OpaInternalOutput {
+                _guard: guard,
+                _phantom: PhantomData,
+            },
+            output_floor,
+        }
     }
 }
 

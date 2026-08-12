@@ -233,3 +233,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0: every configuration type gains a `const fn new()`, so an application can define one in a `const` and have it fold by construction rather than by inlining
 - **breaking**: mspm0/opa: `OpaPair::chain_a_into_b` and `chain_b_into_a` return a `Cascade`, whose `upstream()` reads the first stage's output while the chain stands
 - fix: mspm0/tim: wait out the peripheral power-up before selecting the timer's clock, which was dropped on any reprogrammed clock tree and left the time driver's counter stopped
+- feat: mspm0/opa: `Cascade::stop_output` switches the second stage off while the first keeps amplifying and stays readable, and `UpstreamOnly::start_output` brings it back without reprogramming
