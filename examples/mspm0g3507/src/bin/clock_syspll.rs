@@ -136,7 +136,7 @@ async fn main(_spawner: Spawner) {
     // `TIMA0` is in PD1, so its bus clock is MCLK itself rather than ULPCLK: this counts the 80 MHz
     // side of the divider where the pin above shows the 40 MHz side. Together they cover the whole
     // chain, and neither goes through `resolve()`'s arithmetic.
-    let counter = low_level::Timer::new(
+    let mut counter = low_level::Timer::new(
         p.TIMA0,
         low_level::Config {
             clock: ClockSel::BusClk,

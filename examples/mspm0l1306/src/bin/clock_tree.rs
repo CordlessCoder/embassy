@@ -155,7 +155,7 @@ async fn main(_spawner: Spawner) -> ! {
     pwm.channel(Channel::Ch0).set_duty_percent(50);
     pwm.start();
 
-    let counter = low_level::Timer::new(
+    let mut counter = low_level::Timer::new(
         p.TIMG2,
         low_level::Config {
             clock: ClockSel::BusClk,

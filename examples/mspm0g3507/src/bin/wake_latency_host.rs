@@ -53,7 +53,7 @@ async fn main(_spawner: Spawner) -> ! {
     let ack = Input::new(p.PB2, Pull::Down);
     let mut led = Output::new(p.PA0, Level::Low);
 
-    let counter = low_level::Timer::new(
+    let mut counter = low_level::Timer::new(
         p.TIMG8,
         low_level::Config {
             clock: ClockSel::BusClk,
