@@ -284,6 +284,24 @@ impl<'d, M: Mode> Flex<'d, M> {
         });
     }
 
+    /// Hand the pin to a peripheral function, and stop driving it from here.
+    ///
+    /// The counterpart to [`set_as_output`](Self::set_as_output) and friends, for a pin that has to
+    /// change role while the program runs — a pin wired to both a timer output and something the
+    /// application drives directly, say. Taking it back is [`set_as_output`](Self::set_as_output) or
+    /// [`set_as_input`](Self::set_as_input); this driver keeps ownership either way, so the pin
+    /// cannot be handed to two peripherals at once.
+    ///
+    /// `pf` is the function number for the peripheral and signal wanted, which the peripheral's own
+    /// pin trait knows: [`TimerPin::pf_num`](crate::tim::TimerPin::pf_num) and the equivalents on the
+    /// other drivers' pin traits report it, so it does not have to be written out. A number that does
+    /// not name a function on this pin selects nothing and the pin goes quiet, which is the usual
+    /// silent failure here.
+    #[inline]
+    pub fn set_as_af(&mut self, pf: u8, ty: PfType) {
+        self.pin.set_as_pf(pf, ty);
+    }
+
     /// Put the pin into input + open-drain output mode.
     ///
     /// The hardware will drive the line low if you set it to low, and will leave it floating if you set
@@ -1508,6 +1526,10 @@ impl<'d> embedded_hal_async::digital::Wait for OutputOpenDrain<'d, Async> {
     }
 }
 
+/// How the pad is configured while a peripheral function drives it.
+///
+/// The function number decides which peripheral reaches the pin; this decides the direction, the
+/// pull and whether the signal is inverted on the way through.
 #[cfg_attr(unicomm, allow(dead_code))]
 #[derive(Copy, Clone)]
 pub struct PfType {
@@ -1517,6 +1539,7 @@ pub struct PfType {
 }
 
 impl PfType {
+    /// The peripheral reads the pin.
     pub const fn input(pull: Pull, invert: bool) -> Self {
         Self {
             pull,
@@ -1525,6 +1548,7 @@ impl PfType {
         }
     }
 
+    /// The peripheral drives the pin.
     pub const fn output(pull: Pull, invert: bool) -> Self {
         Self {
             pull,

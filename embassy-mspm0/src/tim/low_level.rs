@@ -220,6 +220,18 @@ impl<'d, T: Instance> Timer<'d, T> {
             operation_floor: sleep_floor::<T>(config.clock),
         }
     }
+    /// Configure `channel` to drive a PWM output, without claiming a pin for it.
+    ///
+    /// [`SimplePwm`](super::simple_pwm::SimplePwm) is the ordinary way to get PWM, and it takes the
+    /// pin — which is what stops one pin reaching two peripherals. Where a pin has to change role
+    /// while the program runs, the channel is set up here and the pin is muxed separately with
+    /// [`Flex::set_as_af`](crate::gpio::Flex::set_as_af).
+    ///
+    /// Duty is then the channel's compare value, [`set_compare`](Self::set_compare), against
+    /// [`load`](Self::load).
+    pub fn setup_pwm_channel(&mut self, channel: Channel, counting_mode: CountingMode) {
+        super::simple_pwm::setup_channel(self.regs(), channel, counting_mode);
+    }
 
     /// Registers of this instance, for what this driver does not wrap.
     #[inline]

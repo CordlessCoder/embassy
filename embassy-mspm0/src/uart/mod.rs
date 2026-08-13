@@ -12,6 +12,16 @@
 //! [`UartTx::begin_blocking_write`] closes it: the [`TxWrite`] it hands out waits when dropped, so a
 //! caller who does nothing gets the safe behaviour. The asynchronous and buffered writes do not, and
 //! still want a flush before anything that can sleep.
+//!
+//! # The two full-duplex constructors take their pins in opposite orders
+//!
+//! [`Uart`] takes `(rx, tx)` and [`BufferedUart`] takes `(tx, rx)`. Both predate each other in
+//! different places — the first matches `embassy-stm32`, the second `embassy-rp` — and they have not
+//! been reconciled because doing so breaks one of them for existing callers.
+//!
+//! Getting it wrong is a compile error rather than a silent swap: [`TxPin`] and [`RxPin`] are
+//! separate traits and no pin implements both for the same instance. Porting code from one driver to
+//! the other is where it bites.
 #![macro_use]
 
 mod buffered;
