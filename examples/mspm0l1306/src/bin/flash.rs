@@ -29,7 +29,13 @@ use panic_halt as _;
 const SECTOR: u32 = flash::SIZE as u32 - flash::SECTOR_SIZE as u32;
 
 /// A pattern with no byte repeated, so a byte-order fault shows up rather than cancelling out.
-const PATTERN: [u8; 16] = [
+const PATTERN: [u32; 4] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476];
+
+/// The same thing as the flash holds it, which is what the read-back is compared against.
+///
+/// Writing words and reading bytes is deliberate: it is the only check that the two halves of each
+/// flash word go out in the right order. Swapping them programs just as successfully.
+const PATTERN_BYTES: [u8; 16] = [
     0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
 ];
 
@@ -62,7 +68,7 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    match flash.blocking_write(SECTOR, &PATTERN) {
+    match flash.blocking_write_words(SECTOR, &PATTERN) {
         Ok(()) => info!("write: ok"),
         Err(error) => {
             error!("write: {}", error);
@@ -70,56 +76,15 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    let mut read = [0u8; PATTERN.len()];
+    let mut read = [0u8; PATTERN_BYTES.len()];
     match flash.blocking_read(SECTOR, &mut read) {
-        Ok(()) if read == PATTERN => info!("read back: ok"),
+        Ok(()) if read == PATTERN_BYTES => info!("read back: ok"),
         Ok(()) => {
-            error!("read back: {=[u8]:#04x}, want {=[u8]:#04x}", read, PATTERN);
+            error!("read back: {=[u8]:#04x}, want {=[u8]:#04x}", read, PATTERN_BYTES);
             fails += 1;
         }
         Err(error) => {
             error!("read back: {}", error);
-            fails += 1;
-        }
-    }
-
-    // The word entry point, on the next word along so it needs no second erase. Reading it back as
-    // bytes is what checks the halves went out in the right order -- the low half belongs at the
-    // lower address, and swapping them would still program successfully.
-    const WORDS: [u32; 2] = [0x1234_5678, 0x9abc_def0];
-    let word_offset = SECTOR + PATTERN.len() as u32;
-
-    match flash.blocking_write_words(word_offset, &WORDS) {
-        Ok(()) => {
-            let mut back = [0u8; 8];
-            match flash.blocking_read(word_offset, &mut back) {
-                Ok(()) if back[..4] == WORDS[0].to_le_bytes() && back[4..] == WORDS[1].to_le_bytes() => {
-                    info!("word write: ok")
-                }
-                Ok(()) => {
-                    error!(
-                        "word write: read back {=[u8]:#04x}, which is not the words written",
-                        back
-                    );
-                    fails += 1;
-                }
-                Err(error) => {
-                    error!("word write, reading back: {}", error);
-                    fails += 1;
-                }
-            }
-        }
-        Err(error) => {
-            error!("word write: {}", error);
-            fails += 1;
-        }
-    }
-
-    // An odd number of halves is not a whole flash word, so it has to be refused.
-    match flash.blocking_write_words(word_offset, &WORDS[..1]) {
-        Err(Error::NotAligned) => info!("word write, odd length: refused, ok"),
-        other => {
-            error!("word write, odd length: {}, want NotAligned", other.is_ok());
             fails += 1;
         }
     }
@@ -153,9 +118,12 @@ async fn main(_spawner: Spawner) {
     // The offset is a word past a boundary and the length is not a whole word; both are refused
     // before anything reaches the controller.
     for (what, result) in [
-        ("unaligned offset", flash.blocking_write(SECTOR + 1, &PATTERN)),
-        ("partial word", flash.blocking_write(SECTOR, &PATTERN[..4])),
-        ("past the end", flash.blocking_write(flash::SIZE as u32, &PATTERN[..8])),
+        ("unaligned offset", flash.blocking_write_words(SECTOR + 1, &PATTERN)),
+        ("partial word", flash.blocking_write_words(SECTOR, &PATTERN[..1])),
+        (
+            "past the end",
+            flash.blocking_write_words(flash::SIZE as u32, &PATTERN[..2]),
+        ),
         ("unaligned erase", flash.blocking_erase(SECTOR + 8, SECTOR + 16)),
     ] {
         match result {
@@ -174,7 +142,7 @@ async fn main(_spawner: Spawner) {
     // The benign case: the same word programmed again with the data it already holds. §6.3.3.1's bit
     // masking gives already-correct bits no pulses, so this is expected to pass — it still spends one
     // of the word line's writes before an erase is required.
-    match flash.blocking_write(SECTOR, &PATTERN[..8]) {
+    match flash.blocking_write_words(SECTOR, &PATTERN[..2]) {
         Ok(()) => info!("second write, identical data: accepted, as expected"),
         Err(error) => warn!("second write, identical data: {}", error),
     }
@@ -182,7 +150,7 @@ async fn main(_spawner: Spawner) {
     // The dangerous case, and the one that decides `DATAVEREN`: every bit of this is a one, and the
     // word holds zeros, so it cannot be programmed without an erase. The controller should report it
     // rather than leave the word half written.
-    match flash.blocking_write(SECTOR, &[0xFF; 8]) {
+    match flash.blocking_write_words(SECTOR, &[0xFFFF_FFFF; 2]) {
         Err(error) => info!("second write, needs 0 -> 1: refused with {}", error),
         Ok(()) => {
             warn!("second write, needs 0 -> 1: ACCEPTED — the word is now whatever the pulses managed");

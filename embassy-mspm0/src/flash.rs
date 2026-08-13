@@ -8,7 +8,7 @@
 //! let mut flash = Flash::new(p.FLASHCTL);
 //!
 //! flash.blocking_erase(0xF000, 0xF400)?;
-//! flash.blocking_write(0xF000, &[0x11; 8])?;
+//! flash.blocking_write_words(0xF000, &[0x1111_1111, 0x1111_1111])?;
 //! ```
 //!
 //! An offset is an address: MAIN starts at zero, so offset `0xF000` is address `0xF000`. Nothing
@@ -209,19 +209,15 @@ impl<'d, T: Instance> Flash<'d, T> {
         Ok(())
     }
 
-    /// Program `bytes` at `offset`.
+    /// Program `bytes` at `offset`, rebuilding each flash word from eight of them.
     ///
-    /// Both the offset and the length have to be a whole number of flash words, and every word has
-    /// to have been erased since it was last programmed.
-    ///
-    /// A flash word is two 32-bit registers, and this rebuilds each one from eight bytes whose
-    /// alignment it cannot see. On this core that is eight byte loads and a chain of shifts, spilled
-    /// across the stack because there are not enough registers to hold it. [`blocking_write_words`]
-    /// is the same operation for a caller that already has words; this one exists because
-    /// [`embedded_storage`] speaks bytes.
-    ///
-    /// [`blocking_write_words`]: Self::blocking_write_words
-    pub fn blocking_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
+    /// **Private, and reachable only through the [`embedded_storage`] impls**, which speak bytes and
+    /// cannot be changed. A flash word is two 32-bit registers, and reassembling one from bytes whose
+    /// alignment is not visible costs eight byte loads and a chain of shifts, spilled across the
+    /// stack because this core has too few registers to hold it. There is no reason to reach for that
+    /// by hand, so there is no public entry point to it —
+    /// [`blocking_write_words`](Self::blocking_write_words) is the one to use.
+    fn write_bytes(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
         check_range(offset, bytes.len())?;
 
         if !is_aligned(offset, WORD_SIZE) || !bytes.len().is_multiple_of(WORD_SIZE) {
@@ -241,12 +237,11 @@ impl<'d, T: Instance> Flash<'d, T> {
     /// Program whole flash words at `offset`, taking them as words.
     ///
     /// A flash word is [`WORD_SIZE`] bytes, so `words` is consumed in pairs and its length has to be
-    /// even. Same rules otherwise as [`blocking_write`](Self::blocking_write): the offset has to be
-    /// word-aligned and every word has to have been erased since it was last programmed.
+    /// even. The offset has to be word-aligned, and every word has to have been erased since it was
+    /// last programmed.
     ///
-    /// Prefer this where the data is already words. The byte entry point has to reassemble each half
-    /// from eight separately-loaded bytes, which it cannot avoid without knowing the buffer's
-    /// alignment.
+    /// **This is the only way to program flash directly.** The [`embedded_storage`] impls take bytes
+    /// because their traits do, and pay to rebuild each word from eight of them.
     pub fn blocking_write_words(&mut self, offset: u32, words: &[u32]) -> Result<(), Error> {
         const HALVES: usize = WORD_SIZE / size_of::<u32>();
 
@@ -619,7 +614,7 @@ impl<T: Instance> NorFlash for Flash<'_, T> {
     }
 
     fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
-        self.blocking_write(offset, bytes)
+        self.write_bytes(offset, bytes)
     }
 }
 
@@ -644,7 +639,7 @@ impl<T: Instance> embedded_storage_async::nor_flash::NorFlash for Flash<'_, T> {
     }
 
     async fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
-        self.blocking_write(offset, bytes)
+        self.write_bytes(offset, bytes)
     }
 }
 
