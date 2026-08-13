@@ -734,7 +734,16 @@ impl<'d> UartTx<'d, Async> {
         let state = self.wait;
         let mut written = 0;
 
+        // Held for the whole future, not just the first poll. Unlike `BufferedUartTx::write_inner`,
+        // which only fills a software ring, this queues straight into the hardware FIFO and then
+        // returns `Pending` with those bytes already going out — so yielding here hands the executor
+        // an idle path to sleep down while a frame is in flight. `begin_blocking_write` guards the
+        // same window.
+        let guard = MaybeWakeGuard::new(self.wake_floor());
+
         poll_fn(move |cx| {
+            let _ = &guard;
+
             clear(r, tx_sources());
 
             while written < buffer.len() {
@@ -763,7 +772,14 @@ impl<'d> UartTx<'d, Async> {
         let r = self.info.regs;
         let state = self.wait;
 
+        // The same guard `BufferedUartTx::flush_inner` takes, for the same reason: this is the call
+        // that waits for the transmitter to drain, so it is the one that must keep the chip shallow
+        // until it has.
+        let guard = MaybeWakeGuard::new(self.wake_floor());
+
         poll_fn(move |cx| {
+            let _ = &guard;
+
             clear(r, eot_sources());
 
             if !busy(r) {

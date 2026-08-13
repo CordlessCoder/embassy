@@ -255,3 +255,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/crc: `Config::new` is a `const fn`, matching every other driver's configuration
 - mspm0/adc: `Adc` holds the resolved sleep floor rather than the sample-clock rate, taking it from four bytes back to one
 - feat: mspm0/comp: `Comp::new_sharing_positive` keeps the positive pad's own type, so `CompSharedPositive::with_positive_pin` can lend it to another driver — an ADC channel being the case it exists for
+- fix: mspm0/uart: the unbuffered async `write` and `flush` hold a sleep guard while a frame is in flight, so deep sleep can no longer be entered mid-transmission
