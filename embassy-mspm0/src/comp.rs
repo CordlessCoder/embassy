@@ -438,15 +438,34 @@ const fn wait_cycles(mclk: u32, ns: u32) -> u32 {
         return 0;
     }
 
-    let us = div_ceil_no_builtin(ns, 1_000, 8);
-    let (whole_mhz, rem_hz) = divmod_no_builtin(mclk, 1_000_000, 10);
+    // Both quotients are bounded by their bit counts below, and both are checked. That is what lets
+    // every multiply here be a plain one: `saturating_mul` is a *widening* multiply on this core and
+    // links `__aeabi_lmul`, so the defensive version costs more than the case it defends against.
+    let us = div_ceil_no_builtin(ns, 1_000, US_BITS);
+    let (whole_mhz, rem_hz) = divmod_no_builtin(mclk, 1_000_000, MHZ_BITS);
 
-    let cycles =
-        us.saturating_mul(whole_mhz)
-            .saturating_add(div_ceil_no_builtin(us.saturating_mul(rem_hz), 1_000_000, 9));
+    // A request or a clock past what the loops can represent. Waiting far too long is safe here and
+    // waiting too little is not, so it saturates rather than wrapping into a short wait.
+    if us > MAX_US || whole_mhz > MAX_MHZ {
+        return u32::MAX;
+    }
+
+    // `us * whole_mhz` is at most 255 * 1023, and `us * rem_hz` at most 255 * 999_999. Both are
+    // comfortably inside `u32`, which the assertions below pin down.
+    let cycles = us * whole_mhz + div_ceil_no_builtin(us * rem_hz, 1_000_000, 9);
 
     if cycles == 0 { 1 } else { cycles }
 }
+
+/// Quotient bits allowed for nanoseconds-to-microseconds, and the largest quotient that leaves.
+///
+/// 255 us is two orders of magnitude past the longest settling figure any device publishes.
+const US_BITS: u32 = 8;
+const MAX_US: u32 = (1 << US_BITS) - 1;
+
+/// The same for MCLK in whole megahertz. 1023 MHz is an order of magnitude past the fastest part.
+const MHZ_BITS: u32 = 10;
+const MAX_MHZ: u32 = (1 << MHZ_BITS) - 1;
 
 /// `n / d` and `n % d`, by hand, because a division here links the software divider.
 ///
