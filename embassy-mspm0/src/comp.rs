@@ -647,10 +647,11 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
 
         // An absent position selects no reference rather than faulting, so this is refused here
         // instead of leaving the comparator to report against a threshold that was never applied.
-        if let Some(reference) = config.reference {
-            if reference.source.needs_internal_reference() && !T::HAS_INTERNAL_REFERENCE {
-                return Err(ConfigError::NoInternalReference);
-            }
+        if let Some(reference) = config.reference
+            && reference.source.needs_internal_reference()
+            && !T::HAS_INTERNAL_REFERENCE
+        {
+            return Err(ConfigError::NoInternalReference);
         }
 
         let r = T::regs();

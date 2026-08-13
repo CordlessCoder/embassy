@@ -245,12 +245,12 @@ const _: () = {
     core::assert!(matches!(Pd0.floor_to_keep_running(32_769), Some(SleepLevel::Stop2)));
     core::assert!(matches!(Pd0.floor_to_keep_running(32_768), Some(SleepLevel::Standby1)));
     core::assert!(matches!(Pd0.floor_to_keep_running(1), Some(SleepLevel::Standby1)));
-    core::assert!(matches!(Pd0.floor_to_keep_running(0), None));
+    core::assert!(Pd0.floor_to_keep_running(0).is_none());
 
     // No clock rate makes PD1 survive, or stops the backup domain from surviving.
     core::assert!(matches!(Pd1.floor_to_keep_running(0), Some(SleepLevel::Stop0)));
     core::assert!(matches!(Pd1.floor_to_keep_running(32_000_000), Some(SleepLevel::Stop0)));
-    core::assert!(matches!(Backup.floor_to_keep_running(32_000_000), None));
+    core::assert!(Backup.floor_to_keep_running(32_000_000).is_none());
 
     core::assert!(Pd0.is_powered_in_deep_sleep());
     core::assert!(!Pd1.is_powered_in_deep_sleep());
@@ -261,7 +261,7 @@ const _: () = {
 const _: () = {
     use SleepLevel::{Standby0, Standby1, Stop0, Stop1, Stop2};
 
-    core::assert!(matches!(SleepLevel::stricter(None, None), None));
+    core::assert!(SleepLevel::stricter(None, None).is_none());
     core::assert!(matches!(SleepLevel::stricter(Some(Standby1), None), Some(Standby1)));
     core::assert!(matches!(SleepLevel::stricter(None, Some(Stop0)), Some(Stop0)));
     // Blocking from a shallower level is stricter, either way round.
@@ -280,9 +280,9 @@ const _: () = {
 
     // Every rung, because `SleepLevel::past` reads the step off the two discriminants rather than
     // matching each mode. Adding a `PowerMode` variant anywhere but the end breaks it here.
-    core::assert!(matches!(usable(None).floor_to_stay_usable(), None));
-    core::assert!(matches!(usable(Some(PowerMode::Shutdown)).floor_to_stay_usable(), None));
-    core::assert!(matches!(usable(Some(PowerMode::Standby1)).floor_to_stay_usable(), None));
+    core::assert!(usable(None).floor_to_stay_usable().is_none());
+    core::assert!(usable(Some(PowerMode::Shutdown)).floor_to_stay_usable().is_none());
+    core::assert!(usable(Some(PowerMode::Standby1)).floor_to_stay_usable().is_none());
     core::assert!(matches!(
         usable(Some(PowerMode::Stop2)).floor_to_stay_usable(),
         Some(Standby0)
@@ -333,10 +333,11 @@ const _: () = {
     }
 
     // Being in PD1 costs nothing by itself, only losing the configuration does.
-    core::assert!(matches!(
-        retained(PowerDomain::Pd1, Some(PowerMode::Standby1)).floor_to_keep_configured(),
-        None
-    ));
+    core::assert!(
+        retained(PowerDomain::Pd1, Some(PowerMode::Standby1))
+            .floor_to_keep_configured()
+            .is_none()
+    );
     core::assert!(matches!(
         retained(PowerDomain::Pd1, Some(PowerMode::Standby0)).floor_to_keep_configured(),
         Some(Standby1)
@@ -349,10 +350,7 @@ const _: () = {
         retained(PowerDomain::Pd1, Some(PowerMode::Sleep)).floor_to_keep_configured(),
         Some(Stop0)
     ));
-    core::assert!(matches!(
-        retained(PowerDomain::Pd0, None).floor_to_keep_configured(),
-        None
-    ));
+    core::assert!(retained(PowerDomain::Pd0, None).floor_to_keep_configured().is_none());
 };
 
 /// What deep sleep does to a peripheral instance.

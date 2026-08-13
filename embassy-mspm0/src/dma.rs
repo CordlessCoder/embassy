@@ -606,6 +606,9 @@ impl<'d> Channel<'d> {
     ///
     /// - `src` must be valid for the lifetime of the transfer.
     /// - `dst` must be valid for the lifetime of the transfer.
+    // One argument per descriptor field. Bundling them into a struct would only move the same values
+    // behind a by-value parameter that has measured worse on this core.
+    #[allow(clippy::too_many_arguments)]
     unsafe fn configure(
         &self,
         trigger_sel: u8,

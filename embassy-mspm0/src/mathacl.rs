@@ -219,7 +219,7 @@ impl<'d> Mathacl<'d> {
 
     /// Internal helper SINCOS function.
     fn sincos(&mut self, rad: f32, precision: Precision, sin: bool) -> Result<f32, Error> {
-        if rad > PI || rad < -PI {
+        if !(-PI..=PI).contains(&rad) {
             return Err(Error::ValueInWrongRange);
         }
 
@@ -470,11 +470,11 @@ impl IQType {
 
     /// Convert to `f32`. See [`IQType::from_f32`] on what that costs.
     pub fn to_f32(&self) -> f32 {
-        let mut value = (self.i_data as f32) + (self.f_data as f32) / (1u32 << self.f_bits as u8) as f32;
+        let mut value = (self.i_data as f32) + (self.f_data as f32) / (1u32 << self.f_bits) as f32;
         if self.negative {
             value = -value;
         }
-        return value;
+        value
     }
 
     /// Encode for an operand register, in the two's-complement layout [`IQType::from_reg`] describes.

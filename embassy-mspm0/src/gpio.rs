@@ -408,7 +408,7 @@ impl<'d, M: Mode> Flex<'d, M> {
     #[inline]
     pub fn set_high(&mut self) {
         self.pin.block().doutset31_0().write(|w| {
-            w.set_dio(self.pin.bit_index() as usize, true);
+            w.set_dio(self.pin.bit_index(), true);
         });
     }
 
@@ -550,10 +550,10 @@ impl Future for Park {
         if !arm.armed {
             arm.arm(cx.waker());
 
-            if let Some(high) = arm.settled_high {
-                if arm.is_high() == high {
-                    return Poll::Ready(());
-                }
+            if let Some(high) = arm.settled_high
+                && arm.is_high() == high
+            {
+                return Poll::Ready(());
             }
 
             return Poll::Pending;
@@ -1283,7 +1283,7 @@ impl<'d> MaybeAnyPin<'d> {
     /// `self` still owns the pin for `'d`, and the result cannot outlive the borrow.
     #[inline]
     pub(crate) fn pin(&self) -> Option<AnyPin> {
-        self.is_some().then(|| AnyPin {
+        self.is_some().then_some(AnyPin {
             pin_port: self.pin_port,
         })
     }
@@ -1328,12 +1328,14 @@ impl<'d, M: Mode> embedded_hal::digital::InputPin for Flex<'d, M> {
 impl<'d, M: Mode> embedded_hal::digital::OutputPin for Flex<'d, M> {
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_low())
+        self.set_low();
+        Ok(())
     }
 
     #[inline]
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_high())
+        self.set_high();
+        Ok(())
     }
 }
 
@@ -1418,12 +1420,14 @@ impl<'d> embedded_hal::digital::ErrorType for Output<'d> {
 impl<'d> embedded_hal::digital::OutputPin for Output<'d> {
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_low())
+        self.set_low();
+        Ok(())
     }
 
     #[inline]
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_high())
+        self.set_high();
+        Ok(())
     }
 }
 
@@ -1458,12 +1462,14 @@ impl<'d, M: Mode> embedded_hal::digital::InputPin for OutputOpenDrain<'d, M> {
 impl<'d, M: Mode> embedded_hal::digital::OutputPin for OutputOpenDrain<'d, M> {
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_low())
+        self.set_low();
+        Ok(())
     }
 
     #[inline]
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_high())
+        self.set_high();
+        Ok(())
     }
 }
 

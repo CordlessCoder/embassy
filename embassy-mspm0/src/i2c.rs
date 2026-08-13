@@ -1955,8 +1955,8 @@ impl<'d> embedded_hal_02::blocking::i2c::Transactional for I2c<'d, Blocking> {
     ) -> Result<(), Self::Error> {
         let address = Address::checked(address)?;
         self.blocking_wait_bus_free()?;
-        for i in 0..operations.len() {
-            match &mut operations[i] {
+        for operation in operations.iter_mut() {
+            match operation {
                 embedded_hal_02::blocking::i2c::Operation::Read(buf) => {
                     self.read_blocking_internal(address, buf, false, false)?
                 }
@@ -2350,8 +2350,12 @@ impl<'d, M: Mode> Drop for I2c<'d, M> {
         // refused until the transaction finishes (SLAU846 table 25-10) and nothing reports when that is —
         // so releasing the pads is what takes this instance off the bus. Whatever the peripheral is still
         // doing reaches nothing, and the next `I2c::new` on this instance resets it before configuring.
-        self.scl.pin().map(|x| x.set_as_disconnected());
-        self.sda.pin().map(|x| x.set_as_disconnected());
+        if let Some(pin) = self.scl.pin() {
+            pin.set_as_disconnected();
+        }
+        if let Some(pin) = self.sda.pin() {
+            pin.set_as_disconnected();
+        }
     }
 }
 

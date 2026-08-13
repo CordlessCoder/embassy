@@ -271,7 +271,6 @@ macro_rules! bind_group_interrupts {
 ///     TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
 /// });
 /// ```
-
 // developer note: this macro can't be in `embassy-hal-internal` due to the use of `$crate`.
 #[macro_export]
 macro_rules! bind_interrupts {

@@ -616,7 +616,11 @@ impl<'d> Drop for I2cTarget<'d> {
         // Ensure peripheral is disabled and pins are reset
         self.info.regs.target(0).tctr().modify(|w| w.set_active(false));
 
-        self.scl.pin().map(|x| x.set_as_disconnected());
-        self.sda.pin().map(|x| x.set_as_disconnected());
+        if let Some(pin) = self.scl.pin() {
+            pin.set_as_disconnected();
+        }
+        if let Some(pin) = self.sda.pin() {
+            pin.set_as_disconnected();
+        }
     }
 }

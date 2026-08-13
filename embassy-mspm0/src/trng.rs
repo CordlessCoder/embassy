@@ -65,12 +65,12 @@ pub enum FastDecimRate {
 }
 
 impl sealed::Sealed for FastDecimRate {}
-impl Into<vals::DecimRate> for FastDecimRate {
-    fn into(self) -> vals::DecimRate {
-        match self {
-            Self::Decim1 => vals::DecimRate::Decim1,
-            Self::Decim2 => vals::DecimRate::Decim2,
-            Self::Decim3 => vals::DecimRate::Decim3,
+impl From<FastDecimRate> for vals::DecimRate {
+    fn from(rate: FastDecimRate) -> Self {
+        match rate {
+            FastDecimRate::Decim1 => vals::DecimRate::Decim1,
+            FastDecimRate::Decim2 => vals::DecimRate::Decim2,
+            FastDecimRate::Decim3 => vals::DecimRate::Decim3,
         }
     }
 }
@@ -89,14 +89,14 @@ pub enum CryptoDecimRate {
 }
 
 impl sealed::Sealed for CryptoDecimRate {}
-impl Into<vals::DecimRate> for CryptoDecimRate {
-    fn into(self) -> vals::DecimRate {
-        match self {
-            Self::Decim4 => vals::DecimRate::Decim4,
-            Self::Decim5 => vals::DecimRate::Decim5,
-            Self::Decim6 => vals::DecimRate::Decim6,
-            Self::Decim7 => vals::DecimRate::Decim7,
-            Self::Decim8 => vals::DecimRate::Decim8,
+impl From<CryptoDecimRate> for vals::DecimRate {
+    fn from(rate: CryptoDecimRate) -> Self {
+        match rate {
+            CryptoDecimRate::Decim4 => vals::DecimRate::Decim4,
+            CryptoDecimRate::Decim5 => vals::DecimRate::Decim5,
+            CryptoDecimRate::Decim6 => vals::DecimRate::Decim6,
+            CryptoDecimRate::Decim7 => vals::DecimRate::Decim7,
+            CryptoDecimRate::Decim8 => vals::DecimRate::Decim8,
         }
     }
 }
@@ -265,7 +265,7 @@ impl<'d, D: SecurityMarker> Trng<'d, D> {
     /// As with the [`synchronous`](TryRng) methods, an [`Err`] may be retried up to two times after calling [`Trng::fail_reset`].
     ///
     /// > **Note**
-    /// When an error condition occurs, the buffer may be partially filled.
+    /// > When an error condition occurs, the buffer may be partially filled.
     #[cfg(feature = "rt")]
     #[inline(always)]
     pub fn async_read_bytes(&mut self, dest: &mut [u8]) -> impl Future<Output = Result<(), Error>> {
@@ -290,7 +290,7 @@ impl<D: SecurityMarker> TryRng for Trng<'_, D> {
     }
 
     /// > **Note**
-    /// When an error condition occurs, the buffer may be partially filled.
+    /// > When an error condition occurs, the buffer may be partially filled.
     #[inline(always)]
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Error> {
         self.inner.try_fill_bytes(dest)
@@ -315,7 +315,7 @@ struct TrngInner<'d> {
 impl TrngInner<'_> {
     fn new(decim_rate: vals::DecimRate) -> Result<Self, Error> {
         let mut trng = TrngInner {
-            decim_rate: decim_rate,
+            decim_rate,
             _retention_guard: MaybeWakeGuard::new(<TRNG as LowPowerInstance>::SLEEP.floor_to_keep_configured()),
             _phantom: PhantomData,
         };
@@ -515,7 +515,7 @@ impl TryRng for TrngInner<'_> {
     }
 
     /// > **Note**
-    /// When an error condition occurs, the buffer may be partially filled.
+    /// > When an error condition occurs, the buffer may be partially filled.
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Error> {
         let mut left = dest;
         while left.len() >= 4 {
@@ -582,7 +582,7 @@ const _: () = {
     );
 
     // Below the window nothing helps, since dividing can only go lower.
-    core::assert!(matches!(trng_ratio(CLK_MIN_HZ - 1), None));
+    core::assert!(trng_ratio(CLK_MIN_HZ - 1).is_none());
 
     // Each band picks the divider it should, and that divider lands inside the window. Checked at
     // the band's floor, which is where its divided rate is lowest — the thresholds themselves are

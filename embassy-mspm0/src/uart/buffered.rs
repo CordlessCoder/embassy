@@ -75,6 +75,9 @@ impl<'d> BufferedUart<'d> {
     }
 
     /// Create a new bidirectional buffered UART with request-to-send and clear-to-send pins
+    // Four pins, a binding and two buffers. Grouping them would hide which peripheral each pin has to
+    // belong to, which is the whole of what the signature is checking.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_rtscts<T: Instance>(
         uart: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
@@ -248,7 +251,7 @@ impl<'d> BufferedUartRx<'d> {
             rts.update_pf(config.rts_pf());
         }
 
-        super::reconfigure(&self.info, &self.state.state, config)?;
+        super::reconfigure(self.info, &self.state.state, config)?;
 
         if !self.reborrowed {
             self.wake_guard = self.rx_wake_guard(config.low_power_rx_wake);
@@ -258,7 +261,7 @@ impl<'d> BufferedUartRx<'d> {
 
     /// Set baudrate
     pub fn set_baudrate(&mut self, baudrate: u32) -> Result<(), ConfigError> {
-        super::set_baudrate(&self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
+        super::set_baudrate(self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
     }
 
     /// Floor to hold while armed for receive-wake, or the plain operating floor otherwise.
@@ -300,7 +303,7 @@ impl Drop for BufferedUartRx<'_> {
 
             // TX is inactive if the buffer is not available. If this is true, then disable the
             // interrupt handler since we are running in RX only mode.
-            if state.tx_buf.len() == 0 {
+            if state.tx_buf.is_empty() {
                 self.info.interrupt.disable();
             } else {
                 // Same as the transmit half above, and the receive sources are the worse of the two to
@@ -313,8 +316,12 @@ impl Drop for BufferedUartRx<'_> {
                 self.info.regs.cpu_int(0).iclr().write(|w| w.set_rtout(true));
             }
 
-            self.rx.pin().map(|x| x.set_as_disconnected());
-            self.rts.pin().map(|x| x.set_as_disconnected());
+            if let Some(pin) = self.rx.pin() {
+                pin.set_as_disconnected();
+            }
+            if let Some(pin) = self.rts.pin() {
+                pin.set_as_disconnected();
+            }
         }
     }
 }
@@ -390,7 +397,7 @@ impl<'d> BufferedUartTx<'d> {
 
     /// Set baudrate
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        super::set_baudrate(&self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
+        super::set_baudrate(self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
     }
 
     /// Write to UART TX buffer, blocking execution until done.
@@ -441,7 +448,7 @@ impl Drop for BufferedUartTx<'_> {
 
             // RX is inactive if the buffer is not available. If this is true, then disable the
             // interrupt handler since we are running in TX only mode.
-            if state.rx_buf.len() == 0 {
+            if state.rx_buf.is_empty() {
                 self.info.interrupt.disable();
             } else {
                 // The receiver keeps the line alive, so the transmit half's own source has to be turned
@@ -452,8 +459,12 @@ impl Drop for BufferedUartTx<'_> {
                 self.info.regs.cpu_int(0).iclr().write(|w| w.set_eot(true));
             }
 
-            self.tx.pin().map(|x| x.set_as_disconnected());
-            self.cts.pin().map(|x| x.set_as_disconnected());
+            if let Some(pin) = self.tx.pin() {
+                pin.set_as_disconnected();
+            }
+            if let Some(pin) = self.cts.pin() {
+                pin.set_as_disconnected();
+            }
         }
     }
 }
@@ -674,6 +685,7 @@ impl BufferedState {
 }
 
 impl<'d> BufferedUart<'d> {
+    #[allow(clippy::too_many_arguments)]
     fn new_inner<T: Instance>(
         _peri: Peri<'d, T>,
         rx: Option<Peri<'d, AnyPin>>,

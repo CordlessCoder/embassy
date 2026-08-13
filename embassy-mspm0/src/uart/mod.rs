@@ -616,14 +616,18 @@ impl<'d, M: ModeState> UartRx<'d, M> {
 
     /// Set baudrate
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        set_baudrate(&self.info, self.state.clock.load(Ordering::Relaxed), baudrate)
+        set_baudrate(self.info, self.state.clock.load(Ordering::Relaxed), baudrate)
     }
 }
 
 impl<'d, M: ModeState> Drop for UartRx<'d, M> {
     fn drop(&mut self) {
-        self.rx.pin().map(|x| x.set_as_disconnected());
-        self.rts.pin().map(|x| x.set_as_disconnected());
+        if let Some(pin) = self.rx.pin() {
+            pin.set_as_disconnected();
+        }
+        if let Some(pin) = self.rts.pin() {
+            pin.set_as_disconnected();
+        }
     }
 }
 
@@ -861,14 +865,18 @@ impl<'d, M: ModeState> UartTx<'d, M> {
 
     /// Set baudrate
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        set_baudrate(&self.info, self.state.clock.load(Ordering::Relaxed), baudrate)
+        set_baudrate(self.info, self.state.clock.load(Ordering::Relaxed), baudrate)
     }
 }
 
 impl<'d, M: ModeState> Drop for UartTx<'d, M> {
     fn drop(&mut self) {
-        self.tx.pin().map(|x| x.set_as_disconnected());
-        self.cts.pin().map(|x| x.set_as_disconnected());
+        if let Some(pin) = self.tx.pin() {
+            pin.set_as_disconnected();
+        }
+        if let Some(pin) = self.cts.pin() {
+            pin.set_as_disconnected();
+        }
     }
 }
 
@@ -1089,7 +1097,7 @@ impl<'d, M: ModeState> Uart<'d, M> {
 
     /// Set baudrate
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        set_baudrate(&self.tx.info, self.tx.state.clock.load(Ordering::Relaxed), baudrate)
+        set_baudrate(self.tx.info, self.tx.state.clock.load(Ordering::Relaxed), baudrate)
     }
 }
 

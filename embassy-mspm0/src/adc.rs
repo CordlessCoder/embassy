@@ -714,7 +714,7 @@ impl TempSensor {
         // is several hundred degrees from the trim point, so it engages only on a reading that was
         // already meaningless -- and clamping keeps that monotone where wrapping would not.
         let delta_uv = (sample_uv as i32 - trim_uv as i32).clamp(-800_000, 800_000);
-        let offset_mc = delta_uv * MILLIDEGREES_PER_UV_Q12 >> 12;
+        let offset_mc = (delta_uv * MILLIDEGREES_PER_UV_Q12) >> 12;
 
         Self::TRIM_CELSIUS as i32 * 1000 + offset_mc
     }
@@ -743,7 +743,7 @@ fn code_to_microvolts(code: u16, resolution: Resolution, reference_mv: u32) -> u
     // `code * reference_mv * 1000 >> 12`, with the constants reduced so the product stays inside 32
     // bits. Plain multiplies: a `saturating_mul` here is not free on this core, which detects the
     // overflow with a widening multiply and links a 64-bit routine to do it.
-    code * reference_mv * 125 >> 9
+    (code * reference_mv * 125) >> 9
 }
 
 /// Read this unit's temperature sensor calibration code from `FACTORYREGION.TEMP_SENSE0`.
@@ -1018,7 +1018,7 @@ fn adc_clock_hz(source: SampleClock) -> u32 {
     });
 
     assert!(
-        hz >= ADC_CLK_MIN_HZ && hz <= ADC_CLK_MAX_HZ,
+        (ADC_CLK_MIN_HZ..=ADC_CLK_MAX_HZ).contains(&hz),
         "the selected ADC sample clock is stopped or outside this device's fADCCLK range"
     );
 

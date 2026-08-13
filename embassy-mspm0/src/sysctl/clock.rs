@@ -466,10 +466,10 @@ impl Config {
                 return Err(ClockError::SourceDisabled);
             }
 
-            if let MclkSource::Sysosc { divider } = self.mclk {
-                if divider != 1 {
-                    return Err(ClockError::DividerNotAllowed);
-                }
+            if let MclkSource::Sysosc { divider } = self.mclk
+                && divider != 1
+            {
+                return Err(ClockError::DividerNotAllowed);
             }
         }
 
@@ -1015,10 +1015,12 @@ fn apply_hfclk(config: &Config, #[allow(unused)] cpu_hz: u32) -> Result<(), Cloc
             #[cfg(mspm0_hfxt)]
             HfclkSource::Crystal => {
                 sysctl.hfclkclkcfg().modify(|w| {
+                    // Written as disjoint bands rather than a cascade of upper bounds: the arms then
+                    // say the same thing the variants do, and none is shadowed by the one above it.
                     w.set_hfxtrsel(match hfclk.frequency {
                         ..=8_000_000 => vals::Hfxtrsel::Range4to8,
-                        ..=16_000_000 => vals::Hfxtrsel::Range8to16,
-                        ..=32_000_000 => vals::Hfxtrsel::Range16to32,
+                        8_000_001..=16_000_000 => vals::Hfxtrsel::Range8to16,
+                        16_000_001..=32_000_000 => vals::Hfxtrsel::Range16to32,
                         _ => vals::Hfxtrsel::Range32to48,
                     });
 

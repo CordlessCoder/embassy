@@ -465,7 +465,7 @@ fn generate_groups() -> TokenStream {
         let group_number = Literal::u32_unsuffixed(group.number);
 
         let matches = group.interrupts.iter().map(|interrupt| {
-            let variant = Ident::new(&interrupt.name, Span::call_site());
+            let variant = Ident::new(interrupt.name, Span::call_site());
 
             quote! {
                 #group_enum::#variant => unsafe { super::group_vectors::#variant() },
@@ -491,7 +491,7 @@ fn generate_groups() -> TokenStream {
                 // MUST subtract by 1 because NoIntr offsets IIDX values.
                 let iidx = stat.to_bits() - 1;
 
-                let Ok(group) = #group_enum::try_from(iidx as u8) else {
+                let Ok(group) = #group_enum::try_from(iidx) else {
                     return;
                 };
 
@@ -972,7 +972,7 @@ fn get_singletons(cfgs: &mut common::CfgSet) -> Vec<Singleton> {
         // Generate each GPIO pin singleton
         if peripheral.name.starts_with("GPIO") {
             for pin in peripheral.pins {
-                let singleton = make_valid_identifier(&pin.signal);
+                let singleton = make_valid_identifier(pin.signal);
                 singletons.push(singleton);
             }
         }
@@ -1108,7 +1108,7 @@ fn generate_pincm_mapping() -> TokenStream {
 
 fn generate_pin() -> TokenStream {
     let pin_impls = METADATA.pins.iter().map(|pin| {
-        let name = Ident::new(&pin.pin, Span::call_site());
+        let name = Ident::new(pin.pin, Span::call_site());
         let port_letter = pin.pin.strip_prefix("P").unwrap();
         let port_letter = port_letter.chars().next().unwrap();
         let pin_number = Literal::u8_unsuffixed(pin.pin[2..].parse::<u8>().unwrap());
@@ -1142,13 +1142,13 @@ fn clocked_in_standby1(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
+fn time_driver(singletons: &mut [Singleton], cfgs: &mut CfgSet) {
     let low_power = env::var_os("CARGO_FEATURE_LOW_POWER").is_some();
 
     // Every one of these is declared on every chip, not just the ones that have the timer:
     // `time_driver/tim.rs` names all of them unconditionally, and an undeclared cfg warns.
     for timer in TIME_DRIVER_TIMERS {
-        cfgs.declare(&format!("time_driver_{}", timer.to_lowercase()));
+        cfgs.declare(format!("time_driver_{}", timer.to_lowercase()));
     }
 
     let time_driver = match env::vars()
@@ -1219,7 +1219,7 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
     if low_power && !allow_sleep_floor && !selected_timer.is_empty() && !clocked_in_standby1(selected_timer) {
         let usable = TIME_DRIVER_TIMERS
             .iter()
-            .filter(|tim| clocked_in_standby1(tim) && singletons.iter().any(|s| &s.name == **tim))
+            .filter(|tim| clocked_in_standby1(tim) && singletons.iter().any(|s| s.name == **tim))
             .map(|tim| format!("time-driver-{}", tim.to_lowercase()))
             .collect::<Vec<_>>()
             .join(", ");
@@ -1266,7 +1266,7 @@ fn time_driver(singletons: &mut Vec<Singleton>, cfgs: &mut CfgSet) {
     }
 }
 
-fn pin_features(singletons: &mut Vec<Singleton>) {
+fn pin_features(singletons: &mut [Singleton]) {
     let sysctl = METADATA
         .peripherals
         .iter()
@@ -1347,7 +1347,7 @@ fn generate_timers() -> TokenStream {
         .filter_map(|peripheral| peripheral.timer.map(|timer| (peripheral, timer)))
         .filter(|(peripheral, _)| !is_basic_timer(peripheral))
         .flat_map(|(peripheral, timer)| {
-            let name = Ident::new(&peripheral.name, Span::call_site());
+            let name = Ident::new(peripheral.name, Span::call_site());
 
             let word = match timer.bits {
                 16 => quote! { u16 },
@@ -1411,7 +1411,7 @@ fn generate_basic_timers(cfgs: &mut CfgSet) -> TokenStream {
         .iter()
         .filter(|peripheral| is_basic_timer(peripheral))
         .map(|peripheral| {
-            let name = Ident::new(&peripheral.name, Span::call_site());
+            let name = Ident::new(peripheral.name, Span::call_site());
             let counters = peripheral
                 .timer
                 .unwrap_or_else(|| panic!("{} is a basic timer with no `Timer` metadata", peripheral.name))
@@ -1449,7 +1449,7 @@ fn generate_unicomm(cfgs: &mut CfgSet) -> TokenStream {
         .iter()
         .filter_map(|peripheral| peripheral.unicomm.map(|unicomm| (peripheral, unicomm)))
         .flat_map(|(peripheral, unicomm)| {
-            let name = Ident::new(&peripheral.name, Span::call_site());
+            let name = Ident::new(peripheral.name, Span::call_site());
             let mut out = vec![quote! { impl_unicomm_instance!(#name); }];
 
             for (present, cfg, macro_name, suffix) in [

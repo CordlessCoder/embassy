@@ -179,6 +179,11 @@ impl TimxDriver {
         //
         // `None` here means the timer survives everything and nothing is blocked, which is the case
         // `time-driver-any` selects for.
+        //
+        // The lint below is reading the wrong build. Without `low-power` a `MaybeWakeGuard` is an empty
+        // struct with no `Drop`, so forgetting one is correctly a no-op; with the feature it holds a real
+        // guard and the forget is the point. Clippy sees only the first.
+        #[allow(clippy::forget_non_drop)]
         core::mem::forget(MaybeWakeGuard::new(low_level::sleep_floor::<T>(ClockSel::LfClk)));
 
         let regs = regs();
