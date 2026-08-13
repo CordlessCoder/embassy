@@ -438,12 +438,48 @@ const fn wait_cycles(mclk: u32, ns: u32) -> u32 {
         return 0;
     }
 
-    let us = ns.div_ceil(1_000);
-    let cycles = us
-        .saturating_mul(mclk / 1_000_000)
-        .saturating_add(us.saturating_mul(mclk % 1_000_000).div_ceil(1_000_000));
+    let us = div_ceil_no_builtin(ns, 1_000, 8);
+    let (whole_mhz, rem_hz) = divmod_no_builtin(mclk, 1_000_000, 10);
+
+    let cycles =
+        us.saturating_mul(whole_mhz)
+            .saturating_add(div_ceil_no_builtin(us.saturating_mul(rem_hz), 1_000_000, 9));
 
     if cycles == 0 { 1 } else { cycles }
+}
+
+/// `n / d` and `n % d`, by hand, because a division here links the software divider.
+///
+/// The divisors above are constants and it makes no difference: ARMv6-M has no widening multiply, so
+/// the compiler cannot turn a constant divisor into a reciprocal multiply and reaches for
+/// `__aeabi_uidiv` instead. That is 252 bytes of `compiler_builtins` in every binary that builds a
+/// comparator, for arithmetic whose quotient never exceeds ten bits. `i2c`'s
+/// `solve_clock_low_timeout` does the same thing for the same reason.
+///
+/// `bits` bounds the quotient and the caller proves it; `d << (bits - 1)` must not overflow.
+const fn divmod_no_builtin(n: u32, d: u32, bits: u32) -> (u32, u32) {
+    let mut rem = n;
+    let mut quot = 0;
+    let mut bit = bits;
+
+    while bit > 0 {
+        bit -= 1;
+        let sub = d << bit;
+
+        if rem >= sub {
+            rem -= sub;
+            quot |= 1 << bit;
+        }
+    }
+
+    (quot, rem)
+}
+
+/// `n.div_ceil(d)`, on the same terms as [`divmod_no_builtin`].
+const fn div_ceil_no_builtin(n: u32, d: u32, bits: u32) -> u32 {
+    let (quot, rem) = divmod_no_builtin(n, d, bits);
+
+    if rem == 0 { quot } else { quot + 1 }
 }
 
 // The unit conversion in `wait_cycles` is the one error here no build would catch: too large and the

@@ -241,3 +241,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/tim: `low_level::Timer::setup_pwm_channel` configures a channel for PWM without claiming its pin
 - mspm0: adopt metapac tag `fe7482f1`, which adds `Dma::stride_mode` and `Dma::gather_mode`
 - feat: mspm0/dma: `TransferOptions::src_stride` and `dst_stride` on the devices whose DMA implements strided address increment
+- mspm0/comp: compute the settling waits without a division, dropping the software divider from every binary that builds a comparator
