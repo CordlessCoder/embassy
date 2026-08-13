@@ -16,28 +16,31 @@ fn __pender(context: *mut ()) {
 
         #[cfg(feature = "executor-interrupt")]
         {
-            use cortex_m::interrupt::InterruptNumber;
             use cortex_m::peripheral::NVIC;
-
-            #[derive(Clone, Copy)]
-            struct Irq(u16);
-            unsafe impl InterruptNumber for Irq {
-                fn number(self) -> u16 {
-                    self.0
-                }
-            }
-
-            let irq = Irq(context as u16);
 
             // STIR is faster, but is only available in v7 and higher.
             #[cfg(not(armv6m))]
             {
+                use cortex_m::interrupt::InterruptNumber;
+
+                #[derive(Clone, Copy)]
+                struct Irq(u16);
+                unsafe impl InterruptNumber for Irq {
+                    fn number(self) -> u16 {
+                        self.0
+                    }
+                }
+
                 let mut nvic: NVIC = core::mem::transmute(());
-                nvic.request(irq);
+                nvic.request(Irq(context as u16));
             }
 
+            // ARMv6-M implements 32 interrupts, so ISPR is a single word and the index is a
+            // constant. `NVIC::pend` derives it from the number instead, leaving a bounds check the
+            // optimiser cannot fold — worth a panicking branch, its frame setup, and
+            // `panic_bounds_check` in any binary that does not already link one.
             #[cfg(armv6m)]
-            NVIC::pend(irq);
+            (*NVIC::PTR).ispr[0].write(1 << (context & 31));
         }
     }
 }

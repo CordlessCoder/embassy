@@ -45,21 +45,15 @@ fn __pender(context: *mut ()) {
 
     #[cfg(feature = "executor-interrupt")]
     {
-        use cortex_m::interrupt::InterruptNumber;
         use cortex_m::peripheral::NVIC;
 
-        #[derive(Clone, Copy)]
-        struct Irq(u16);
-
-        // SAFETY: `context` was an `InterruptNumber` when passed to `InterruptExecutor::start`.
-        unsafe impl InterruptNumber for Irq {
-            fn number(self) -> u16 {
-                self.0
-            }
-        }
-
-        // MSPM0 is Cortex-M0+, which has no STIR.
-        NVIC::pend(Irq(context as u16));
+        // MSPM0 is Cortex-M0+, which has no STIR, and implements 32 interrupts — so ISPR is a
+        // single word and the index is a constant. `NVIC::pend` derives it from the number
+        // instead, leaving a bounds check the optimiser cannot fold.
+        //
+        // SAFETY: `context` was an `InterruptNumber` when passed to `InterruptExecutor::start`, so
+        // it names a line this core implements and the mask below does not change it.
+        unsafe { (*NVIC::PTR).ispr[0].write(1 << (context & 31)) };
     }
 }
 

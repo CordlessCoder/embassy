@@ -248,3 +248,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/gpio: `wait_for_edge` takes the `Edge` as a value, so a caller choosing at run time no longer needs an `async` block to unify the two future types; `Edge` is now public
 - mspm0/vref: work out the startup wait without dividing, dropping the software divider from every binary that builds a reference
 - feat: mspm0/vref: `Config::startup` takes a count from `Startup::solve`, a `const fn`, so a fixed clock tree keeps the startup arithmetic out of the binary
+- mspm0: pend the interrupt executor by writing ISPR directly, dropping a bounds check the optimiser could not fold
