@@ -235,3 +235,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/tim: wait out the peripheral power-up before selecting the timer's clock, which was dropped on any reprogrammed clock tree and left the time driver's counter stopped
 - feat: mspm0/opa: `Cascade::stop_output` switches the second stage off while the first keeps amplifying and stays readable, and `UpstreamOnly::start_output` brings it back without reprogramming
 - feat: mspm0/uart: `Uart`, `UartRx` and `UartTx` gain an unbuffered async mode behind a new `InterruptHandler`, waiting on the hardware FIFO instead of a software ring
+- feat: mspm0/comp: `enable_edge_interrupt`, `disable_edge_interrupt`, `pending_edge` and `clear_interrupt` on the blocking driver, so an application can service the comparator from its own handler

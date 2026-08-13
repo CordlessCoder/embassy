@@ -537,6 +537,89 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
 }
 
 impl<'d, T: Instance> Comp<'d, T, Blocking> {
+    /// Arm the comparator's interrupt on `edge`, to be serviced by a handler the application owns.
+    ///
+    /// This is the escape hatch from [`wait_for_edge`](Comp::wait_for_edge). A wait is scheduled by
+    /// the executor, so an edge is not acted on until the running task yields; where the response has
+    /// to happen in interrupt context regardless of what else is runnable, the application supplies
+    /// the handler and drives the comparator through these four methods.
+    ///
+    /// # The handler goes on the group, not on a vector of its own
+    ///
+    /// On most chips the comparator does not own an NVIC line — it is one source on an interrupt
+    /// group, so there is no `COMP0` entry to define. Bind a handler to the source instead, and the
+    /// group's demultiplexer calls it:
+    ///
+    /// ```rust,ignore
+    /// struct RailHandler;
+    ///
+    /// impl interrupt_group::Handler<interrupt_group::COMP0> for RailHandler {
+    ///     unsafe fn on_interrupt() {
+    ///         // ... clear_interrupt, then set_dac_code, then arm the other edge
+    ///     }
+    /// }
+    ///
+    /// bind_group_interrupts!(struct Irqs {
+    ///     COMP0 => RailHandler;
+    ///     GPIOA => gpio::InterruptHandler;
+    /// });
+    /// ```
+    ///
+    /// Binding `GPIOA` alongside is what keeps the pin waits working: the two share the group, and
+    /// the demultiplexer reaches only the sources that are bound. [`init`](crate::init) enables the
+    /// group's NVIC line, so nothing else has to be unmasked.
+    ///
+    /// # Arming an edge does not clear the other one
+    ///
+    /// `RIS` is sticky. Alternating edges — which is what a threshold pair does — wants
+    /// [`clear_interrupt`](Self::clear_interrupt) first, or a flag left over from before re-enters
+    /// the handler the moment the other edge is armed. Clearing is left to the caller rather than
+    /// folded in here, because doing it inside the arm would discard an edge that genuinely arrived
+    /// while the handler was running.
+    ///
+    /// # Which flag means which edge
+    ///
+    /// `CTL1.IES` selects it, and this driver never writes that field: the register is written whole
+    /// at configuration, so `IES` is zero and the rising edge is `COMPIFG`. That is what
+    /// [`pending_edge`](Self::pending_edge) reports against.
+    pub fn enable_edge_interrupt(&mut self, edge: Edge) {
+        T::regs().cpu_int(0).imask().write(|w| {
+            w.set_compifg(matches!(edge, Edge::Rising | Edge::Any));
+            w.set_compinvifg(matches!(edge, Edge::Falling | Edge::Any));
+        });
+    }
+
+    /// Stop the comparator's interrupt reaching the CPU, leaving the flags as they are.
+    pub fn disable_edge_interrupt(&mut self) {
+        T::regs().cpu_int(0).imask().write(|_| {});
+    }
+
+    /// Which edge the comparator has seen since the flags were last cleared, armed or not.
+    ///
+    /// Reads the raw flags rather than the masked ones, so it answers for a caller that polls without
+    /// arming anything. [`Edge::Any`] means both are set, which a transition faster than the handler
+    /// can produce.
+    pub fn pending_edge(&self) -> Option<Edge> {
+        let pending = T::regs().cpu_int(0).ris().read();
+
+        match (pending.compifg(), pending.compinvifg()) {
+            (true, true) => Some(Edge::Any),
+            (true, false) => Some(Edge::Rising),
+            (false, true) => Some(Edge::Falling),
+            (false, false) => None,
+        }
+    }
+
+    /// Clear both edge flags.
+    pub fn clear_interrupt(&mut self) {
+        T::regs().cpu_int(0).iclr().write(|w| {
+            w.set_compifg(true);
+            w.set_compinvifg(true);
+        });
+    }
+}
+
+impl<'d, T: Instance> Comp<'d, T, Blocking> {
     /// Turn on the reference generator and its DAC, with no comparator inputs.
     ///
     /// The comparator is enabled, because nothing published says the DAC runs without it — TI's own
