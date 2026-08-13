@@ -246,3 +246,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/comp: `Config::settling` takes counts from `Settling::solve`, a `const fn`, so a fixed clock tree keeps the settling arithmetic out of the binary; `Comp` resolves the DAC wait once instead of per `set_dac_code`
 - mspm0/gpio: stop writing `EVT_MODE.INT0_CFG`, which is read-only and already holds the value written
 - feat: mspm0/gpio: `wait_for_edge` takes the `Edge` as a value, so a caller choosing at run time no longer needs an `async` block to unify the two future types; `Edge` is now public
+- mspm0/vref: work out the startup wait without dividing, dropping the software divider from every binary that builds a reference

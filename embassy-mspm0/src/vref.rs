@@ -265,20 +265,84 @@ impl<'d, T: Instance> Drop for Vref<'d, T> {
 /// Whole microseconds times cycles per microsecond. The exact form needs 64 bits, and a 64-bit
 /// divide on this core is over a kilobyte of `compiler_builtins`. Splitting MCLK into whole
 /// megahertz and the remainder keeps every divisor constant and the arithmetic in 32 bits, at the
-/// cost of rounding the figure up to a whole microsecond. Saturating, because a wrapped product
-/// would hand the reference over early.
+/// cost of rounding the figure up to a whole microsecond.
 ///
 /// **The remainder is what makes this usable below 1 MHz.** Rounding MCLK up to whole megahertz
 /// instead turns the 200 us startup into 6.1 ms on an LFCLK-sourced MCLK, which is the tree a
 /// low-power application picks.
+///
+/// The divisions are done by hand for the reason [`divmod_no_builtin`] gives. Every multiply is a
+/// plain one: `saturating_mul` is a *widening* multiply on this core and links `__aeabi_lmul`, so
+/// the defensive version costs more than the case it defends against. The bounds below are what
+/// make that safe.
 #[cfg(vref_err_01)]
 const fn startup_cycles(mclk: u32) -> u32 {
     let us = STARTUP_NS.div_ceil(1_000);
-    let cycles = us
-        .saturating_mul(mclk / 1_000_000)
-        .saturating_add(us.saturating_mul(mclk % 1_000_000).div_ceil(1_000_000));
+    let (whole_mhz, rem_hz) = divmod_no_builtin(mclk, 1_000_000, MHZ_BITS);
+
+    // A clock past what the loop can represent would get a truncated quotient and a short wait.
+    // Waiting far too long hands the reference over late, which is safe; waiting too little hands it
+    // over unsettled, which is not.
+    if whole_mhz > MAX_MHZ {
+        return u32::MAX;
+    }
+
+    // `us * whole_mhz` is at most 4095 * 1023 and `us * rem_hz` at most 4095 * 999_999, both inside
+    // `u32`. `us` is a constant here, so its bound is the `const` assertion below rather than a
+    // run-time check.
+    let cycles = us * whole_mhz + div_ceil_no_builtin(us * rem_hz, 1_000_000, US_BITS);
 
     if cycles == 0 { 1 } else { cycles }
+}
+
+/// Quotient bits allowed for the startup figure in whole microseconds, and the largest that leaves.
+///
+/// 4095 us is an order of magnitude past the longest `Tstartup` any device publishes.
+#[cfg(vref_err_01)]
+const US_BITS: u32 = 12;
+#[cfg(vref_err_01)]
+const MAX_US: u32 = (1 << US_BITS) - 1;
+
+/// The same for MCLK in whole megahertz. 1023 MHz is an order of magnitude past the fastest part.
+#[cfg(vref_err_01)]
+const MHZ_BITS: u32 = 10;
+#[cfg(vref_err_01)]
+const MAX_MHZ: u32 = (1 << MHZ_BITS) - 1;
+
+/// `n / d` and `n % d`, by hand, because a division here links the software divider.
+///
+/// The divisors above are constants and it makes no difference: ARMv6-M has no widening multiply, so
+/// the compiler cannot turn a constant divisor into a reciprocal multiply and reaches for
+/// `__aeabi_uidiv` instead. That is 442 bytes of `compiler_builtins` in every binary that builds a
+/// VREF, for arithmetic whose quotient never exceeds twelve bits. `comp::wait_cycles` and `i2c`'s
+/// `solve_clock_low_timeout` do the same thing for the same reason.
+///
+/// `bits` bounds the quotient and the caller proves it; `d << (bits - 1)` must not overflow.
+#[cfg(vref_err_01)]
+const fn divmod_no_builtin(n: u32, d: u32, bits: u32) -> (u32, u32) {
+    let mut rem = n;
+    let mut quot = 0;
+    let mut bit = bits;
+
+    while bit > 0 {
+        bit -= 1;
+        let sub = d << bit;
+
+        if rem >= sub {
+            rem -= sub;
+            quot |= 1 << bit;
+        }
+    }
+
+    (quot, rem)
+}
+
+/// `n.div_ceil(d)`, on the same terms as [`divmod_no_builtin`].
+#[cfg(vref_err_01)]
+const fn div_ceil_no_builtin(n: u32, d: u32, bits: u32) -> u32 {
+    let (quot, rem) = divmod_no_builtin(n, d, bits);
+
+    if rem == 0 { quot } else { quot + 1 }
 }
 
 // A factor-of-1000 slip in `startup_cycles` is the one error here that no test would catch: too large
@@ -293,6 +357,13 @@ const fn startup_cycles(mclk: u32) -> u32 {
 // the count covers the figure, and that a unit slip still shows.
 #[cfg(vref_err_01)]
 const _: () = {
+    // `startup_cycles` multiplies the figure in whole microseconds without a widening multiply and
+    // divides it with a quotient bounded by `US_BITS`. A device whose `Tstartup` exceeded this would
+    // get a truncated wait, so it fails to build instead.
+    core::assert!(
+        STARTUP_NS.div_ceil(1_000) <= MAX_US,
+        "this device's VREF startup figure is too large for startup_cycles' bounds"
+    );
     // At 1 GHz a cycle is a nanosecond, so the conversion is the identity and any unit slip shows here.
     core::assert!(startup_cycles(1_000_000_000) >= STARTUP_NS);
     core::assert!(startup_cycles(1_000_000_000) < STARTUP_NS + 1_000);
