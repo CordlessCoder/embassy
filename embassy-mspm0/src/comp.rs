@@ -759,7 +759,11 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
         negative: Option<Peri<'d, impl NegativePin<T>>>,
         config: Config,
     ) -> Result<Self, ConfigError> {
-        Self::build(erase_positive(positive).map(|(pin, ch)| (Some(pin), ch)), erase_negative(negative), config)
+        Self::build(
+            erase_positive(positive).map(|(pin, ch)| (Some(pin), ch)),
+            erase_negative(negative),
+            config,
+        )
     }
 
     /// Configure the comparator, keeping the positive pad's own type so it can be lent back.
@@ -910,7 +914,11 @@ impl<'d, T: Instance> Comp<'d, T, Async> {
         _irq: impl CompInterrupt<T> + 'd,
         config: Config,
     ) -> Result<Self, ConfigError> {
-        Self::build(erase_positive(positive).map(|(pin, ch)| (Some(pin), ch)), erase_negative(negative), config)
+        Self::build(
+            erase_positive(positive).map(|(pin, ch)| (Some(pin), ch)),
+            erase_negative(negative),
+            config,
+        )
     }
 
     /// Wait for the comparator's output to make a transition.
