@@ -104,6 +104,52 @@ pub struct Config {
     /// deep-sleep mode, so a reference that has to keep regulating across one wants
     /// [`ClockSel::LfClk`].
     pub clock: ClockSel,
+
+    /// Where the startup wait's cycle count comes from.
+    ///
+    /// Ignored where [`STARTUP_IS_TIMED`] is `false`, the hardware being asked instead.
+    pub startup: Startup,
+}
+
+/// Where [`Vref::new`] gets the startup wait from.
+///
+/// The wait is a cycle count derived from MCLK, and deriving it needs two divisions by a million.
+/// Cortex-M0+ has no divide instruction, so a count worked out on the device links the software
+/// divider, against a driver that is smaller than it.
+///
+/// [`Startup::solve`] does the arithmetic in a `const` instead. An application that leaves the clock
+/// tree alone can pre-solve against [`RESET_SETUP`](crate::sysctl::clock::RESET_SETUP), which is the
+/// tree it will actually be running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Startup {
+    /// Read MCLK from the live tree when the reference is built.
+    ///
+    /// Correct whatever the tree turns out to be, and the reason it is the default. It is also what
+    /// links the divider, because the rate is not known until the call runs.
+    FromClockTree,
+
+    /// A cycle count already worked out, by [`Startup::solve`].
+    Solved(u32),
+}
+
+impl Startup {
+    /// Work the startup wait out from a clock tree known at compile time.
+    ///
+    /// `clocks` comes from a [`ClockSetup`](crate::sysctl::clock::ClockSetup) in a `const` —
+    /// `clock::RESET_SETUP.clocks()` for an application that leaves the tree alone.
+    ///
+    /// ```ignore
+    /// const STARTUP: Startup = Startup::solve(&clock::RESET_SETUP.clocks());
+    /// ```
+    ///
+    /// **Nothing checks that `clocks` is the tree the device ends up running.** Solving against a
+    /// faster MCLK than the real one hands the reference over before it has settled, which reads as
+    /// an inaccurate conversion rather than as a fault. Solve against the same `ClockSetup` that goes
+    /// into [`crate::Config::clock`].
+    pub const fn solve(clocks: &crate::sysctl::Clocks) -> Self {
+        Self::Solved(startup_cycles(clocks.mclk))
+    }
 }
 
 /// The clock source for the reference.
@@ -133,6 +179,8 @@ impl Config {
             // What driverlib's own initialisation picks. A caller that needs the reference through a
             // deep sleep has to say so.
             clock: ClockSel::BusClk,
+            // Right on every tree, at the cost of the divider. `Startup::solve` is the way out.
+            startup: Startup::FromClockTree,
         }
     }
 }
@@ -213,7 +261,7 @@ impl<'d, T: Instance> Vref<'d, T> {
             w.set_enable(BUFFER, true);
         });
 
-        Self::wait_until_settled();
+        Self::wait_until_settled(config.startup);
 
         // No `WakeGuard`. VREF is in PD0 on every supported device and deep sleep does not power PD0
         // down, so its configuration survives without anything held — checked per instance in
@@ -226,16 +274,22 @@ impl<'d, T: Instance> Vref<'d, T> {
 
     /// Wait out the reference's startup, by whichever means this device allows.
     #[cfg(vref_err_01)]
-    fn wait_until_settled() {
+    fn wait_until_settled(startup: Startup) {
         // `STAT.READY` is stuck set from a previous enable on this device, so it cannot be asked. The
         // wait is derived from MCLK because it is a CPU-cycle delay, and MCLK is the CPU clock in RUN.
-        let cycles = crate::sysctl::with_clocks(|clocks| startup_cycles(clocks.mclk));
+        //
+        // The match is what makes pre-solving pay: given a `Solved` constant the other arm is dead
+        // and takes `startup_cycles`, the tree read and the divider with it.
+        let cycles = match startup {
+            Startup::Solved(cycles) => cycles,
+            Startup::FromClockTree => crate::sysctl::with_clocks(|clocks| startup_cycles(clocks.mclk)),
+        };
         cortex_m::asm::delay(cycles);
     }
 
     /// Wait out the reference's startup, by whichever means this device allows.
     #[cfg(not(vref_err_01))]
-    fn wait_until_settled() {
+    fn wait_until_settled(_startup: Startup) {
         // No `VREF_ERR_01` here, so the bit means what it says and is both faster and exact. Bounded
         // by the hardware: the reference either comes up or the device has no usable reference at all.
         while !T::regs().ctl1().read().ready(BUFFER) {}
@@ -275,7 +329,6 @@ impl<'d, T: Instance> Drop for Vref<'d, T> {
 /// plain one: `saturating_mul` is a *widening* multiply on this core and links `__aeabi_lmul`, so
 /// the defensive version costs more than the case it defends against. The bounds below are what
 /// make that safe.
-#[cfg(vref_err_01)]
 const fn startup_cycles(mclk: u32) -> u32 {
     let us = STARTUP_NS.div_ceil(1_000);
     let (whole_mhz, rem_hz) = divmod_no_builtin(mclk, 1_000_000, MHZ_BITS);
@@ -298,15 +351,11 @@ const fn startup_cycles(mclk: u32) -> u32 {
 /// Quotient bits allowed for the startup figure in whole microseconds, and the largest that leaves.
 ///
 /// 4095 us is an order of magnitude past the longest `Tstartup` any device publishes.
-#[cfg(vref_err_01)]
 const US_BITS: u32 = 12;
-#[cfg(vref_err_01)]
 const MAX_US: u32 = (1 << US_BITS) - 1;
 
 /// The same for MCLK in whole megahertz. 1023 MHz is an order of magnitude past the fastest part.
-#[cfg(vref_err_01)]
 const MHZ_BITS: u32 = 10;
-#[cfg(vref_err_01)]
 const MAX_MHZ: u32 = (1 << MHZ_BITS) - 1;
 
 /// `n / d` and `n % d`, by hand, because a division here links the software divider.
@@ -318,7 +367,6 @@ const MAX_MHZ: u32 = (1 << MHZ_BITS) - 1;
 /// `solve_clock_low_timeout` do the same thing for the same reason.
 ///
 /// `bits` bounds the quotient and the caller proves it; `d << (bits - 1)` must not overflow.
-#[cfg(vref_err_01)]
 const fn divmod_no_builtin(n: u32, d: u32, bits: u32) -> (u32, u32) {
     let mut rem = n;
     let mut quot = 0;
@@ -338,7 +386,6 @@ const fn divmod_no_builtin(n: u32, d: u32, bits: u32) -> (u32, u32) {
 }
 
 /// `n.div_ceil(d)`, on the same terms as [`divmod_no_builtin`].
-#[cfg(vref_err_01)]
 const fn div_ceil_no_builtin(n: u32, d: u32, bits: u32) -> u32 {
     let (quot, rem) = divmod_no_builtin(n, d, bits);
 
@@ -355,7 +402,6 @@ const fn div_ceil_no_builtin(n: u32, d: u32, bits: u32) -> u32 {
 //
 // Bounds rather than equalities, because the rounding above is deliberate: what has to hold is that
 // the count covers the figure, and that a unit slip still shows.
-#[cfg(vref_err_01)]
 const _: () = {
     // `startup_cycles` multiplies the figure in whole microseconds without a widening multiply and
     // divides it with a quotient bounded by `US_BITS`. A device whose `Tstartup` exceeded this would
