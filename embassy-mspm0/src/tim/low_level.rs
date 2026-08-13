@@ -342,27 +342,12 @@ impl<'d, T: Instance> Timer<'d, T> {
 
     /// Clock source the counter runs from.
     pub fn clock_source(&self) -> ClockSel {
-        let clksel = T::info().regs.clksel().read();
-
-        if clksel.lfclk_sel() {
-            ClockSel::LfClk
-        } else if clksel.mfclk_sel() {
-            ClockSel::MfClk
-        } else {
-            ClockSel::BusClk
-        }
+        clock_source(T::info().regs)
     }
 
     /// Rate the counter advances at, in Hz.
     pub fn tick_frequency(&self) -> u32 {
-        let r = T::info().regs;
-        let divider = r.clkdiv().read().ratio() as u32 + 1;
-        let prescaler = r.commonregs(0).cps().read().pcnt() as u32 + 1;
-
-        let source_hz =
-            crate::sysctl::with_clocks(|clocks| self.clock_source().frequency(clocks, T::SLEEP.power_domain));
-
-        source_hz / divider / prescaler
+        tick_frequency(T::info().regs, T::SLEEP.power_domain)
     }
 
     /// Ticks in one counting period.
@@ -374,9 +359,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     ///
     /// Errors outside [`Timer::tick_frequency`] down to that divided by the counter's full range.
     pub fn set_frequency(&self, hz: u32) -> Result<(), ConfigError> {
-        let mode = counting_mode(T::info().regs);
-
-        self.set_load_value(load_for_frequency(self.tick_frequency(), mode, hz)?)
+        set_frequency(T::info().regs, T::SLEEP.power_domain, T::Word::MAX.into(), hz)
     }
 
     /// Program a load value, rejecting one the counter cannot hold.
@@ -384,13 +367,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// Takes what [`solve_load`] works out ahead of time, so a frequency known up front reaches the
     /// register without the device dividing for it.
     pub fn set_load_value(&self, load: u32) -> Result<(), ConfigError> {
-        if load > T::Word::MAX.into() {
-            return Err(ConfigError::TooLow);
-        }
-
-        self.set_load(T::Word::from_reg(load));
-
-        Ok(())
+        set_load_value(T::info().regs, T::Word::MAX.into(), load)
     }
 
     /// Enable or disable the interrupt for `event`.
@@ -548,6 +525,54 @@ pub(crate) fn is_pending(regs: Tim, event: Event) -> bool {
 
 pub(crate) fn clear_pending(regs: Tim, event: Event) {
     regs.cpu_int(0).iclr().write_value(event.mask());
+}
+
+/// Set the period so the counter completes one period at `hz`.
+///
+/// `word_max` is the instance's counter width, the one fact this needs that the register block does
+/// not carry.
+fn set_frequency(regs: Tim, domain: crate::sysctl::PowerDomain, word_max: u32, hz: u32) -> Result<(), ConfigError> {
+    let mode = counting_mode(regs);
+
+    set_load_value(
+        regs,
+        word_max,
+        load_for_frequency(tick_frequency(regs, domain), mode, hz)?,
+    )
+}
+
+/// Program a load value, rejecting one the counter cannot hold.
+fn set_load_value(regs: Tim, word_max: u32, load: u32) -> Result<(), ConfigError> {
+    if load > word_max {
+        return Err(ConfigError::TooLow);
+    }
+
+    regs.counterregs(0).load().write_value(load);
+
+    Ok(())
+}
+
+/// Clock source the counter runs from.
+pub(crate) fn clock_source(regs: Tim) -> ClockSel {
+    let clksel = regs.clksel().read();
+
+    if clksel.lfclk_sel() {
+        ClockSel::LfClk
+    } else if clksel.mfclk_sel() {
+        ClockSel::MfClk
+    } else {
+        ClockSel::BusClk
+    }
+}
+
+/// Rate the counter advances at, in Hz.
+pub(crate) fn tick_frequency(regs: Tim, domain: crate::sysctl::PowerDomain) -> u32 {
+    let divider = regs.clkdiv().read().ratio() as u32 + 1;
+    let prescaler = regs.commonregs(0).cps().read().pcnt() as u32 + 1;
+
+    let source_hz = crate::sysctl::with_clocks(|clocks| clock_source(regs).frequency(clocks, domain));
+
+    source_hz / divider / prescaler
 }
 
 /// Counting direction and alignment, for the channel handles that have no instance to ask.

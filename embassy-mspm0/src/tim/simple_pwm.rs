@@ -212,6 +212,22 @@ pub struct PwmPins<'d, T: Instance> {
 /// method, which is worth 16 bytes at two instances and 36 at three because it is called up to four
 /// times per instance as well as once per timer. **Measure per function; the type parameter is not
 /// itself the cost.**
+///
+/// Three more went the same way, on a G-series part driving one, two and three timers: **−52 bytes at
+/// one instance, −248 at two and −392 at three.** A four-channel timer with all four pins costs 8 bytes
+/// more. What each was worth is in the order they were measured:
+///
+/// - `set_frequency`, `set_load_value` and `tick_frequency` erased to free functions over the register
+///   block, taking the counter width and the power domain as arguments. The clock read reaches
+///   `critical_section::with` through a closure, and a closure over `T` is a fresh body per instance.
+/// - The channel loop in `build` unrolled, and each channel's pin read *before* `pins` moves into the
+///   struct. Once it is a field, `is_some()` is a load rather than a constant, and the four calls all
+///   survive whatever the caller passed. This is the half that also pays at one instance.
+/// - `SimplePwmChannel::set_duty` erased the same way, so a caller reaches it with three registers
+///   rather than a handle it has to build on the stack first.
+///
+/// Two that were worth **exactly zero**, both measured: erasing `teardown`, and `#[inline(always)]` on
+/// `Config::default`.
 #[repr(align(2))]
 pub struct SimplePwm<'d, T: Instance> {
     timer: Timer<'d, T>,
@@ -280,6 +296,16 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
             },
         );
 
+        // Which channels have a pin, read while `pins` is still a value the caller built. Once it is a
+        // field of `this` it lives in memory, and `is_some()` on it becomes a load the compiler cannot
+        // fold — the four calls below then all survive whatever the caller passed.
+        let [ch0, ch1, ch2, ch3] = [
+            pins[0].is_some(),
+            pins[1].is_some(),
+            pins[2].is_some(),
+            pins[3].is_some(),
+        ];
+
         // Built before the frequency is applied so a rejected one still unwinds through `Drop`,
         // releasing the pins and powering the instance back down.
         let mut this = Self { timer, pins };
@@ -291,11 +317,20 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
             None => this.set_frequency(config.frequency)?,
         }
 
+        // Unrolled rather than a loop over `Channel::ALL`: at `opt-level = "z"` nothing unrolls it, and
+        // a run-time channel index reaches `setup_channel` as an argument instead of a constant.
         let regs = this.timer.regs();
-        for channel in Channel::ALL {
-            if this.pins[channel.index()].is_some() {
-                setup_channel(regs, channel, config.counting_mode);
-            }
+        if ch0 {
+            setup_channel(regs, Channel::Ch0, config.counting_mode);
+        }
+        if ch1 {
+            setup_channel(regs, Channel::Ch1, config.counting_mode);
+        }
+        if ch2 {
+            setup_channel(regs, Channel::Ch2, config.counting_mode);
+        }
+        if ch3 {
+            setup_channel(regs, Channel::Ch3, config.counting_mode);
         }
 
         Ok(this)
@@ -319,6 +354,7 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
     }
 
     /// Borrow one channel to set its duty or enable its output.
+    #[inline]
     pub fn channel(&mut self, channel: Channel) -> SimplePwmChannel<'_> {
         SimplePwmChannel {
             regs: self.timer.regs(),
@@ -396,30 +432,9 @@ impl<'d> SimplePwmChannel<'d> {
     /// Set the duty in ticks, saturating at [`Self::max_duty`].
     ///
     /// Takes effect immediately, so a change mid-period shortens or lengthens that one period.
+    #[inline]
     pub fn set_duty(&mut self, ticks: u32) {
-        let period = self.max_duty();
-        let ticks = ticks.min(period);
-
-        // Neither extreme is reachable through the compare value, so both use the forced-output
-        // override. Merely disabling the event that starts the pulse does not work: with SWFRCACT
-        // clear the signal generator still drives its own compare-based waveform.
-        let force = match ticks {
-            0 => Swfrcact::CcpLow,
-            t if t >= period => Swfrcact::CcpHigh,
-            _ => Swfrcact::Disabled,
-        };
-
-        // Compare first, so the value is in place before the override is lifted.
-        if ticks > 0 && ticks < period {
-            let compare = compare_for_duty(self.regs, ticks);
-
-            self.regs.counterregs(0).cc(self.channel.index()).write_value(compare);
-        }
-
-        self.regs
-            .counterregs(0)
-            .ccact(self.channel.index())
-            .modify(|w| w.set_swfrcact(force));
+        set_duty(self.regs, self.channel, ticks);
     }
 
     /// Hold the output at its inactive level regardless of the duty cycle.
@@ -649,6 +664,35 @@ pub(crate) fn setup_channel(r: Tim, channel: Channel, counting_mode: CountingMod
 
     // SLAU847F 28.2.5.2.1 step 8 says write 1 here; 28.3.32 and driverlib agree 1 is "forced low".
     r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, false));
+}
+
+/// Set the duty in ticks, saturating at the period.
+///
+/// Takes the register block and the channel rather than `&mut SimplePwmChannel`, so a caller reaches it
+/// with three registers instead of a handle it has to put on the stack first.
+fn set_duty(regs: Tim, channel: Channel, ticks: u32) {
+    let period = max_duty(regs);
+    let ticks = ticks.min(period);
+
+    // Neither extreme is reachable through the compare value, so both use the forced-output
+    // override. Merely disabling the event that starts the pulse does not work: with SWFRCACT
+    // clear the signal generator still drives its own compare-based waveform.
+    let force = match ticks {
+        0 => Swfrcact::CcpLow,
+        t if t >= period => Swfrcact::CcpHigh,
+        _ => Swfrcact::Disabled,
+    };
+
+    // Compare first, so the value is in place before the override is lifted.
+    if ticks > 0 && ticks < period {
+        let compare = compare_for_duty(regs, ticks);
+
+        regs.counterregs(0).cc(channel.index()).write_value(compare);
+    }
+
+    regs.counterregs(0)
+        .ccact(channel.index())
+        .modify(|w| w.set_swfrcact(force));
 }
 
 fn max_duty(regs: Tim) -> u32 {
