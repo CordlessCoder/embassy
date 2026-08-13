@@ -259,3 +259,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/uart: the unbuffered async read and write reach the caller's buffer without a bounds check, dropping the panicking edge from both
 - mspm0/uart: `UartTx` resolves its sleep floor once instead of per call, keeping the clock-tree lookup out of every async write and flush
 - mspm0/uart: `Baud` is aligned to a word, so a caller storing it does not link an unaligned-write helper
+- **breaking**: mspm0/dma: a strided transfer derives its count from the buffer's length divided by the stride, so the slice bounds the memory touched instead of being overrun by `stride - 1` elements per transfer

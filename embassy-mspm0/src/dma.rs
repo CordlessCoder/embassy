@@ -100,11 +100,15 @@ impl<'d> Channel<'d> {
     ///
     /// # Safety
     ///
-    /// `src` must be valid for reads of `dst.len()` words for as long as the transfer runs, and must
-    /// not be written by anything else meanwhile. The hardware writes `dst` behind the compiler's
-    /// back, so the returned [`Transfer`] must be awaited, `blocking_wait`ed or dropped before `dst`
-    /// is read; leaking it with [`mem::forget`](core::mem::forget()) leaves the DMA writing into memory
-    /// the borrow checker considers free again.
+    /// `src` must be valid for reads of as many words as this moves, and must not be written by
+    /// anything else meanwhile. The hardware writes `dst` behind the compiler's back, so the returned
+    /// [`Transfer`] must be awaited, `blocking_wait`ed or dropped before `dst` is read; leaking it
+    /// with [`mem::forget`](core::mem::forget()) leaves the DMA writing into memory the borrow checker
+    /// considers free again.
+    ///
+    /// `dst` bounds the memory written, not the number of words: under
+    /// [`TransferOptions::dst_stride`] this moves `dst.len() / stride` words spread across the whole
+    /// of `dst`, so a strided read wants a destination `stride` times longer than the data.
     pub unsafe fn read<'a, SW: Word, DW: Word>(
         &'a mut self,
         trigger_source: u8,
@@ -129,7 +133,13 @@ impl<'d> Channel<'d> {
         dst: *mut [DW],
         options: TransferOptions,
     ) -> Result<Transfer<'a>, Error> {
-        verify_transfer::<DW>(dst)?;
+        // Only the destination advances on a read, so only its stride shortens the count.
+        #[cfg(dma_stride)]
+        let count = strided_count(dst.len(), options.dst_stride.step());
+        #[cfg(not(dma_stride))]
+        let count = dst.len();
+
+        verify_transfer(count)?;
 
         let wake_guard = self.transfer_guard(trigger_source);
         let transfer = Transfer {
@@ -142,7 +152,7 @@ impl<'d> Channel<'d> {
             SW::width(),
             dst.cast(),
             DW::width(),
-            dst.len() as u16,
+            count as u16,
             false,
             true,
             options,
@@ -156,11 +166,14 @@ impl<'d> Channel<'d> {
     ///
     /// # Safety
     ///
-    /// `dst` must be valid for writes of `src.len()` words for as long as the transfer runs, and must
-    /// not be read or written by anything else meanwhile. The returned [`Transfer`] must be awaited,
-    /// `blocking_wait`ed or dropped before `src` is reused; leaking it with
-    /// [`mem::forget`](core::mem::forget()) leaves the DMA reading memory the borrow checker considers
-    /// free again.
+    /// `dst` must be valid for writes of as many words as this moves, and must not be read or written
+    /// by anything else meanwhile. The returned [`Transfer`] must be awaited, `blocking_wait`ed or
+    /// dropped before `src` is reused; leaking it with [`mem::forget`](core::mem::forget()) leaves the
+    /// DMA reading memory the borrow checker considers free again.
+    ///
+    /// `src` bounds the memory read, not the number of words: under
+    /// [`TransferOptions::src_stride`] this moves `src.len() / stride` words taken from across the
+    /// whole of `src`.
     pub unsafe fn write<'a, SW: Word, DW: Word>(
         &'a mut self,
         trigger_source: u8,
@@ -185,7 +198,13 @@ impl<'d> Channel<'d> {
         dst: *mut DW,
         options: TransferOptions,
     ) -> Result<Transfer<'a>, Error> {
-        verify_transfer::<SW>(src)?;
+        // Only the source advances on a write, so only its stride shortens the count.
+        #[cfg(dma_stride)]
+        let count = strided_count(src.len(), options.src_stride.step());
+        #[cfg(not(dma_stride))]
+        let count = src.len();
+
+        verify_transfer(count)?;
 
         let wake_guard = self.transfer_guard(trigger_source);
         let transfer = Transfer {
@@ -198,7 +217,7 @@ impl<'d> Channel<'d> {
             SW::width(),
             dst.cast(),
             DW::width(),
-            src.len() as u16,
+            count as u16,
             true,
             false,
             options,
@@ -437,6 +456,21 @@ impl Stride {
             Self::Nine => Incr::Stride9,
         }
     }
+
+    /// How many elements of span one transferred element costs.
+    pub(crate) const fn step(self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Three => 3,
+            Self::Four => 4,
+            Self::Five => 5,
+            Self::Six => 6,
+            Self::Seven => 7,
+            Self::Eight => 8,
+            Self::Nine => 9,
+        }
+    }
 }
 
 impl Default for TransferOptions {
@@ -536,12 +570,21 @@ impl<'a> Drop for Transfer<'a> {
 
 // impl details
 
-fn verify_transfer<W: Word>(ptr: *const [W]) -> Result<(), Error> {
-    if ptr.len() > (u16::MAX as usize) {
+/// Elements moved through a buffer of `len` when each one advances the address by `step`.
+///
+/// The hardware counts *transfers*, not addresses, so a strided transfer of `n` elements covers
+/// `n * step` of the buffer. Deriving the count from the span is what keeps the slice the caller
+/// passed a bound on what the DMA touches; taking the count from `len` directly would write
+/// `step - 1` elements past the end of every one of them.
+#[cfg(dma_stride)]
+const fn strided_count(len: usize, step: usize) -> usize {
+    len / step
+}
+
+fn verify_transfer(count: usize) -> Result<(), Error> {
+    if count > (u16::MAX as usize) {
         return Err(Error::TooManyTransfers);
     }
-
-    // TODO: Stride checks
 
     Ok(())
 }
