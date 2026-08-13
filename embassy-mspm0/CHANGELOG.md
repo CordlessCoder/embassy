@@ -249,3 +249,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/vref: work out the startup wait without dividing, dropping the software divider from every binary that builds a reference
 - feat: mspm0/vref: `Config::startup` takes a count from `Startup::solve`, a `const fn`, so a fixed clock tree keeps the startup arithmetic out of the binary
 - mspm0: pend the interrupt executor by writing ISPR directly, dropping a bounds check the optimiser could not fold
+- mspm0/adc: pick the sample-clock divider and frequency band by shift and table rather than comparison chains

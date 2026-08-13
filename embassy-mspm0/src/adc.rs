@@ -1057,17 +1057,21 @@ const FRANGE_MAX_HZ: u32 = 48_000_000;
 /// the 62.5 ns minimum sampling time the datasheets specify.
 const TARGET_SAMPCLK_HZ: u32 = 8_000_000;
 
+/// Largest `SCLKDIV` this picks. Beyond it the divider ladder stops being powers of two.
+const MAX_SCLKDIV_INDEX: u8 = vals::Sclkdiv::DivBy8.to_bits();
+
 /// Smallest `CTL0.SCLKDIV` that brings `adcclk_hz` down to [`TARGET_SAMPCLK_HZ`] or below.
+///
+/// A shift rather than a chain of comparisons: the first four `SCLKDIV` encodings are the powers of
+/// two in order, so the encoding is the shift that reaches the target.
 const fn sample_clock_div(adcclk_hz: u32) -> vals::Sclkdiv {
-    if adcclk_hz <= TARGET_SAMPCLK_HZ {
-        vals::Sclkdiv::DivBy1
-    } else if adcclk_hz <= 2 * TARGET_SAMPCLK_HZ {
-        vals::Sclkdiv::DivBy2
-    } else if adcclk_hz <= 4 * TARGET_SAMPCLK_HZ {
-        vals::Sclkdiv::DivBy4
-    } else {
-        vals::Sclkdiv::DivBy8
+    let mut i = 0;
+
+    while i < MAX_SCLKDIV_INDEX && adcclk_hz > TARGET_SAMPCLK_HZ << i {
+        i += 1;
     }
+
+    vals::Sclkdiv::from_bits(i)
 }
 
 /// The `CLKFREQ.FRANGE` band `adcclk_hz` falls in.
@@ -1076,24 +1080,23 @@ const fn sample_clock_div(adcclk_hz: u32) -> vals::Sclkdiv {
 /// "unintended results" (SLAU846 table 18-2). Bands are open at the bottom and closed at the top, so
 /// a rate on a boundary belongs to the lower one.
 const fn clock_range(adcclk_hz: u32) -> vals::Frange {
-    if adcclk_hz <= 4_000_000 {
-        vals::Frange::Range1to4
-    } else if adcclk_hz <= 8_000_000 {
-        vals::Frange::Range4to8
-    } else if adcclk_hz <= 16_000_000 {
-        vals::Frange::Range8to16
-    } else if adcclk_hz <= 20_000_000 {
-        vals::Frange::Range16to20
-    } else if adcclk_hz <= 24_000_000 {
-        vals::Frange::Range20to24
-    } else if adcclk_hz <= 32_000_000 {
-        vals::Frange::Range24to32
-    } else if adcclk_hz <= 40_000_000 {
-        vals::Frange::Range32to40
-    } else {
-        vals::Frange::Range40to48
+    let mut i = 0;
+
+    while i < FRANGE_CEILINGS.len() - 1 && adcclk_hz > FRANGE_CEILINGS[i] as u32 * FRANGE_STEP_HZ {
+        i += 1;
     }
+
+    vals::Frange::from_bits(i as u8)
 }
+
+/// Unit the `FRANGE` band ceilings are all multiples of.
+const FRANGE_STEP_HZ: u32 = 4_000_000;
+
+/// Each `FRANGE` band's ceiling in [`FRANGE_STEP_HZ`] units, in band order.
+///
+/// A table rather than a chain of comparisons: eight 32-bit rates put eight literals in the constant
+/// pool, and every ceiling divides by 4 MHz into a byte.
+const FRANGE_CEILINGS: [u8; 8] = [1, 2, 4, 5, 6, 8, 10, 12];
 
 const _: () = {
     use crate::sysctl::clock::SYSOSC_BASE_HZ;
