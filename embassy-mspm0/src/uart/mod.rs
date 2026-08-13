@@ -16,8 +16,10 @@
 
 mod buffered;
 
+use core::future::{Future, poll_fn};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
+use core::task::Poll;
 
 pub use buffered::*;
 use embassy_embedded_hal::SetConfig;
@@ -25,9 +27,12 @@ use embassy_hal_internal::PeripheralType;
 
 use crate::Peri;
 use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull, SealedPin};
+use crate::interrupt::typelevel::{Binding, Interrupt as _};
 use crate::interrupt::{Interrupt, InterruptExt};
-use crate::mode::{Blocking, Mode};
+use crate::mode::{Async, Blocking, Mode};
+use crate::pac::uart::regs::CpuInt;
 use crate::pac::uart::{Uart as Regs, vals};
+use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepInfo, SleepLevel};
 
 /// Bit times of silence after which the receiver reports a FIFO that has not reached its level.
@@ -392,12 +397,12 @@ impl Default for Config {
 /// [`embedded_io::Read`] requires guarantees that the base [`UartRx`] cannot provide.
 ///
 /// See [`UartRx`] for more details, and [`BufferedUart`] for an alternative that does provide them.
-pub struct Uart<'d, M: Mode> {
+pub struct Uart<'d, M: ModeState> {
     tx: UartTx<'d, M>,
     rx: UartRx<'d, M>,
 }
 
-impl<'d, M: Mode> SetConfig for Uart<'d, M> {
+impl<'d, M: ModeState> SetConfig for Uart<'d, M> {
     type Config = Config;
     type ConfigError = ConfigError;
 
@@ -452,9 +457,11 @@ impl embedded_io::Error for Error {
 ///
 /// Can be obtained from [`Uart::split`], or can be constructed independently,
 /// if you do not need the transmitting half of the driver.
-pub struct UartRx<'d, M: Mode> {
+pub struct UartRx<'d, M: ModeState> {
     info: &'static Info,
     state: &'static State,
+    /// Zero-sized unless this driver can wait; see [`ModeState`].
+    wait: M::Wait,
     rx: MaybeAnyPin<'d>,
     rts: MaybeAnyPin<'d>,
     /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
@@ -462,7 +469,7 @@ pub struct UartRx<'d, M: Mode> {
     _phantom: PhantomData<M>,
 }
 
-impl<'d, M: Mode> SetConfig for UartRx<'d, M> {
+impl<'d, M: ModeState> SetConfig for UartRx<'d, M> {
     type Config = Config;
     type ConfigError = ConfigError;
 
@@ -480,7 +487,7 @@ impl<'d> UartRx<'d, Blocking> {
         rx: Peri<'d, impl RxPin<T>>,
         config: Config,
     ) -> Result<Self, ConfigError> {
-        Self::new_inner(peri, new_pin!(rx, config.rx_pf()), None, config)
+        Self::new_inner(peri, new_pin!(rx, config.rx_pf()), None, (), config)
     }
 
     /// Create a new rx-only UART with a request-to-send pin
@@ -494,12 +501,90 @@ impl<'d> UartRx<'d, Blocking> {
             peri,
             new_pin!(rx, config.rx_pf()),
             new_pin!(rts, config.rts_pf()),
+            (),
             config,
         )
     }
 }
 
-impl<'d, M: Mode> UartRx<'d, M> {
+impl<'d> UartRx<'d, Async> {
+    /// Create a new rx-only UART that waits on the FIFO rather than a software buffer.
+    pub fn new<T: Instance>(
+        peri: Peri<'d, T>,
+        rx: Peri<'d, impl RxPin<T>>,
+        _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        config: Config,
+    ) -> Result<Self, ConfigError> {
+        let this = Self::new_inner(peri, new_pin!(rx, config.rx_pf()), None, T::async_state(), config)?;
+        enable_interrupt::<T>();
+
+        Ok(this)
+    }
+
+    /// Create a new rx-only UART with a request-to-send pin.
+    pub fn new_with_rts<T: Instance>(
+        peri: Peri<'d, T>,
+        rx: Peri<'d, impl RxPin<T>>,
+        rts: Peri<'d, impl RtsPin<T>>,
+        _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        config: Config,
+    ) -> Result<Self, ConfigError> {
+        let this = Self::new_inner(
+            peri,
+            new_pin!(rx, config.rx_pf()),
+            new_pin!(rts, config.rts_pf()),
+            T::async_state(),
+            config,
+        )?;
+        enable_interrupt::<T>();
+
+        Ok(this)
+    }
+
+    /// Fill `buffer`, waiting on the receive FIFO for as long as it takes.
+    ///
+    /// The FIFO is four entries deep and nothing here adds to it, so the wait tolerates the caller
+    /// being away for four character times and no more. Past that the receiver overruns and the byte
+    /// that caused it is reported as [`Error::Overrun`] — [`BufferedUart`] is what absorbs a longer
+    /// absence.
+    ///
+    /// An error abandons the read with the bytes already in `buffer` written and no count of them.
+    pub fn read<'a>(&'a mut self, buffer: &'a mut [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
+        let r = self.info.regs;
+        let state = self.wait;
+        let mut read = 0;
+
+        poll_fn(move |cx| {
+            clear(r, rx_sources());
+
+            while read < buffer.len() {
+                if r.stat().read().rxfe() {
+                    break;
+                }
+
+                compiler_fence(Ordering::Acquire);
+                match read_with_error(r) {
+                    Ok(byte) => {
+                        buffer[read] = byte;
+                        read += 1;
+                    }
+                    Err(err) => return Poll::Ready(Err(err)),
+                }
+            }
+
+            if read == buffer.len() {
+                return Poll::Ready(Ok(()));
+            }
+
+            state.rx_waker.register(cx.waker());
+            unmask(r, rx_sources());
+
+            Poll::Pending
+        })
+    }
+}
+
+impl<'d, M: ModeState> UartRx<'d, M> {
     /// Perform a blocking read into `buffer`
     pub fn blocking_read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
         let r = self.info.regs;
@@ -535,7 +620,7 @@ impl<'d, M: Mode> UartRx<'d, M> {
     }
 }
 
-impl<'d, M: Mode> Drop for UartRx<'d, M> {
+impl<'d, M: ModeState> Drop for UartRx<'d, M> {
     fn drop(&mut self) {
         self.rx.pin().map(|x| x.set_as_disconnected());
         self.rts.pin().map(|x| x.set_as_disconnected());
@@ -546,9 +631,11 @@ impl<'d, M: Mode> Drop for UartRx<'d, M> {
 ///
 /// Can be obtained from [`Uart::split`], or can be constructed independently,
 /// if you do not need the receiving half of the driver.
-pub struct UartTx<'d, M: Mode> {
+pub struct UartTx<'d, M: ModeState> {
     info: &'static Info,
     state: &'static State,
+    /// Zero-sized unless this driver can wait; see [`ModeState`].
+    wait: M::Wait,
     tx: MaybeAnyPin<'d>,
     cts: MaybeAnyPin<'d>,
     /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
@@ -556,7 +643,7 @@ pub struct UartTx<'d, M: Mode> {
     _phantom: PhantomData<M>,
 }
 
-impl<'d, M: Mode> SetConfig for UartTx<'d, M> {
+impl<'d, M: ModeState> SetConfig for UartTx<'d, M> {
     type Config = Config;
     type ConfigError = ConfigError;
 
@@ -574,7 +661,7 @@ impl<'d> UartTx<'d, Blocking> {
         tx: Peri<'d, impl TxPin<T>>,
         config: Config,
     ) -> Result<Self, ConfigError> {
-        Self::new_inner(peri, new_pin!(tx, config.tx_pf()), None, config)
+        Self::new_inner(peri, new_pin!(tx, config.tx_pf()), None, (), config)
     }
 
     /// Create a new blocking tx-only UART with a clear-to-send pin
@@ -588,12 +675,100 @@ impl<'d> UartTx<'d, Blocking> {
             peri,
             new_pin!(tx, config.tx_pf()),
             new_pin!(cts, config.cts_pf()),
+            (),
             config,
         )
     }
 }
 
-impl<'d, M: Mode> UartTx<'d, M> {
+impl<'d> UartTx<'d, Async> {
+    /// Create a new tx-only UART that waits on the FIFO rather than a software buffer.
+    pub fn new<T: Instance>(
+        peri: Peri<'d, T>,
+        tx: Peri<'d, impl TxPin<T>>,
+        _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        config: Config,
+    ) -> Result<Self, ConfigError> {
+        let this = Self::new_inner(peri, new_pin!(tx, config.tx_pf()), None, T::async_state(), config)?;
+        enable_interrupt::<T>();
+
+        Ok(this)
+    }
+
+    /// Create a new tx-only UART with a clear-to-send pin.
+    pub fn new_with_cts<T: Instance>(
+        peri: Peri<'d, T>,
+        tx: Peri<'d, impl TxPin<T>>,
+        cts: Peri<'d, impl CtsPin<T>>,
+        _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        config: Config,
+    ) -> Result<Self, ConfigError> {
+        let this = Self::new_inner(
+            peri,
+            new_pin!(tx, config.tx_pf()),
+            new_pin!(cts, config.cts_pf()),
+            T::async_state(),
+            config,
+        )?;
+        enable_interrupt::<T>();
+
+        Ok(this)
+    }
+
+    /// Queue every byte of `buffer`, waiting for room in the transmit FIFO.
+    ///
+    /// Queued, not sent: the last bytes are still in the FIFO when this returns. Anything that can
+    /// enter deep sleep afterwards wants [`flush`](Self::flush) first, or the frame is cut mid-byte.
+    pub fn write<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
+        let r = self.info.regs;
+        let state = self.wait;
+        let mut written = 0;
+
+        poll_fn(move |cx| {
+            clear(r, tx_sources());
+
+            while written < buffer.len() {
+                if r.stat().read().txff() {
+                    break;
+                }
+
+                compiler_fence(Ordering::Release);
+                r.txdata().write(|w| w.set_data(buffer[written]));
+                written += 1;
+            }
+
+            if written == buffer.len() {
+                return Poll::Ready(Ok(()));
+            }
+
+            state.tx_waker.register(cx.waker());
+            unmask(r, tx_sources());
+
+            Poll::Pending
+        })
+    }
+
+    /// Wait for the transmitter to go idle, so nothing is left in the FIFO or the shift register.
+    pub fn flush(&mut self) -> impl Future<Output = Result<(), Error>> + '_ {
+        let r = self.info.regs;
+        let state = self.wait;
+
+        poll_fn(move |cx| {
+            clear(r, eot_sources());
+
+            if !busy(r) {
+                return Poll::Ready(Ok(()));
+            }
+
+            state.tx_waker.register(cx.waker());
+            unmask(r, eot_sources());
+
+            Poll::Pending
+        })
+    }
+}
+
+impl<'d, M: ModeState> UartTx<'d, M> {
     /// Open a transmission, returning the [`TxWrite`] that queues the bytes and sees them onto the wire.
     ///
     /// A write only queues: the last bytes are still in the FIFO when it returns, and on most families
@@ -690,7 +865,7 @@ impl<'d, M: Mode> UartTx<'d, M> {
     }
 }
 
-impl<'d, M: Mode> Drop for UartTx<'d, M> {
+impl<'d, M: ModeState> Drop for UartTx<'d, M> {
     fn drop(&mut self) {
         self.tx.pin().map(|x| x.set_as_disconnected());
         self.cts.pin().map(|x| x.set_as_disconnected());
@@ -705,7 +880,7 @@ impl<'d, M: Mode> Drop for UartTx<'d, M> {
 /// whatever the device does next.
 ///
 /// Not `#[must_use]`: dropping this immediately is the correct thing, not a mistake.
-pub struct TxWrite<'a, 'd, M: Mode> {
+pub struct TxWrite<'a, 'd, M: ModeState> {
     regs: Regs,
     guard: MaybeWakeGuard,
     /// Borrows the driver without holding a reference to it.
@@ -717,7 +892,7 @@ pub struct TxWrite<'a, 'd, M: Mode> {
     tx: PhantomData<&'a mut UartTx<'d, M>>,
 }
 
-impl<'a, 'd, M: Mode> TxWrite<'a, 'd, M> {
+impl<'a, 'd, M: ModeState> TxWrite<'a, 'd, M> {
     /// Queue more bytes, keeping the one guard.
     ///
     /// This is what makes a loop of writes cost one wait rather than one per iteration.
@@ -763,7 +938,7 @@ impl<'a, 'd, M: Mode> TxWrite<'a, 'd, M> {
     }
 }
 
-impl<'a, 'd, M: Mode> Drop for TxWrite<'a, 'd, M> {
+impl<'a, 'd, M: ModeState> Drop for TxWrite<'a, 'd, M> {
     fn drop(&mut self) {
         while busy(self.regs) {}
     }
@@ -783,6 +958,7 @@ impl<'d> Uart<'d, Blocking> {
             new_pin!(tx, config.tx_pf()),
             None,
             None,
+            (),
             config,
         )
     }
@@ -802,12 +978,70 @@ impl<'d> Uart<'d, Blocking> {
             new_pin!(tx, config.tx_pf()),
             new_pin!(rts, config.rts_pf()),
             new_pin!(cts, config.cts_pf()),
+            (),
             config,
         )
     }
 }
 
-impl<'d, M: Mode> Uart<'d, M> {
+impl<'d> Uart<'d, Async> {
+    /// Create a new bidirectional UART that waits on the FIFOs rather than a software buffer.
+    pub fn new<T: Instance>(
+        peri: Peri<'d, T>,
+        rx: Peri<'d, impl RxPin<T>>,
+        tx: Peri<'d, impl TxPin<T>>,
+        _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        config: Config,
+    ) -> Result<Self, ConfigError> {
+        Self::new_inner(
+            peri,
+            new_pin!(rx, config.rx_pf()),
+            new_pin!(tx, config.tx_pf()),
+            None,
+            None,
+            T::async_state(),
+            config,
+        )
+    }
+
+    /// Create a new bidirectional UART with request-to-send and clear-to-send pins.
+    pub fn new_with_rtscts<T: Instance>(
+        peri: Peri<'d, T>,
+        rx: Peri<'d, impl RxPin<T>>,
+        tx: Peri<'d, impl TxPin<T>>,
+        rts: Peri<'d, impl RtsPin<T>>,
+        cts: Peri<'d, impl CtsPin<T>>,
+        _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        config: Config,
+    ) -> Result<Self, ConfigError> {
+        Self::new_inner(
+            peri,
+            new_pin!(rx, config.rx_pf()),
+            new_pin!(tx, config.tx_pf()),
+            new_pin!(rts, config.rts_pf()),
+            new_pin!(cts, config.cts_pf()),
+            T::async_state(),
+            config,
+        )
+    }
+
+    /// Fill `buffer`; see [`UartRx::read`].
+    pub fn read<'a>(&'a mut self, buffer: &'a mut [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
+        self.rx.read(buffer)
+    }
+
+    /// Queue every byte of `buffer`; see [`UartTx::write`].
+    pub fn write<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
+        self.tx.write(buffer)
+    }
+
+    /// Wait for the transmitter to go idle; see [`UartTx::flush`].
+    pub fn flush(&mut self) -> impl Future<Output = Result<(), Error>> + '_ {
+        self.tx.flush()
+    }
+}
+
+impl<'d, M: ModeState> Uart<'d, M> {
     /// Open a transmission. See [`UartTx::begin_blocking_write`], which this defers to.
     pub fn begin_blocking_write(&mut self) -> TxWrite<'_, 'd, M> {
         self.tx.begin_blocking_write()
@@ -914,6 +1148,15 @@ pub(crate) fn retention_guard(info: &'static Info) -> MaybeWakeGuard {
     MaybeWakeGuard::new(info.sleep.floor_to_keep_configured())
 }
 
+/// Let the instance's line reach the CPU.
+///
+/// Only the half-duplex async constructors need this: [`Uart::new_inner`] already enables the line for
+/// every mode. Nothing is unmasked in `IMASK` here, so the line stays quiet until a wait arms it.
+fn enable_interrupt<T: Instance>() {
+    T::Interrupt::unpend();
+    unsafe { T::Interrupt::enable() };
+}
+
 // ==== IMPL types ====
 
 pub(crate) struct Info {
@@ -935,16 +1178,143 @@ impl State {
     }
 }
 
-impl<'d, M: Mode> UartRx<'d, M> {
+/// What a driver has to carry in order to wait, which is nothing unless it can.
+///
+/// A `Blocking` driver's is `()`, so a binary that never awaits a UART carries no reference to the
+/// wakers and never links the static holding them. That is the whole reason this is an associated type
+/// rather than a field on [`State`]: the wakers are 16 bytes of `.bss` that only an async caller uses.
+#[doc(hidden)]
+pub trait ModeState: Mode {
+    /// Where this mode's driver finds whom to wake, if it can wait at all.
+    type Wait: Copy;
+}
+
+impl ModeState for Blocking {
+    type Wait = ();
+}
+
+impl ModeState for Async {
+    type Wait = &'static AsyncState;
+}
+
+/// Wakers for the unbuffered async driver.
+///
+/// Separate from [`BufferedState`] rather than shared with it: the two paths never run on the same
+/// instance, and a caller that binds one has no use for the other's storage.
+#[doc(hidden)]
+pub struct AsyncState {
+    /// Woken for anything the receiver waits on — a FIFO at its level, and the timeout that delivers
+    /// one that never reaches it.
+    rx_waker: IrqWaker,
+    /// Woken for room in the transmit FIFO, and for the end of transmission a flush waits on.
+    tx_waker: IrqWaker,
+}
+
+impl AsyncState {
+    pub const fn new() -> Self {
+        Self {
+            rx_waker: IrqWaker::new(),
+            tx_waker: IrqWaker::new(),
+        }
+    }
+}
+
+impl Default for AsyncState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Interrupt handler for the unbuffered async driver.
+///
+/// Deliberately not [`BufferedInterruptHandler`]: that one drains the FIFO into a ring, tracks error
+/// flags and manages backpressure, and a caller who wanted none of that would still link all of it.
+/// This one masks what fired and wakes, and the future does the rest.
+pub struct InterruptHandler<T: Instance> {
+    _uart: PhantomData<T>,
+}
+
+impl<T: Instance> crate::interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        let r = T::info().regs;
+        let int = r.cpu_int(0).mis().read();
+
+        // Mask rather than clear. Every source armed here is a FIFO level or a timeout, and `RIS` is
+        // sticky: clearing it while the condition still holds re-raises the line the moment this
+        // returns. The future clears and re-arms once it has drained, which is the only point at which
+        // the condition is known to be gone.
+        r.cpu_int(0).imask().modify(|w| w.0 &= !int.0);
+
+        let state = T::async_state();
+
+        if int.rxint() || int.rtout() {
+            state.rx_waker.wake();
+        }
+
+        if int.txint() || int.eot() {
+            state.tx_waker.wake();
+        }
+    }
+}
+
+// Every wait below runs the same three steps in the same order, and the order is the whole of what
+// makes them safe:
+//
+//   1. clear, before looking at the FIFO at all;
+//   2. move what can be moved — drain the receiver, fill the transmitter;
+//   3. register, then unmask, if there is more to do.
+//
+// `RIS` is sticky, so the clear has to come first. Clearing after step 2 discards the flag left by a
+// byte that arrived while the drain was running, and the task then parks with that byte sitting in the
+// FIFO and nothing left to raise the line — a stall that ends only when the next byte happens to
+// arrive. Clearing first costs at worst one spurious wake, whose poll finds nothing to move, clears
+// again and unmasks against a receiver that is genuinely idle.
+
+/// Clear the given sources so a later unmask reflects what happens from here on.
+fn clear(r: Regs, sources: CpuInt) {
+    r.cpu_int(0).iclr().write_value(sources);
+}
+
+/// Let the given sources reach the CPU.
+fn unmask(r: Regs, sources: CpuInt) {
+    r.cpu_int(0).imask().modify(|w| w.0 |= sources.0);
+}
+
+/// The sources a receive waits on: the FIFO reaching its level, and the timeout that delivers one
+/// that never will.
+const fn rx_sources() -> CpuInt {
+    let mut sources = CpuInt(0);
+    sources.set_rxint(true);
+    sources.set_rtout(true);
+    sources
+}
+
+/// The source a transmit waits on: room in the FIFO.
+const fn tx_sources() -> CpuInt {
+    let mut sources = CpuInt(0);
+    sources.set_txint(true);
+    sources
+}
+
+/// The source a flush waits on: the last bit leaving the shift register.
+const fn eot_sources() -> CpuInt {
+    let mut sources = CpuInt(0);
+    sources.set_eot(true);
+    sources
+}
+
+impl<'d, M: ModeState> UartRx<'d, M> {
     fn new_inner<T: Instance>(
         _peri: Peri<'d, T>,
         rx: Option<Peri<'d, AnyPin>>,
         rts: Option<Peri<'d, AnyPin>>,
+        wait: M::Wait,
         config: Config,
     ) -> Result<Self, ConfigError> {
         let mut this = Self {
             info: T::info(),
             state: T::state(),
+            wait,
             rx: MaybeAnyPin::new(rx),
             rts: MaybeAnyPin::new(rts),
             _retention_guard: retention_guard(T::info()),
@@ -966,16 +1336,18 @@ impl<'d, M: Mode> UartRx<'d, M> {
     }
 }
 
-impl<'d, M: Mode> UartTx<'d, M> {
+impl<'d, M: ModeState> UartTx<'d, M> {
     fn new_inner<T: Instance>(
         _peri: Peri<'d, T>,
         tx: Option<Peri<'d, AnyPin>>,
         cts: Option<Peri<'d, AnyPin>>,
+        wait: M::Wait,
         config: Config,
     ) -> Result<Self, ConfigError> {
         let mut this = Self {
             info: T::info(),
             state: T::state(),
+            wait,
             tx: MaybeAnyPin::new(tx),
             cts: MaybeAnyPin::new(cts),
             _retention_guard: retention_guard(T::info()),
@@ -998,13 +1370,14 @@ impl<'d, M: Mode> UartTx<'d, M> {
     }
 }
 
-impl<'d, M: Mode> Uart<'d, M> {
+impl<'d, M: ModeState> Uart<'d, M> {
     fn new_inner<T: Instance>(
         _peri: Peri<'d, T>,
         rx: Option<Peri<'d, AnyPin>>,
         tx: Option<Peri<'d, AnyPin>>,
         rts: Option<Peri<'d, AnyPin>>,
         cts: Option<Peri<'d, AnyPin>>,
+        wait: M::Wait,
         config: Config,
     ) -> Result<Self, ConfigError> {
         let info = T::info();
@@ -1014,6 +1387,7 @@ impl<'d, M: Mode> Uart<'d, M> {
             tx: UartTx {
                 info,
                 state,
+                wait,
                 tx: MaybeAnyPin::new(tx),
                 cts: MaybeAnyPin::new(cts),
                 _retention_guard: retention_guard(info),
@@ -1022,6 +1396,7 @@ impl<'d, M: Mode> Uart<'d, M> {
             rx: UartRx {
                 info,
                 state,
+                wait,
                 rx: MaybeAnyPin::new(rx),
                 rts: MaybeAnyPin::new(rts),
                 _retention_guard: retention_guard(info),
@@ -1582,6 +1957,7 @@ pub(crate) trait SealedInstance {
     fn info() -> &'static Info;
     fn state() -> &'static State;
     fn buffered_state() -> &'static BufferedState;
+    fn async_state() -> &'static AsyncState;
 }
 
 macro_rules! impl_uart_instance {
@@ -1610,6 +1986,13 @@ macro_rules! impl_uart_instance {
                 use crate::uart::BufferedState;
 
                 static STATE: BufferedState = BufferedState::new();
+                &STATE
+            }
+
+            fn async_state() -> &'static crate::uart::AsyncState {
+                use crate::uart::AsyncState;
+
+                static STATE: AsyncState = AsyncState::new();
                 &STATE
             }
         }
