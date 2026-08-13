@@ -257,3 +257,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/comp: `Comp::new_sharing_positive` keeps the positive pad's own type, so `CompSharedPositive::with_positive_pin` can lend it to another driver — an ADC channel being the case it exists for
 - fix: mspm0/uart: the unbuffered async `write` and `flush` hold a sleep guard while a frame is in flight, so deep sleep can no longer be entered mid-transmission
 - mspm0/uart: the unbuffered async read and write reach the caller's buffer without a bounds check, dropping the panicking edge from both
+- mspm0/uart: `UartTx` resolves its sleep floor once instead of per call, keeping the clock-tree lookup out of every async write and flush

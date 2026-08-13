@@ -650,6 +650,11 @@ pub struct UartTx<'d, M: ModeState> {
     cts: MaybeAnyPin<'d>,
     /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
     _retention_guard: MaybeWakeGuard,
+    /// Resolved once rather than per call. It derives from the bus clock, which nothing but a
+    /// reconfigure changes, and recomputing it put the clock-tree lookup in every `write` and
+    /// `flush`. Absent rather than `None` without `low-power`, so it costs no byte there.
+    #[cfg(feature = "low-power")]
+    sleep_floor: Option<SleepLevel>,
     _phantom: PhantomData<M>,
 }
 
@@ -658,7 +663,10 @@ impl<'d, M: ModeState> SetConfig for UartTx<'d, M> {
     type ConfigError = ConfigError;
 
     fn set_config(&mut self, config: &Self::Config) -> Result<(), Self::ConfigError> {
-        reconfigure(self.info, self.state, config)
+        reconfigure(self.info, self.state, config)?;
+        self.resolve_sleep_floor();
+
+        Ok(())
     }
 }
 
@@ -836,9 +844,18 @@ impl<'d, M: ModeState> UartTx<'d, M> {
     /// that cannot sleep at all.
     #[cfg(feature = "low-power")]
     fn wake_floor(&self) -> Option<SleepLevel> {
-        self.info
-            .sleep
-            .floor_for_operation(self.state.clock.load(Ordering::Relaxed))
+        self.sleep_floor
+    }
+
+    /// Re-resolve the floor. Anything that changes the instance's bus clock has to call this.
+    fn resolve_sleep_floor(&mut self) {
+        #[cfg(feature = "low-power")]
+        {
+            self.sleep_floor = self
+                .info
+                .sleep
+                .floor_for_operation(self.state.clock.load(Ordering::Relaxed));
+        }
     }
 
     #[cfg(not(feature = "low-power"))]
@@ -882,7 +899,10 @@ impl<'d, M: ModeState> UartTx<'d, M> {
             cts.update_pf(config.cts_pf());
         }
 
-        reconfigure(self.info, self.state, config)
+        reconfigure(self.info, self.state, config)?;
+        self.resolve_sleep_floor();
+
+        Ok(())
     }
 
     /// Set baudrate
@@ -1381,9 +1401,12 @@ impl<'d, M: ModeState> UartTx<'d, M> {
             tx: MaybeAnyPin::new(tx),
             cts: MaybeAnyPin::new(cts),
             _retention_guard: retention_guard(T::info()),
+            #[cfg(feature = "low-power")]
+            sleep_floor: None,
             _phantom: PhantomData,
         };
         this.enable_and_configure(&config)?;
+        this.resolve_sleep_floor();
 
         Ok(this)
     }
@@ -1421,6 +1444,8 @@ impl<'d, M: ModeState> Uart<'d, M> {
                 tx: MaybeAnyPin::new(tx),
                 cts: MaybeAnyPin::new(cts),
                 _retention_guard: retention_guard(info),
+                #[cfg(feature = "low-power")]
+                sleep_floor: None,
                 _phantom: PhantomData,
             },
             rx: UartRx {
@@ -1434,6 +1459,7 @@ impl<'d, M: ModeState> Uart<'d, M> {
             },
         };
         this.enable_and_configure(&config)?;
+        this.tx.resolve_sleep_floor();
 
         Ok(this)
     }
