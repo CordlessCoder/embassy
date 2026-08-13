@@ -756,9 +756,7 @@ impl<'a, Up: Instance, Down: Instance> UpstreamOnly<'a, Up, Down> {
     /// Switch the second stage back on and wait for it to settle.
     pub fn start_output(self) -> Cascade<'a, Up, Down> {
         let Self {
-            upstream,
-            output_floor,
-            ..
+            upstream, output_floor, ..
         } = self;
 
         // Guard first, then enable, so no sleep can be entered against an amplifier that is already
