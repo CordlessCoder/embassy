@@ -1747,10 +1747,10 @@ pub(crate) fn init(gpio: gpio::Gpio) {
         w.set_key(PwrenKey::Key);
     });
 
-    gpio.evt_mode().modify(|w| {
-        // The CPU will clear it's own interrupts
-        w.set_cpu_cfg(EvtCfg::Software);
-    });
+    // `EVT_MODE.INT0_CFG` is not writable. All four TRMs type it `R` with a reset of `1h`, software
+    // mode, which is what the CPU interrupt line needs and what it already holds — G TRM table 9-31,
+    // L TRM the same register. Driverlib never writes it either. The read-modify-write this replaces
+    // set the field to the value it reads back regardless.
 }
 
 /// Classify the edges that have arrived and answer the requests they satisfy.
