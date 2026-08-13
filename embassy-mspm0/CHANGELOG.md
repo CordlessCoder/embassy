@@ -243,3 +243,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/dma: `TransferOptions::src_stride` and `dst_stride` on the devices whose DMA implements strided address increment
 - mspm0/comp: compute the settling waits without a division, dropping the software divider from every binary that builds a comparator
 - mspm0/tim: cut what a second and third timer instance cost a binary, by erasing the instance type out of the frequency and duty paths and unrolling `SimplePwm`'s channel loop
+- feat: mspm0/comp: `Config::settling` takes counts from `Settling::solve`, a `const fn`, so a fixed clock tree keeps the settling arithmetic out of the binary; `Comp` resolves the DAC wait once instead of per `set_dac_code`

@@ -345,6 +345,90 @@ impl Default for Reference {
     }
 }
 
+/// Cycle counts for the two waits [`Comp`] takes, worked out ahead of time.
+///
+/// Built by [`Settling::solve`], which is `const`, so a caller whose clock tree is fixed can put the
+/// whole computation in the compiler.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SettlingCycles {
+    /// Comparator enable time, in MCLK cycles.
+    enable: u32,
+
+    /// Reference DAC settling after a code change, in MCLK cycles.
+    dac: u32,
+}
+
+/// How the settling waits are worked out.
+///
+/// Both waits are blocking delays taken from the device's datasheet figures, because neither the
+/// comparator's enable nor the DAC's settling has a status bit behind it. Turning a figure in
+/// nanoseconds into a cycle count needs the clock rate, and where that rate comes from is what this
+/// chooses.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Settling {
+    /// Read MCLK from the live clock tree when the driver is built.
+    ///
+    /// Correct whatever the application does with clocks, and it carries the arithmetic into the
+    /// binary — about 150 bytes, since dividing on this core is a library call.
+    #[default]
+    FromClockTree,
+
+    /// Use counts worked out by [`Settling::solve`].
+    ///
+    /// **What folds is the arithmetic, not the wait.** The delay still happens, because the
+    /// comparator still has to settle; what goes is the code that works out how long it should be.
+    Solved(SettlingCycles),
+}
+
+impl Settling {
+    /// Work both waits out from a clock tree known at compile time.
+    ///
+    /// `clocks` comes from a [`ClockSetup`](crate::sysctl::clock::ClockSetup) in a `const` —
+    /// `clock::RESET_SETUP.clocks()` for an application that leaves the tree alone. `speed` has to
+    /// match [`Config::speed`], because the two enable figures differ and this picks between them.
+    ///
+    /// ```ignore
+    /// const SETTLING: Settling = Settling::solve::<COMP0>(&clock::RESET_SETUP.clocks(), Speed::Fast);
+    /// ```
+    ///
+    /// Nothing checks that `speed` agrees with the configuration: a mismatch waits the other mode's
+    /// time, which is wrong in one direction and merely slow in the other.
+    pub const fn solve<T: Instance>(clocks: &crate::sysctl::Clocks, speed: Speed) -> Self {
+        let enable_ns = match speed {
+            Speed::Fast => T::ENABLE_FAST_NS,
+            Speed::UltraLowPower => T::ENABLE_ULP_NS,
+        };
+
+        Self::Solved(SettlingCycles {
+            enable: wait_cycles(clocks.mclk, enable_ns),
+            dac: wait_cycles(clocks.mclk, T::DAC_SETTLE_NS),
+        })
+    }
+
+    /// Resolve to cycle counts, reading the live tree only where the caller did not pre-solve.
+    ///
+    /// The match is what makes pre-solving pay: on a `const` configuration the other arm is dead and
+    /// takes `wait_cycles` and its helpers with it.
+    fn resolve<T: Instance>(self, speed: Speed) -> SettlingCycles {
+        match self {
+            Settling::Solved(cycles) => cycles,
+            Settling::FromClockTree => {
+                let enable_ns = match speed {
+                    Speed::Fast => T::ENABLE_FAST_NS,
+                    Speed::UltraLowPower => T::ENABLE_ULP_NS,
+                };
+
+                crate::sysctl::with_clocks(|clocks| SettlingCycles {
+                    enable: wait_cycles(clocks.mclk, enable_ns),
+                    dac: wait_cycles(clocks.mclk, T::DAC_SETTLE_NS),
+                })
+            }
+        }
+    }
+}
+
 /// Comparator configuration.
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -367,6 +451,12 @@ pub struct Config {
     /// Comparing a signal against itself both ways round is how the input offset is measured.
     /// **Rejected together with hysteresis** where `COMP_ERR_03` applies.
     pub exchange_inputs: bool,
+
+    /// Where the two settling waits get their cycle counts.
+    ///
+    /// Defaults to reading the live clock tree, which is right whatever the application does with
+    /// clocks. [`Settling::solve`] is the alternative where the tree is fixed.
+    pub settling: Settling,
 
     /// The reference generator, or [`None`] to leave it off.
     ///
@@ -572,6 +662,9 @@ pub struct Comp<'d, T: Instance, M: DriverMode> {
     positive: MaybeAnyPin<'d>,
     negative: MaybeAnyPin<'d>,
     output: MaybeAnyPin<'d>,
+    /// Resolved once here rather than per [`Comp::set_dac_code`], which is called from an interrupt
+    /// in the applications this exists for.
+    dac_settle_cycles: u32,
     _guard: MaybeWakeGuard,
     _phantom: PhantomData<(T, M)>,
 }
@@ -864,11 +957,9 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
         // Nothing reports when the comparator is ready -- there is no status bit -- so the datasheet
         // figure is waited out instead. Which of the two applies is decided by the mode this driver
         // just programmed, so the caller does not have to know.
-        let enable_ns = match config.speed {
-            Speed::Fast => T::ENABLE_FAST_NS,
-            Speed::UltraLowPower => T::ENABLE_ULP_NS,
-        };
-        cortex_m::asm::delay(crate::sysctl::with_clocks(|clocks| wait_cycles(clocks.mclk, enable_ns)));
+        let settling = config.settling.resolve::<T>(config.speed);
+
+        cortex_m::asm::delay(settling.enable);
 
         // `COMP_ERR_05`: enabling raises both edge flags, so without this the first wait returns
         // immediately on an edge that never happened. Harmless where the erratum does not apply --
@@ -883,6 +974,7 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
             positive: MaybeAnyPin::new(positive.map(|(pin, _)| pin)),
             negative: MaybeAnyPin::new(negative.map(|(pin, _)| pin)),
             output: MaybeAnyPin::none(),
+            dac_settle_cycles: settling.dac,
             _guard: MaybeWakeGuard::new(Self::sleep_floor(negative_channel)),
             _phantom: PhantomData,
         })
@@ -931,9 +1023,7 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
     /// DAC both see. Driving it out to a pin is several times slower, and this driver does not.
     pub fn set_dac_code(&mut self, code: DacCode) {
         T::regs().ctl3().write(|w| w.set_daccode(DACCODE, code.to_bits()));
-        cortex_m::asm::delay(crate::sysctl::with_clocks(|clocks| {
-            wait_cycles(clocks.mclk, T::DAC_SETTLE_NS)
-        }));
+        cortex_m::asm::delay(self.dac_settle_cycles);
     }
 
     /// The code the reference DAC is programmed with.
