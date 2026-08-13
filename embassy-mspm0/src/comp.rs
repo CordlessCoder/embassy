@@ -379,6 +379,12 @@ pub enum Settling {
     ///
     /// **What folds is the arithmetic, not the wait.** The delay still happens, because the
     /// comparator still has to settle; what goes is the code that works out how long it should be.
+    ///
+    /// Two applications measured 188 and 212 bytes for pre-solving. Which you get depends on how many
+    /// places build a comparator, since each keeps a call site whatever the counts come from. Choosing
+    /// [`FromClockTree`](Self::FromClockTree) instead costs tens of bytes over having no choice at all
+    /// — 20 on an isolated example and 52 on a whole firmware, and the figure belongs to the binary
+    /// rather than to this enum.
     Solved(SettlingCycles),
 }
 
