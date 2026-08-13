@@ -1762,6 +1762,10 @@ fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), Confi
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Naturally 2, because every field is sub-word. At 2 the compiler is free to write `ibrd` and `fbrd`
+// as one misaligned word, which ARMv6-M cannot do inline and which lowers to an out-of-line
+// `__aeabi_uwrite4`. Two bytes of padding on a type that is usually a `const` buys that back.
+#[repr(align(4))]
 pub struct Baud {
     hse: vals::Hse,
     div: vals::Clkdiv,
