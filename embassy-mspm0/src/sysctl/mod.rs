@@ -582,7 +582,7 @@ pub(crate) fn program_bor_threshold(threshold: BorThreshold) {
 /// polling it cannot tell "not yet" from "refused" and a poll on a refused change never ends.
 #[cfg(feature = "bor-warning")]
 pub(crate) fn bor_settle() {
-    cortex_m::asm::delay(bor_change_cycles(clocks().mclk));
+    cortex_m::asm::delay(with_clocks(|clocks| bor_change_cycles(clocks.mclk)));
 }
 
 /// Cycles covering the threshold change at `mclk`.
@@ -761,7 +761,7 @@ pub(crate) fn set_clocks(cs: CriticalSection, clocks: Clocks) {
 /// This reads the live tree; where a driver already holds a [`Clocks`], prefer
 /// [`Clocks::bus_clock`] to avoid a second critical section.
 pub fn bus_clock_hz(domain: PowerDomain) -> u32 {
-    clocks().bus_clock(domain)
+    with_clocks(|clocks| clocks.bus_clock(domain))
 }
 
 /// Divider applied to the clock source of the CLK_OUT pin.
