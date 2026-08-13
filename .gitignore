@@ -6,6 +6,8 @@ third_party
 webroot
 /Cargo.toml
 out/
+# compiler crash dumps, which rustc and rustfmt drop in the working directory
+rustc-ice-*.txt
 # editor artifacts
 .zed
 .neoconf.json
