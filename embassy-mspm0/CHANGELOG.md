@@ -250,3 +250,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/vref: `Config::startup` takes a count from `Startup::solve`, a `const fn`, so a fixed clock tree keeps the startup arithmetic out of the binary
 - mspm0: pend the interrupt executor by writing ISPR directly, dropping a bounds check the optimiser could not fold
 - mspm0/adc: pick the sample-clock divider and frequency band by shift and table rather than comparison chains
+- **breaking**: mspm0/adc: `Config::sample_clk` is a `SampleClockSel`, which either names a source to solve for on the device or carries a `SolvedSampleClock` from `solve`, a `const fn`, so a fixed clock tree keeps both divider ladders out of the binary

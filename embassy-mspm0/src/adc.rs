@@ -81,6 +81,80 @@ impl SampleClock {
     }
 }
 
+/// How the sample clock reaches the hardware.
+///
+/// One value rather than a source and an optional override, because only one of the two would ever be
+/// read — the same shape, and for the same reason, as [`uart::BaudRate`](crate::uart::BaudRate).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SampleClockSel {
+    /// Read the clock tree on the device and work the divider and band out from it.
+    ///
+    /// **Not free.** Reading the tree defeats constant folding, so the divider ladder, the band
+    /// ladder and the `fADCCLK` range check all stay in the binary: measured at `opt-level = "z"`
+    /// with fat LTO, an `Adc` built this way costs **164 bytes of flash more** than one handed a
+    /// solved clock, on a driver whose whole cost is 300.
+    Source(SampleClock),
+
+    /// Apply a divider and band solved ahead of time, skipping both ladders.
+    ///
+    /// Build one with [`SolvedSampleClock::solve`] in a `const` when the clock tree is fixed for the
+    /// binary, which it is whenever nothing calls
+    /// [`clock::Config`](crate::sysctl::clock::Config) at run time.
+    Solved(SolvedSampleClock),
+}
+
+impl From<SampleClock> for SampleClockSel {
+    fn from(source: SampleClock) -> Self {
+        Self::Source(source)
+    }
+}
+
+impl From<SolvedSampleClock> for SampleClockSel {
+    fn from(solved: SolvedSampleClock) -> Self {
+        Self::Solved(solved)
+    }
+}
+
+/// A sample clock with its `CTL0.SCLKDIV` and `CLKFREQ.FRANGE` already worked out.
+///
+/// Built by [`solve`](Self::solve) in a `const`. The fields are private because they have to agree
+/// with each other and with the rate they were solved for.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SolvedSampleClock {
+    source: SampleClock,
+    /// What ADCCLK runs at, kept for the sleep guard rather than for the registers.
+    adcclk_hz: u32,
+    sclkdiv: vals::Sclkdiv,
+    frange: vals::Frange,
+}
+
+impl SolvedSampleClock {
+    /// Solve the divider and band for `source` running at `adcclk_hz`, or [`None`] if that rate is
+    /// outside this device's `fADCCLK`.
+    ///
+    /// `adcclk_hz` must be the rate `source` actually runs at. Take it from
+    /// [`clock::Setup::clocks`](crate::sysctl::clock::Setup::clocks) on the tree the binary applies,
+    /// which is a `const`.
+    ///
+    /// Usable in a `const`, which is the point: handing the result to
+    /// [`Config::with_sample_clk`] keeps both ladders and the range check out of the binary.
+    pub const fn solve(source: SampleClock, adcclk_hz: u32) -> Option<Self> {
+        if adcclk_hz < ADC_CLK_MIN_HZ || adcclk_hz > ADC_CLK_MAX_HZ {
+            return None;
+        }
+
+        Some(Self {
+            source,
+            adcclk_hz,
+            sclkdiv: sample_clock_div(adcclk_hz),
+            frange: clock_range(adcclk_hz),
+        })
+    }
+}
+
 /// Conversion resolution of the ADC results.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -278,8 +352,8 @@ pub struct Config {
     /// Resolution of the ADC conversion. The number of bits used to represent an ADC measurement.
     pub resolution: Resolution,
 
-    /// Sample clock source.
-    pub sample_clk: SampleClock,
+    /// Sample clock source, either to solve for on the device or already solved.
+    pub sample_clk: SampleClockSel,
 
     /// Length of [`SampleTimeComparator::Scomp0`]'s sample period, in ADC sample clock cycles.
     ///
@@ -325,6 +399,12 @@ pub struct Config {
 impl Config {
     /// Maximum number of sample clocks that may be performed when sampling.
     pub const MAX_SAMPLE_PERIOD: NonZeroU16 = NonZeroU16::new((1 << 9) - 1).unwrap();
+
+    /// Take the sample clock from a [`SolvedSampleClock`], skipping both divider ladders.
+    pub const fn with_sample_clk(mut self, solved: SolvedSampleClock) -> Self {
+        self.sample_clk = SampleClockSel::Solved(solved);
+        self
+    }
 }
 
 impl Config {
@@ -336,7 +416,7 @@ impl Config {
     pub const fn new() -> Self {
         Self {
             resolution: Resolution::Bits12,
-            sample_clk: SampleClock::Sysosc,
+            sample_clk: SampleClockSel::Source(SampleClock::Sysosc),
             // Fifty sample clocks, which is 6.25 us at the 8 MHz SAMPCLK the divider aims for. The
             // datasheet's `tSample` for 12-bit mode is 156 ns at a 50 ohm source, so this is forty
             // times the minimum -- margin worth having, because that figure assumes a source
@@ -374,19 +454,21 @@ impl Default for Config {
 pub struct Adc<'d, T: Instance, M: Mode> {
     #[allow(unused)]
     adc: crate::Peri<'d, T>,
-    /// Kept so the sleep guard knows which clock a conversion depends on.
+    /// What ADCCLK runs at, so the sleep guard knows how deep a conversion can afford to go.
+    ///
+    /// The rate rather than the source: resolving one to the other reads the clock tree, and doing
+    /// that here would put the lookup back into a driver whose configuration already solved it.
     #[allow(unused)]
-    sample_clk: SampleClock,
+    adcclk_hz: u32,
     _mode: PhantomData<M>,
 }
 
 impl<'d, T: Instance> Adc<'d, T, Blocking> {
     /// Create a blocking ADC driver.
     pub fn new_blocking(peri: Peri<'d, T>, config: Config) -> Self {
-        Self::setup(config);
         Adc {
             adc: peri,
-            sample_clk: config.sample_clk,
+            adcclk_hz: Self::setup(config),
             _mode: PhantomData,
         }
     }
@@ -455,11 +537,11 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
-        Self::setup(config);
+        let adcclk_hz = Self::setup(config);
         unsafe { T::info().interrupt.enable() };
         Self {
             adc: peri,
-            sample_clk: config.sample_clk,
+            adcclk_hz,
             _mode: PhantomData,
         }
     }
@@ -471,7 +553,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         // HFCLK far above an LFCLK-sourced MCLK — where the MCLK answer would allow a sleep deep
         // enough to stop the clock the conversion is running on.
         <T as crate::sysctl::LowPowerInstance>::SLEEP
-            .floor_for_operation(adc_clock_hz(self.sample_clk))
+            .floor_for_operation(self.adcclk_hz)
             .map(WakeGuard::new)
     }
 
@@ -789,11 +871,13 @@ const ADC_MEMCTL: u8 = crate::_generated::ADC_MEMCTL;
 const _: () = core::assert!(ADC_VRSEL == if cfg!(adc_neg_vref) { 5 } else { 3 });
 
 impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
-    fn setup(config: Config) {
+    /// Program the peripheral, and return what ADCCLK ended up running at.
+    fn setup(config: Config) -> u32 {
         assert!(config.sample_period_0 <= Config::MAX_SAMPLE_PERIOD);
         assert!(config.sample_period_1 <= Config::MAX_SAMPLE_PERIOD);
 
         let r = T::info().regs;
+        let (source, adcclk_hz, sclkdiv, frange) = adc_clock_regs(config.sample_clk);
 
         r.gprcm(0).rstctl().write(|w| {
             w.set_resetstkyclr(true);
@@ -811,10 +895,8 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
 
         r.gprcm(0).clkcfg().write(|w| {
             w.set_key(vals::ClkcfgKey::Key);
-            w.set_sampclk(config.sample_clk.to_sampclk());
+            w.set_sampclk(source.to_sampclk());
         });
-
-        let (sclkdiv, frange) = adc_clock_regs(config.sample_clk);
 
         r.ctl0().write(|w| {
             w.set_enc(false);
@@ -862,6 +944,8 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         r.scomp(SampleTimeComparator::Scomp1.index()).write(|w| {
             w.set_val(config.sample_period_1.get());
         });
+
+        adcclk_hz
     }
 
     /// Program one `MEMCTL` entry.
@@ -1025,14 +1109,32 @@ fn adc_clock_hz(source: SampleClock) -> u32 {
     hz
 }
 
-/// The `CTL0.SCLKDIV` and `CLKFREQ.FRANGE` pair `source` implies.
+/// The source, the rate, and the `CTL0.SCLKDIV`/`CLKFREQ.FRANGE` pair `sel` implies.
 ///
-/// One function rather than three calls in `setup`: a second instance then shares one body, instead
-/// of outlining the two clock helpers and duplicating the divider ladder at each call site.
-#[inline]
-fn adc_clock_regs(source: SampleClock) -> (vals::Sclkdiv, vals::Frange) {
+/// One function rather than separate calls in `setup`: a second instance then shares one body,
+/// instead of outlining the clock helpers and duplicating the divider ladder at each call site.
+///
+/// Nothing here runs for a [`SampleClockSel::Solved`], which is the point of solving.
+///
+/// `inline(always)` on the match and not on the body it calls. Left to itself LLVM outlines the
+/// whole of this at two instances, and the shared copy keeps the solving arm — the tree read, both
+/// ladders and the range check — alive for callers that solved at compile time and reach none of it.
+/// Measured on `dup_adc2s`: 1940 bytes with one shared body against 1596 with the match folded.
+#[inline(always)]
+fn adc_clock_regs(sel: SampleClockSel) -> (SampleClock, u32, vals::Sclkdiv, vals::Frange) {
+    match sel {
+        SampleClockSel::Solved(solved) => (solved.source, solved.adcclk_hz, solved.sclkdiv, solved.frange),
+        SampleClockSel::Source(source) => solve_clock_regs(source),
+    }
+}
+
+/// Work the rate, divider and band out from the clock tree.
+///
+/// Deliberately out of line from [`adc_clock_regs`]: a second instance that also solves at run time
+/// shares this one body instead of duplicating the divider ladder at its call site.
+fn solve_clock_regs(source: SampleClock) -> (SampleClock, u32, vals::Sclkdiv, vals::Frange) {
     let adcclk = adc_clock_hz(source);
-    (sample_clock_div(adcclk), clock_range(adcclk))
+    (source, adcclk, sample_clock_div(adcclk), clock_range(adcclk))
 }
 
 /// `fADCCLK`, the range this device's datasheet specifies for the selected sample clock.
