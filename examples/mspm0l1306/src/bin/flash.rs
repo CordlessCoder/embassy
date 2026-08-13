@@ -83,6 +83,47 @@ async fn main(_spawner: Spawner) {
         }
     }
 
+    // The word entry point, on the next word along so it needs no second erase. Reading it back as
+    // bytes is what checks the halves went out in the right order -- the low half belongs at the
+    // lower address, and swapping them would still program successfully.
+    const WORDS: [u32; 2] = [0x1234_5678, 0x9abc_def0];
+    let word_offset = SECTOR + PATTERN.len() as u32;
+
+    match flash.blocking_write_words(word_offset, &WORDS) {
+        Ok(()) => {
+            let mut back = [0u8; 8];
+            match flash.blocking_read(word_offset, &mut back) {
+                Ok(()) if back[..4] == WORDS[0].to_le_bytes() && back[4..] == WORDS[1].to_le_bytes() => {
+                    info!("word write: ok")
+                }
+                Ok(()) => {
+                    error!(
+                        "word write: read back {=[u8]:#04x}, which is not the words written",
+                        back
+                    );
+                    fails += 1;
+                }
+                Err(error) => {
+                    error!("word write, reading back: {}", error);
+                    fails += 1;
+                }
+            }
+        }
+        Err(error) => {
+            error!("word write: {}", error);
+            fails += 1;
+        }
+    }
+
+    // An odd number of halves is not a whole flash word, so it has to be refused.
+    match flash.blocking_write_words(word_offset, &WORDS[..1]) {
+        Err(Error::NotAligned) => info!("word write, odd length: refused, ok"),
+        other => {
+            error!("word write, odd length: {}, want NotAligned", other.is_ok());
+            fails += 1;
+        }
+    }
+
     match flash.blocking_is_blank(SECTOR) {
         Ok(false) => info!("blank after write: ok"),
         Ok(true) => {

@@ -213,6 +213,14 @@ impl<'d, T: Instance> Flash<'d, T> {
     ///
     /// Both the offset and the length have to be a whole number of flash words, and every word has
     /// to have been erased since it was last programmed.
+    ///
+    /// A flash word is two 32-bit registers, and this rebuilds each one from eight bytes whose
+    /// alignment it cannot see. On this core that is eight byte loads and a chain of shifts, spilled
+    /// across the stack because there are not enough registers to hold it. [`blocking_write_words`]
+    /// is the same operation for a caller that already has words; this one exists because
+    /// [`embedded_storage`] speaks bytes.
+    ///
+    /// [`blocking_write_words`]: Self::blocking_write_words
     pub fn blocking_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
         check_range(offset, bytes.len())?;
 
@@ -224,31 +232,61 @@ impl<'d, T: Instance> Flash<'d, T> {
             let low = u32::from_le_bytes(word[..4].try_into().unwrap());
             let high = u32::from_le_bytes(word[4..].try_into().unwrap());
 
-            self.command(offset + (index * WORD_SIZE) as u32, |r| {
-                r.cmdtype().write(|w| {
-                    w.set_command(vals::Command::Program);
-                    w.set_size(vals::Size::Oneword);
-                });
-
-                // Every byte of the word, and the ECC byte alongside it where there is one. Leaving
-                // the ECC byte out is how a sub-word program avoids spending the word's one
-                // programming pass, and it makes reading the word an ECC error until the rest
-                // arrives -- so a whole-word write programs it.
-                r.cmdbyten().write(|w| {
-                    for byte in 0..WORD_SIZE {
-                        w.set_data(byte, true);
-                    }
-                    w.set_ecc(FLASH_HAS_ECC);
-                });
-
-                // The low half at the lower address, which is what the controller expects
-                // (SLAU847 §6.3.3.3) and what makes a word read back as the bytes it was given.
-                r.cmddata(0).write_value(low);
-                r.cmddata(1).write_value(high);
-            })?;
+            self.program_word(offset + (index * WORD_SIZE) as u32, low, high)?;
         }
 
         Ok(())
+    }
+
+    /// Program whole flash words at `offset`, taking them as words.
+    ///
+    /// A flash word is [`WORD_SIZE`] bytes, so `words` is consumed in pairs and its length has to be
+    /// even. Same rules otherwise as [`blocking_write`](Self::blocking_write): the offset has to be
+    /// word-aligned and every word has to have been erased since it was last programmed.
+    ///
+    /// Prefer this where the data is already words. The byte entry point has to reassemble each half
+    /// from eight separately-loaded bytes, which it cannot avoid without knowing the buffer's
+    /// alignment.
+    pub fn blocking_write_words(&mut self, offset: u32, words: &[u32]) -> Result<(), Error> {
+        const HALVES: usize = WORD_SIZE / size_of::<u32>();
+
+        check_range(offset, words.len() * size_of::<u32>())?;
+
+        if !is_aligned(offset, WORD_SIZE) || !words.len().is_multiple_of(HALVES) {
+            return Err(Error::NotAligned);
+        }
+
+        for (index, halves) in words.chunks_exact(HALVES).enumerate() {
+            self.program_word(offset + (index * WORD_SIZE) as u32, halves[0], halves[1])?;
+        }
+
+        Ok(())
+    }
+
+    /// Program one flash word, given its two halves.
+    fn program_word(&mut self, address: u32, low: u32, high: u32) -> Result<(), Error> {
+        self.command(address, |r| {
+            r.cmdtype().write(|w| {
+                w.set_command(vals::Command::Program);
+                w.set_size(vals::Size::Oneword);
+            });
+
+            // Every byte of the word, and the ECC byte alongside it where there is one. Leaving
+            // the ECC byte out is how a sub-word program avoids spending the word's one
+            // programming pass, and it makes reading the word an ECC error until the rest
+            // arrives -- so a whole-word write programs it.
+            r.cmdbyten().write(|w| {
+                for byte in 0..WORD_SIZE {
+                    w.set_data(byte, true);
+                }
+                w.set_ecc(FLASH_HAS_ECC);
+            });
+
+            // The low half at the lower address, which is what the controller expects
+            // (SLAU847 §6.3.3.3) and what makes a word read back as the bytes it was given.
+            r.cmddata(0).write_value(low);
+            r.cmddata(1).write_value(high);
+        })
     }
 
     /// Whether the flash word at `offset` is still in its erased state.
