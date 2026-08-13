@@ -521,6 +521,16 @@ impl<'d> Flex<'d, Async> {
         self.wait_inner(Edge::Any, None)
     }
 
+    /// Wait for the pin to undergo a transition, choosing which one at run time.
+    ///
+    /// The three fixed-edge waits each return a distinct opaque future, so a caller selecting
+    /// between them has to wrap the choice in an `async` block — a state machine around a future
+    /// that needs none. Selecting the [`Edge`] instead keeps one future type.
+    #[inline]
+    pub fn wait_for_edge(&mut self, edge: Edge) -> impl Future<Output = ()> {
+        self.wait_inner(edge, None)
+    }
+
     fn wait_inner(&mut self, edge: Edge, settled_high: Option<bool>) -> Park {
         // Described here, armed from inside the first poll, where the waker exists — so that the
         // registration and the unmask are one critical section and no edge can land between them.
@@ -622,11 +632,19 @@ impl<F: Future<Output = ()>> Future for AlwaysOk<F> {
 const DETECT_BOTH_EDGES: bool = cfg!(gpio_err_01);
 
 /// Which edge a task is waiting for.
-#[derive(Clone, Copy)]
+///
+/// Pass this to [`Flex::wait_for_edge`] where the edge is chosen at run time. The three
+/// `wait_for_*_edge` methods are the same wait with the edge fixed, and cost a caller who knows it
+/// at compile time nothing extra.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg(feature = "rt")]
-enum Edge {
+pub enum Edge {
+    /// A transition from low to high.
     Rising,
+    /// A transition from high to low.
     Falling,
+    /// Either transition.
     Any,
 }
 
@@ -966,6 +984,12 @@ impl<'d> Input<'d, Async> {
     pub fn wait_for_any_edge(&mut self) -> impl Future<Output = ()> {
         self.pin.wait_for_any_edge()
     }
+
+    /// Wait for the pin to undergo a transition, choosing which one at run time.
+    #[inline]
+    pub fn wait_for_edge(&mut self, edge: Edge) -> impl Future<Output = ()> {
+        self.pin.wait_for_edge(edge)
+    }
 }
 
 /// GPIO output driver.
@@ -1197,6 +1221,12 @@ impl<'d> OutputOpenDrain<'d, Async> {
     #[inline]
     pub fn wait_for_any_edge(&mut self) -> impl Future<Output = ()> {
         self.pin.wait_for_any_edge()
+    }
+
+    /// Wait for the pin to undergo a transition, choosing which one at run time.
+    #[inline]
+    pub fn wait_for_edge(&mut self, edge: Edge) -> impl Future<Output = ()> {
+        self.pin.wait_for_edge(edge)
     }
 }
 
