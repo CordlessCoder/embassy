@@ -253,3 +253,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking**: mspm0/adc: `Config::sample_clk` is a `SampleClockSel`, which either names a source to solve for on the device or carries a `SolvedSampleClock` from `solve`, a `const fn`, so a fixed clock tree keeps both divider ladders out of the binary
 - feat: mspm0/comp: `Config::new` is a `const fn`, so a comparator's whole configuration can be built in a `const`
 - feat: mspm0/crc: `Config::new` is a `const fn`, matching every other driver's configuration
+- mspm0/adc: `Adc` holds the resolved sleep floor rather than the sample-clock rate, taking it from four bytes back to one

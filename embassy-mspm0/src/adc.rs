@@ -14,7 +14,7 @@ use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::adc::{Adc as Regs, regs, vals};
 use crate::sync::irq_waker::IrqWaker;
-use crate::sysctl::WakeGuard;
+use crate::sysctl::{SleepLevel, WakeGuard};
 use crate::{Peri, interrupt};
 
 /// Maximum length allowed for [`Adc::irq_read_sequence`].
@@ -454,12 +454,13 @@ impl Default for Config {
 pub struct Adc<'d, T: Instance, M: Mode> {
     #[allow(unused)]
     adc: crate::Peri<'d, T>,
-    /// What ADCCLK runs at, so the sleep guard knows how deep a conversion can afford to go.
+    /// Shallowest sleep to block while a conversion runs, or [`None`] if none needs blocking.
     ///
-    /// The rate rather than the source: resolving one to the other reads the clock tree, and doing
-    /// that here would put the lookup back into a driver whose configuration already solved it.
+    /// The answer rather than the rate it was worked out from. Both inputs are known when the driver
+    /// is built and the arithmetic is `const`, so keeping the rate would mean storing four bytes to
+    /// redo a calculation per conversion instead of one byte to skip it.
     #[allow(unused)]
-    adcclk_hz: u32,
+    sleep_floor: Option<SleepLevel>,
     _mode: PhantomData<M>,
 }
 
@@ -468,7 +469,7 @@ impl<'d, T: Instance> Adc<'d, T, Blocking> {
     pub fn new_blocking(peri: Peri<'d, T>, config: Config) -> Self {
         Adc {
             adc: peri,
-            adcclk_hz: Self::setup(config),
+            sleep_floor: Self::setup(config),
             _mode: PhantomData,
         }
     }
@@ -537,11 +538,11 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
-        let adcclk_hz = Self::setup(config);
+        let sleep_floor = Self::setup(config);
         unsafe { T::info().interrupt.enable() };
         Self {
             adc: peri,
-            adcclk_hz,
+            sleep_floor,
             _mode: PhantomData,
         }
     }
@@ -552,9 +553,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         // clock was always SYSOSC and MCLK always ran from it, but a configured tree can now put
         // HFCLK far above an LFCLK-sourced MCLK — where the MCLK answer would allow a sleep deep
         // enough to stop the clock the conversion is running on.
-        <T as crate::sysctl::LowPowerInstance>::SLEEP
-            .floor_for_operation(self.adcclk_hz)
-            .map(WakeGuard::new)
+        self.sleep_floor.map(WakeGuard::new)
     }
 
     /// Read an ADC pin asynchronously using the irq handler.
@@ -871,8 +870,11 @@ const ADC_MEMCTL: u8 = crate::_generated::ADC_MEMCTL;
 const _: () = core::assert!(ADC_VRSEL == if cfg!(adc_neg_vref) { 5 } else { 3 });
 
 impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
-    /// Program the peripheral, and return what ADCCLK ended up running at.
-    fn setup(config: Config) -> u32 {
+    /// Program the peripheral, and return the shallowest sleep a conversion on it can tolerate.
+    ///
+    /// Resolved here rather than kept as a rate: `floor_for_operation` is `const` and both its
+    /// inputs are known by the end of this function, so the driver stores the answer.
+    fn setup(config: Config) -> Option<SleepLevel> {
         assert!(config.sample_period_0 <= Config::MAX_SAMPLE_PERIOD);
         assert!(config.sample_period_1 <= Config::MAX_SAMPLE_PERIOD);
 
@@ -945,7 +947,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
             w.set_val(config.sample_period_1.get());
         });
 
-        adcclk_hz
+        <T as crate::sysctl::LowPowerInstance>::SLEEP.floor_for_operation(adcclk_hz)
     }
 
     /// Program one `MEMCTL` entry.
