@@ -38,12 +38,12 @@ async fn main(_spawner: Spawner) {
         let mut config = Config::default();
         // MSPM0 hardware supports a loopback mode to allow self test.
         config.loop_back_enable = true;
-        config.baudrate = rate;
+        config.baud = rate.into();
 
         let mut uart = unwrap!(Uart::new_blocking(
             uart.reborrow(),
-            rx.reborrow(),
             tx.reborrow(),
+            rx.reborrow(),
             config
         ));
 
@@ -64,13 +64,13 @@ async fn main(_spawner: Spawner) {
         let mut config = Config::default();
         // MSPM0 hardware supports a loopback mode to allow self test.
         config.loop_back_enable = true;
-        config.baudrate = rate;
+        config.baud = rate.into();
         config.clock_source = ClockSel::LfClk;
 
         let mut uart = expect!(Uart::new_blocking(
             uart.reborrow(),
-            rx.reborrow(),
             tx.reborrow(),
+            rx.reborrow(),
             config,
         ));
 

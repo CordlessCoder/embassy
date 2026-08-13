@@ -34,7 +34,7 @@ async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
     let config = Config::default().with_baud(BAUD);
-    let mut uart = unwrap!(Uart::new(p.UART0, p.PA9, p.PA8, Irqs, config));
+    let mut uart = unwrap!(Uart::new(p.UART0, p.PA8, p.PA9, Irqs, config));
 
     unwrap!(uart.write(b"Hello Embassy World!\r\n").await);
     unwrap!(uart.flush().await);

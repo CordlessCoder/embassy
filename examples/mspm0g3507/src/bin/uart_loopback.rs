@@ -46,7 +46,7 @@ async fn main(_spawner: Spawner) -> ! {
     // One instance, reconfigured between cases: taking two would need two sets of pins.
     let mut config = Config::default();
     config.loop_back_enable = true;
-    let mut uart = unwrap!(Uart::new_blocking(p.UART0, p.PA11, p.PA10, config));
+    let mut uart = unwrap!(Uart::new_blocking(p.UART0, p.PA10, p.PA11, config));
 
     for fifo in [Some(FifoThreshold::Half), Some(FifoThreshold::Full), None] {
         let mut config = Config::default();

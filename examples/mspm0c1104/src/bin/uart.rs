@@ -30,7 +30,7 @@ async fn main(_spawner: Spawner) -> ! {
     let rx = p.PA26;
 
     let config = Config::default().with_baud(BAUD);
-    let mut uart = unwrap!(Uart::new_blocking(instance, rx, tx, config));
+    let mut uart = unwrap!(Uart::new_blocking(instance, tx, rx, config));
 
     unwrap!(uart.begin_blocking_write().write(b"Hello Embassy World!\r\n"));
     info!("wrote Hello, starting echo");

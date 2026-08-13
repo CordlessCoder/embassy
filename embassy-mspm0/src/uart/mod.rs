@@ -13,15 +13,11 @@
 //! caller who does nothing gets the safe behaviour. The asynchronous and buffered writes do not, and
 //! still want a flush before anything that can sleep.
 //!
-//! # The two full-duplex constructors take their pins in opposite orders
+//! # Pin order
 //!
-//! [`Uart`] takes `(rx, tx)` and [`BufferedUart`] takes `(tx, rx)`. Both predate each other in
-//! different places — the first matches `embassy-stm32`, the second `embassy-rp` — and they have not
-//! been reconciled because doing so breaks one of them for existing callers.
-//!
-//! Getting it wrong is a compile error rather than a silent swap: [`TxPin`] and [`RxPin`] are
-//! separate traits and no pin implements both for the same instance. Porting code from one driver to
-//! the other is where it bites.
+//! Every full-duplex constructor here takes its pins as `(tx, rx)` — [`Uart`] and [`BufferedUart`]
+//! alike. [`Uart`] used to take them the other way round, which meant the two drivers in this module
+//! disagreed and porting between them was a needless edit.
 #![macro_use]
 
 mod buffered;
@@ -966,14 +962,14 @@ impl<'d> Uart<'d, Blocking> {
     /// Create a new blocking bidirectional UART.
     pub fn new_blocking<T: Instance>(
         peri: Peri<'d, T>,
-        rx: Peri<'d, impl RxPin<T>>,
         tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
         config: Config,
     ) -> Result<Self, ConfigError> {
         Self::new_inner(
             peri,
-            new_pin!(rx, config.rx_pf()),
             new_pin!(tx, config.tx_pf()),
+            new_pin!(rx, config.rx_pf()),
             None,
             None,
             (),
@@ -984,16 +980,16 @@ impl<'d> Uart<'d, Blocking> {
     /// Create a new bidirectional UART with request-to-send and clear-to-send pins
     pub fn new_blocking_with_rtscts<T: Instance>(
         peri: Peri<'d, T>,
-        rx: Peri<'d, impl RxPin<T>>,
         tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
         rts: Peri<'d, impl RtsPin<T>>,
         cts: Peri<'d, impl CtsPin<T>>,
         config: Config,
     ) -> Result<Self, ConfigError> {
         Self::new_inner(
             peri,
-            new_pin!(rx, config.rx_pf()),
             new_pin!(tx, config.tx_pf()),
+            new_pin!(rx, config.rx_pf()),
             new_pin!(rts, config.rts_pf()),
             new_pin!(cts, config.cts_pf()),
             (),
@@ -1006,15 +1002,15 @@ impl<'d> Uart<'d, Async> {
     /// Create a new bidirectional UART that waits on the FIFOs rather than a software buffer.
     pub fn new<T: Instance>(
         peri: Peri<'d, T>,
-        rx: Peri<'d, impl RxPin<T>>,
         tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
         _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Result<Self, ConfigError> {
         Self::new_inner(
             peri,
-            new_pin!(rx, config.rx_pf()),
             new_pin!(tx, config.tx_pf()),
+            new_pin!(rx, config.rx_pf()),
             None,
             None,
             T::async_state(),
@@ -1025,8 +1021,8 @@ impl<'d> Uart<'d, Async> {
     /// Create a new bidirectional UART with request-to-send and clear-to-send pins.
     pub fn new_with_rtscts<T: Instance>(
         peri: Peri<'d, T>,
-        rx: Peri<'d, impl RxPin<T>>,
         tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
         rts: Peri<'d, impl RtsPin<T>>,
         cts: Peri<'d, impl CtsPin<T>>,
         _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
@@ -1034,8 +1030,8 @@ impl<'d> Uart<'d, Async> {
     ) -> Result<Self, ConfigError> {
         Self::new_inner(
             peri,
-            new_pin!(rx, config.rx_pf()),
             new_pin!(tx, config.tx_pf()),
+            new_pin!(rx, config.rx_pf()),
             new_pin!(rts, config.rts_pf()),
             new_pin!(cts, config.cts_pf()),
             T::async_state(),
@@ -1391,8 +1387,8 @@ impl<'d, M: ModeState> UartTx<'d, M> {
 impl<'d, M: ModeState> Uart<'d, M> {
     fn new_inner<T: Instance>(
         _peri: Peri<'d, T>,
-        rx: Option<Peri<'d, AnyPin>>,
         tx: Option<Peri<'d, AnyPin>>,
+        rx: Option<Peri<'d, AnyPin>>,
         rts: Option<Peri<'d, AnyPin>>,
         cts: Option<Peri<'d, AnyPin>>,
         wait: M::Wait,
