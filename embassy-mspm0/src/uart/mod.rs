@@ -563,7 +563,7 @@ impl<'d> UartRx<'d, Async> {
         poll_fn(move |cx| {
             clear(r, rx_sources());
 
-            while read < buffer.len() {
+            while let Some(slot) = buffer.get_mut(read) {
                 if r.stat().read().rxfe() {
                     break;
                 }
@@ -571,7 +571,7 @@ impl<'d> UartRx<'d, Async> {
                 compiler_fence(Ordering::Acquire);
                 match read_with_error(r) {
                     Ok(byte) => {
-                        buffer[read] = byte;
+                        *slot = byte;
                         read += 1;
                     }
                     Err(err) => return Poll::Ready(Err(err)),
@@ -746,13 +746,13 @@ impl<'d> UartTx<'d, Async> {
 
             clear(r, tx_sources());
 
-            while written < buffer.len() {
+            while let Some(&byte) = buffer.get(written) {
                 if r.stat().read().txff() {
                     break;
                 }
 
                 compiler_fence(Ordering::Release);
-                r.txdata().write(|w| w.set_data(buffer[written]));
+                r.txdata().write(|w| w.set_data(byte));
                 written += 1;
             }
 
