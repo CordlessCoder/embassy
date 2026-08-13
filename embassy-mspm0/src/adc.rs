@@ -136,7 +136,7 @@ impl SolvedSampleClock {
     /// outside this device's `fADCCLK`.
     ///
     /// `adcclk_hz` must be the rate `source` actually runs at. Take it from
-    /// [`clock::Setup::clocks`](crate::sysctl::clock::Setup::clocks) on the tree the binary applies,
+    /// [`ClockSetup::clocks`](crate::sysctl::clock::ClockSetup::clocks) on the tree the binary applies,
     /// which is a `const`.
     ///
     /// Usable in a `const`, which is the point: handing the result to
