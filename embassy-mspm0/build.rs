@@ -647,6 +647,7 @@ fn generate_gpio_port_interrupts() -> TokenStream {
 
 fn generate_dma_channel_count(cfgs: &mut CfgSet) -> TokenStream {
     cfgs.declare("dma_long_long");
+    cfgs.declare("dma_stride");
 
     let count = METADATA.dma_channels.len();
 
@@ -662,6 +663,23 @@ fn generate_dma_channel_count(cfgs: &mut CfgSet) -> TokenStream {
     {
         cfgs.enable("dma_long_long");
     }
+
+    // Stride is per device the same way the 128-bit width is, and the datasheets tick it for basic
+    // channels as well as full ones.
+    if METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.dma)
+        .any(|dma| dma.stride_mode)
+    {
+        cfgs.enable("dma_stride");
+    }
+
+    // `Dma::gather_mode` is deliberately not turned into a cfg yet: gather needs a descriptor table in
+    // memory and no driver path builds one, so a cfg for it would gate nothing. Two things to keep
+    // when that changes -- gather is full-channel-only on every device that has it, unlike stride, and
+    // the metadata field is *not* "has extended modes": table and fill are older and present on
+    // devices where it is false.
 
     quote! { pub const DMA_CHANNELS: usize = #count; }
 }

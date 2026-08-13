@@ -362,7 +362,14 @@ pub enum TransferMode {
 pub struct TransferOptions {
     /// DMA transfer mode.
     pub mode: TransferMode,
-    // TODO: Read and write stride.
+
+    /// How far the source address moves between elements.
+    #[cfg(dma_stride)]
+    pub src_stride: Stride,
+
+    /// How far the destination address moves between elements.
+    #[cfg(dma_stride)]
+    pub dst_stride: Stride,
 }
 
 impl TransferOptions {
@@ -374,6 +381,60 @@ impl TransferOptions {
     pub const fn new() -> Self {
         Self {
             mode: TransferMode::Single,
+            #[cfg(dma_stride)]
+            src_stride: Stride::One,
+            #[cfg(dma_stride)]
+            dst_stride: Stride::One,
+        }
+    }
+}
+
+/// How far an address advances between elements, in elements.
+///
+/// The step is in units of the transfer width, so [`Two`](Self::Two) on a `u32` transfer moves eight
+/// bytes. Reading every third sample out of an interleaved buffer is what this is for.
+///
+/// Only the newer DMA implements this; the older one has no encoding for it, which is why this type
+/// does not exist on those devices rather than being accepted and ignored. Whether the address
+/// advances at all is separate — a transfer that does not increment ignores this.
+#[cfg(dma_stride)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Stride {
+    /// One element, the ordinary contiguous case.
+    One,
+    /// Every second element.
+    Two,
+    /// Every third element.
+    Three,
+    /// Every fourth element.
+    Four,
+    /// Every fifth element.
+    Five,
+    /// Every sixth element.
+    Six,
+    /// Every seventh element.
+    Seven,
+    /// Every eighth element.
+    Eight,
+    /// Every ninth element.
+    Nine,
+}
+
+#[cfg(dma_stride)]
+impl Stride {
+    /// The `DMASRCINCR`/`DMADSTINCR` encoding for an incrementing transfer with this step.
+    const fn to_incr(self) -> Incr {
+        match self {
+            Self::One => Incr::Increment,
+            Self::Two => Incr::Stride2,
+            Self::Three => Incr::Stride3,
+            Self::Four => Incr::Stride4,
+            Self::Five => Incr::Stride5,
+            Self::Six => Incr::Stride6,
+            Self::Seven => Incr::Stride7,
+            Self::Eight => Incr::Stride8,
+            Self::Nine => Incr::Stride9,
         }
     }
 }
@@ -643,12 +704,26 @@ impl<'d> Channel<'d> {
             w.set_srcwdth(src_wdth);
             w.set_dstwdth(dst_wdth);
             w.set_srcincr(if increment_src {
-                Incr::Increment
+                #[cfg(dma_stride)]
+                {
+                    options.src_stride.to_incr()
+                }
+                #[cfg(not(dma_stride))]
+                {
+                    Incr::Increment
+                }
             } else {
                 Incr::Unchanged
             });
             w.set_dstincr(if increment_dst {
-                Incr::Increment
+                #[cfg(dma_stride)]
+                {
+                    options.dst_stride.to_incr()
+                }
+                #[cfg(not(dma_stride))]
+                {
+                    Incr::Increment
+                }
             } else {
                 Incr::Unchanged
             });

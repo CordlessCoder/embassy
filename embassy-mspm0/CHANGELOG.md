@@ -239,3 +239,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/comp: `enable_edge_interrupt`, `disable_edge_interrupt`, `pending_edge` and `clear_interrupt` on the blocking driver, so an application can service the comparator from its own handler
 - feat: mspm0/gpio: `Flex::set_as_af` hands a pin to a peripheral function at run time, and `PfType` is documented
 - feat: mspm0/tim: `low_level::Timer::setup_pwm_channel` configures a channel for PWM without claiming its pin
+- mspm0: adopt metapac tag `fe7482f1`, which adds `Dma::stride_mode` and `Dma::gather_mode`
+- feat: mspm0/dma: `TransferOptions::src_stride` and `dst_stride` on the devices whose DMA implements strided address increment
