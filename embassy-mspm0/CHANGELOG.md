@@ -251,3 +251,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0: pend the interrupt executor by writing ISPR directly, dropping a bounds check the optimiser could not fold
 - mspm0/adc: pick the sample-clock divider and frequency band by shift and table rather than comparison chains
 - **breaking**: mspm0/adc: `Config::sample_clk` is a `SampleClockSel`, which either names a source to solve for on the device or carries a `SolvedSampleClock` from `solve`, a `const fn`, so a fixed clock tree keeps both divider ladders out of the binary
+- feat: mspm0/comp: `Config::new` is a `const fn`, so a comparator's whole configuration can be built in a `const`
+- feat: mspm0/crc: `Config::new` is a `const fn`, matching every other driver's configuration

@@ -69,26 +69,36 @@ use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{LowPowerInstance, MaybeWakeGuard, SleepLevel};
 
 /// Speed and current of the comparator itself.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Speed {
     /// Faster response, higher current.
     ///
     /// **Cannot run on LFCLK.** SYSCTL raises a clock error if a comparator is enabled in this mode
     /// while the bus clock is LFCLK, so [`Comp::new`] rejects the combination.
-    #[default]
     Fast,
 
     /// Lower current, slower response. Runs on any bus clock.
     UltraLowPower,
 }
 
+impl Speed {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::Fast;
+}
+
+impl Default for Speed {
+    #[inline]
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Built-in hysteresis, in millivolts of separation between the two switching thresholds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Hysteresis {
     /// No hysteresis: one threshold, and a slow input crosses it repeatedly on noise.
-    #[default]
     None,
 
     /// About 10 mV.
@@ -102,6 +112,9 @@ pub enum Hysteresis {
 }
 
 impl Hysteresis {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::None;
+
     const fn to_vals(self) -> vals::Hyst {
         match self {
             Hysteresis::None => vals::Hyst::NoHys,
@@ -109,6 +122,13 @@ impl Hysteresis {
             Hysteresis::Mv20 => vals::Hyst::MedHys,
             Hysteresis::Mv30 => vals::Hyst::HighHys,
         }
+    }
+}
+
+impl Default for Hysteresis {
+    #[inline]
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 
@@ -138,15 +158,26 @@ impl FilterDelay {
 }
 
 /// Which way round the output is reported.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OutputPolarity {
     /// Output is high while the positive terminal is above the negative one.
-    #[default]
     NonInverted,
 
     /// Output is inverted, and reads high while the comparator is disabled.
     Inverted,
+}
+
+impl OutputPolarity {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::NonInverted;
+}
+
+impl Default for OutputPolarity {
+    #[inline]
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// What feeds the reference generator.
@@ -365,14 +396,13 @@ pub struct SettlingCycles {
 /// comparator's enable nor the DAC's settling has a status bit behind it. Turning a figure in
 /// nanoseconds into a cycle count needs the clock rate, and where that rate comes from is what this
 /// chooses.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Settling {
     /// Read MCLK from the live clock tree when the driver is built.
     ///
     /// Correct whatever the application does with clocks, and it carries the arithmetic into the
     /// binary — about 150 bytes, since dividing on this core is a library call.
-    #[default]
     FromClockTree,
 
     /// Use counts worked out by [`Settling::solve`].
@@ -386,6 +416,18 @@ pub enum Settling {
     /// — 20 on an isolated example and 52 on a whole firmware, and the figure belongs to the binary
     /// rather than to this enum.
     Solved(SettlingCycles),
+}
+
+impl Settling {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::FromClockTree;
+}
+
+impl Default for Settling {
+    #[inline]
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl Settling {
@@ -437,7 +479,7 @@ impl Settling {
 
 /// Comparator configuration.
 #[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Config {
     /// Speed and current of the comparator.
@@ -469,6 +511,37 @@ pub struct Config {
     /// Leaving it off is not merely a default: an enabled generator holds VREF on and draws current
     /// whether or not anything reads it.
     pub reference: Option<Reference>,
+}
+
+impl Config {
+    /// The default configuration, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. This type is `#[non_exhaustive]`, so a caller outside the crate
+    /// cannot write the struct literal, and `Default::default` is not `const` — without this there
+    /// is no way to build a comparator's configuration in a `const` at all. That matters beyond
+    /// tidiness: a constant cannot stop folding, where a `default()` call can once the struct grows
+    /// past an inlining threshold, which has already cost this crate a clock tree's worth of
+    /// constant propagation once.
+    ///
+    /// Pair it with [`Settling::solve`] to keep the settling arithmetic out of the binary too.
+    pub const fn new() -> Self {
+        Self {
+            speed: Speed::DEFAULT,
+            hysteresis: Hysteresis::DEFAULT,
+            output_polarity: OutputPolarity::DEFAULT,
+            filter: None,
+            exchange_inputs: false,
+            settling: Settling::DEFAULT,
+            reference: None,
+        }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Why a [`Comp`] could not be configured.

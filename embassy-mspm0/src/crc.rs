@@ -76,11 +76,10 @@ use mspm0_metapac::crc::{Crc as Regs, vals};
 use crate::sysctl::LowPowerInstance;
 
 /// Which checksum the generator computes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Polynomial {
     /// CRC-16-CCITT, polynomial `0x1021`.
-    #[default]
     Crc16Ccitt,
 
     /// CRC-32 ISO-3309, polynomial `0x04C11DB7`.
@@ -103,6 +102,9 @@ pub enum Polynomial {
 }
 
 impl Polynomial {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::Crc16Ccitt;
+
     /// The `POLYSIZE` this needs, where the block has that field.
     #[cfg(not(crc_16))]
     const fn size(self) -> vals::Polysize {
@@ -144,24 +146,42 @@ impl Polynomial {
     }
 }
 
+impl Default for Polynomial {
+    #[inline]
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Which end of a multi-byte input the engine consumes first.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Endianness {
     /// The least significant byte is at the lowest address and goes in first.
     ///
     /// This is what makes one [`Crc::feed_u32`] equal to its four bytes fed in address order on this
     /// core, which is little-endian.
-    #[default]
     Little,
 
     /// The least significant byte is at the highest address and goes in last.
     Big,
 }
 
+impl Endianness {
+    /// The default, as a `const` so a configuration's `new` can reach it.
+    pub const DEFAULT: Self = Self::Little;
+}
+
+impl Default for Endianness {
+    #[inline]
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// CRC configuration.
 #[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Config {
     /// Which checksum to compute.
@@ -175,6 +195,29 @@ pub struct Config {
 
     /// Byte-swap the result as it is read.
     pub output_byteswap: bool,
+}
+
+impl Config {
+    /// The default configuration, usable in a `const`.
+    ///
+    /// [`Default`] delegates here. This type is `#[non_exhaustive]`, so a caller outside the crate
+    /// cannot write the struct literal, and `Default::default` is not `const` — without this there
+    /// is no way to build a CRC configuration in a `const` at all.
+    pub const fn new() -> Self {
+        Self {
+            polynomial: Polynomial::DEFAULT,
+            bit_reversed: false,
+            input_endianness: Endianness::DEFAULT,
+            output_byteswap: false,
+        }
+    }
+}
+
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// CRC driver.
