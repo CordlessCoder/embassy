@@ -759,7 +759,31 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
         negative: Option<Peri<'d, impl NegativePin<T>>>,
         config: Config,
     ) -> Result<Self, ConfigError> {
-        Self::build(erase_positive(positive), erase_negative(negative), config)
+        Self::build(erase_positive(positive).map(|(pin, ch)| (Some(pin), ch)), erase_negative(negative), config)
+    }
+
+    /// Configure the comparator, keeping the positive pad's own type so it can be lent back.
+    ///
+    /// The comparator behaves exactly as [`new`](Self::new) builds it. What differs is that the
+    /// positive terminal's pin is kept as itself rather than erased, so
+    /// [`CompSharedPositive::with_positive_pin`] can hand it to another driver -- an ADC channel
+    /// being the case this exists for. Read that type's documentation before using it: the loan
+    /// changes no registers, and it does not stop the comparator acting on what the other driver
+    /// does to the pad.
+    ///
+    /// The positive terminal is required here, there being nothing to share otherwise.
+    pub fn new_sharing_positive<P: PositivePin<T> + crate::gpio::Pin>(
+        _peri: Peri<'d, T>,
+        positive: Peri<'d, P>,
+        negative: Option<Peri<'d, impl NegativePin<T>>>,
+        config: Config,
+    ) -> Result<CompSharedPositive<'d, T, Blocking, P>, ConfigError> {
+        SealedPositivePin::<T>::setup(&*positive);
+        let channel = SealedPositivePin::<T>::channel(&*positive);
+
+        let comp = Self::build(Some((None, channel)), erase_negative(negative), config)?;
+
+        Ok(CompSharedPositive { comp, pad: positive })
     }
 }
 
@@ -886,7 +910,7 @@ impl<'d, T: Instance> Comp<'d, T, Async> {
         _irq: impl CompInterrupt<T> + 'd,
         config: Config,
     ) -> Result<Self, ConfigError> {
-        Self::build(erase_positive(positive), erase_negative(negative), config)
+        Self::build(erase_positive(positive).map(|(pin, ch)| (Some(pin), ch)), erase_negative(negative), config)
     }
 
     /// Wait for the comparator's output to make a transition.
@@ -935,9 +959,85 @@ impl<'d, T: Instance> Comp<'d, T, Async> {
     }
 }
 
+/// A [`Comp`] that kept the concrete type of its positive-terminal pad, so it can lend it back.
+///
+/// The comparator's positive terminal is often the only thing that wants a pad, and sometimes it is
+/// not: the same pin can be an ADC channel, and an application may need to convert it between
+/// comparisons. [`Comp`] erases its pins to a port and bit, which is enough to disconnect them on
+/// drop and not enough to hand one to a driver that wants a named pin, so this keeps `P` instead.
+///
+/// # Nothing is reconfigured when the pad is lent out
+///
+/// **The hardware does not need arbitrating, and this type does not attempt any.** An analog
+/// peripheral reaches a pad through its own input selection, and "analog peripherals have no
+/// knowledge of, or interaction with, the IOMUX" (SLAU846 8.1). The comparator and the ADC each
+/// select the pad from their own side, so both can be connected at once, and the pad's IOMUX state is
+/// the same high-impedance default for either — `set_as_analog` writes the same value from both
+/// drivers.
+///
+/// So [`with_positive_pin`](Self::with_positive_pin) changes no registers. The comparator keeps
+/// running and keeps its terminal selected throughout.
+///
+/// # What it does buy, and what it does not
+///
+/// It buys one thing: the pad reaches a second driver only inside
+/// [`with_positive_pin`](Self::with_positive_pin), which takes `&mut self`, so nothing can hold it
+/// alongside the comparator or across a comparison.
+///
+/// **Two things it does not buy**, both the application's to handle:
+///
+/// - **It does not stop the pad being driven.** Inside the loan the pad is the whole pin, so a caller
+///   can make an output of it -- and an output driver fighting an analog peripheral on one pad is the
+///   one combination SLAU846 8.1 calls invalid. Reading it is what this is for.
+/// - **It does not make the comparison meaningful during the loan.** Switching a divider onto the pad
+///   changes what the comparator is comparing, and the comparator acts on it: an edge interrupt can
+///   fire from the measurement rather than from the signal. Nothing here can know whether that
+///   matters, so an application that cares has to quiet the comparator around the conversion.
+pub struct CompSharedPositive<'d, T: Instance, M: DriverMode, P: crate::gpio::Pin> {
+    comp: Comp<'d, T, M>,
+    pad: Peri<'d, P>,
+}
+
+impl<'d, T: Instance, M: DriverMode, P: crate::gpio::Pin> CompSharedPositive<'d, T, M, P> {
+    /// Run `f` with the positive terminal's pad, then take it back.
+    ///
+    /// The pad is the concrete pin, so it satisfies whatever a driver asks of it -- an ADC channel
+    /// being the case this exists for. Nothing is reconfigured on the way in or out.
+    #[inline]
+    pub fn with_positive_pin<R>(&mut self, f: impl FnOnce(&mut Peri<'d, P>) -> R) -> R {
+        f(&mut self.pad)
+    }
+}
+
+impl<'d, T: Instance, M: DriverMode, P: crate::gpio::Pin> core::ops::Deref for CompSharedPositive<'d, T, M, P> {
+    type Target = Comp<'d, T, M>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.comp
+    }
+}
+
+impl<'d, T: Instance, M: DriverMode, P: crate::gpio::Pin> core::ops::DerefMut for CompSharedPositive<'d, T, M, P> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.comp
+    }
+}
+
+impl<'d, T: Instance, M: DriverMode, P: crate::gpio::Pin> Drop for CompSharedPositive<'d, T, M, P> {
+    fn drop(&mut self) {
+        // `Comp`'s own `Drop` disconnects the pins it owns, and this pad is not one of them.
+        SealedPin::set_as_disconnected(&*self.pad);
+    }
+}
+
 impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
+    /// Build the driver, given each terminal's channel and, where the driver is to own it, its pin.
+    ///
+    /// The positive terminal's pin is optional *separately from its channel* so that
+    /// [`CompSharedPositive`] can program the channel while keeping the pin itself, in the concrete
+    /// type an ADC channel needs. `Drop` only disconnects the pins this owns.
     fn build(
-        positive: Option<(Peri<'d, AnyPin>, u8)>,
+        positive: Option<(Option<Peri<'d, AnyPin>>, u8)>,
         negative: Option<(Peri<'d, AnyPin>, u8)>,
         config: Config,
     ) -> Result<Self, ConfigError> {
@@ -1050,7 +1150,7 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
         });
 
         Ok(Self {
-            positive: MaybeAnyPin::new(positive.map(|(pin, _)| pin)),
+            positive: MaybeAnyPin::new(positive.and_then(|(pin, _)| pin)),
             negative: MaybeAnyPin::new(negative.map(|(pin, _)| pin)),
             output: MaybeAnyPin::none(),
             dac_settle_cycles: settling.dac,
