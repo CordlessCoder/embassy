@@ -15,6 +15,28 @@
 //! [`flush`](UartTx::flush) redundant. The buffered writes do not, and still want a flush before
 //! anything that can sleep.
 //!
+//! # The last bit is yours to wait out
+//!
+//! Every drain here waits for the transmit FIFO to empty, and that is **one bit time short of the wire
+//! going idle**. So even a fully flushed transmitter can lose its final bit to a deep sleep entered
+//! immediately afterwards.
+//!
+//! No register reports the difference. `STAT.BUSY` looks like the flag for it and is not: it is also
+//! set while a byte is being *received*, so a transmitter with no receive pin leaves it set forever and
+//! a drain polling it never returns. See `busy` in this module's source for the measurements.
+//!
+//! The gap was measured at one bit time on both an L-series and a G-series part, flat across transfer
+//! lengths. That is about 104 us at 9600 baud and 9 us at 115200.
+//!
+//! **Closing it is the application's job**, because the cost of the wait depends on things this driver
+//! does not own: the CPU clock a spin has to be sized against, and whether you would rather spin at all
+//! than arm a timer. Wait one to two bit times at your configured baud after the flush, before you
+//! sleep. Size a [`cortex_m::asm::delay`] generously — it counts loop iterations rather than cycles,
+//! about five cycles each on this silicon, so a count derived as if it were cycles errs long.
+//!
+//! Most callers can ignore all of this. It matters when the receiving end cannot detect a truncated
+//! frame, which is to say when the protocol carries no length and no checksum.
+//!
 //! # Pin order
 //!
 //! Every full-duplex constructor here takes its pins as `(tx, rx)` — [`Uart`] and [`BufferedUart`]
@@ -745,6 +767,8 @@ impl<'d> UartTx<'d, Async> {
     /// between one write and the next, where returning early let the FIFO cover the gap. A caller
     /// sending a stream in small pieces gets fewer bytes per second for the same CPU. Send bigger
     /// pieces rather than reaching for a way to overlap them.
+    ///
+    /// One bit time is still outstanding when this resolves; see the module documentation.
     pub fn write<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
         let r = self.info.regs;
         let state = self.wait;
@@ -895,8 +919,8 @@ impl<'d, M: ModeState> UartTx<'d, M> {
     /// [`TxWrite`] does this when it is dropped, so this is for the case where the transmitter was fed
     /// some other way.
     ///
-    /// On the families affected by `UART_ERR_08` this can only wait for the FIFO to drain, leaving the
-    /// byte in the shift register still going.
+    /// Waits for the transmit FIFO to drain, one bit time short of the wire going idle. See the module
+    /// documentation on waiting out that last bit.
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
         while busy(self.info.regs) {}
         Ok(())
@@ -955,6 +979,8 @@ impl<'d, M: ModeState> Drop for UartTx<'d, M> {
 /// dropped** — so the hazard is closed by doing nothing. Write through it to queue more under the same
 /// guard, [`Self::flush`] to wait now and see any error, or [`Self::disarm`] to abandon the bytes to
 /// whatever the device does next.
+///
+/// The drain leaves one bit time outstanding; see the module documentation.
 ///
 /// Not `#[must_use]`: dropping this immediately is the correct thing, not a mistake.
 pub struct TxWrite<'a, 'd, M: ModeState> {
@@ -2021,18 +2047,38 @@ fn read_with_error(r: Regs) -> Result<u8, Error> {
     Ok(rx.data())
 }
 
-/// This function assumes CTL0.ENABLE is set (for errata cases).
+/// Whether the transmitter still holds a byte.
+///
+/// Answers "the transmit FIFO still has something in it", which is one bit time short of "the wire is
+/// idle" — see below. Assumes `CTL0.ENABLE` is set.
 fn busy(r: Regs) -> bool {
-    // `UART_ERR_08` — `STAT.BUSY` stays high even with the module disabled and data in the TX FIFO, so
-    // polling it never finishes. Applies to every family this crate builds for except G511x/G5187,
-    // whose UNICOMM UART is a different module.
-    if cfg!(uart_err_08) {
-        let stat = r.stat().read();
-        // "Poll TXFIFO status and the CTL0.ENABLE register bit to identify BUSY status."
-        !stat.txfe()
-    } else {
-        r.stat().read().busy()
-    }
+    // **`STAT.BUSY` is the wrong flag for a transmit drain, and not because of the erratum.** The TRM's
+    // field description has it: `BUSY` is set when the transmit FIFO becomes nonempty "or if a receive
+    // data is currently ongoing (after the start edge have been detected until a complete byte,
+    // including all stop bits, has been received by the shift register)". It covers **both**
+    // directions.
+    //
+    // A `UartTx` can exist with no receive pin at all. The unmuxed RX input reads low, which is a start
+    // edge that never completes, so `BUSY` is set from configure onward and a drain polling it never
+    // returns. Measured on an L1306 and a G3507: `STAT` `0x41` — `BUSY` set with `TXFE` set — on a
+    // transmitter that had not yet sent a byte. Give the same driver a receive pin on an idle-high line
+    // and `BUSY` behaves perfectly on both parts. Even then it would be wrong here, because a transmit
+    // drain must not block until the *other* end stops sending.
+    //
+    // `UART_ERR_08` is a second, narrower reason: `BUSY` also sticks with the module disabled and data
+    // in the TX FIFO. It applies to every family this crate builds for except G511x/G5187, whose
+    // UNICOMM UART is a different module. It is not the reason this substitution exists, and gating the
+    // substitution on `CTL0.ENABLE` would not recover anything.
+    //
+    // **What the substitution costs is one bit time, not one frame.** `TXFE` rises one bit before the
+    // transmission completes; measured at 3276 to 3308 cycles against a 33 330-cycle frame at 9600, the
+    // same on both parts and flat across one, four and eight bytes. So a caller that deep-sleeps the
+    // instant this returns can still cut the final bit. Closing that needs a baud-derived wait, since
+    // no register reports it.
+    //
+    // `STAT.IDLE` is not an alternative; it is a receive-side address tag for idle-line multiprocessor
+    // mode.
+    !r.stat().read().txfe()
 }
 
 // Always false: the driver never sets `DMAEN`, having no receive or transmit DMA path.
