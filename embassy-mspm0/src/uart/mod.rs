@@ -2,16 +2,18 @@
 //!
 //! # Deep sleep truncates an unflushed write
 //!
-//! Every write here returns once the bytes are queued, not once they are on the wire. Deep sleep
-//! entered before the transmitter drains cuts the frame mid-byte, and on a PD1 instance the TX pin
-//! then sits low until the next wake.
+//! A write that returns once the bytes are queued has not put them on the wire. Deep sleep entered
+//! before the transmitter drains cuts the frame mid-byte, and on a PD1 instance the TX pin then sits
+//! low until the next wake.
 //!
 //! Nothing reports this: the bytes were accepted, and the receiver on the other end sees a framing
 //! error rather than a byte the sender can act on.
 //!
-//! [`UartTx::begin_blocking_write`] closes it: the [`TxWrite`] it hands out waits when dropped, so a
-//! caller who does nothing gets the safe behaviour. The asynchronous and buffered writes do not, and
-//! still want a flush before anything that can sleep.
+//! Two paths close it for you. [`UartTx::begin_blocking_write`] hands out a [`TxWrite`] that waits when
+//! dropped, so a caller who does nothing gets the safe behaviour. The asynchronous
+//! [`write`](UartTx::write) waits before it resolves, which makes a following
+//! [`flush`](UartTx::flush) redundant. The buffered writes do not, and still want a flush before
+//! anything that can sleep.
 //!
 //! # Pin order
 //!
@@ -733,10 +735,16 @@ impl<'d> UartTx<'d, Async> {
         Ok(this)
     }
 
-    /// Queue every byte of `buffer`, waiting for room in the transmit FIFO.
+    /// Send every byte of `buffer`, and wait for the last of them to leave the wire.
     ///
-    /// Queued, not sent: the last bytes are still in the FIFO when this returns. Anything that can
-    /// enter deep sleep afterwards wants [`flush`](Self::flush) first, or the frame is cut mid-byte.
+    /// Sent, not merely queued: this resolves once the transmitter is idle, so the sleep guard it
+    /// holds covers the whole transmission and deep sleep entered afterwards cannot cut a frame. That
+    /// makes a following [`flush`](Self::flush) redundant rather than merely cheap.
+    ///
+    /// The cost is on the wire, not the CPU. Waiting out the transmitter means the line goes idle
+    /// between one write and the next, where returning early let the FIFO cover the gap. A caller
+    /// sending a stream in small pieces gets fewer bytes per second for the same CPU. Send bigger
+    /// pieces rather than reaching for a way to overlap them.
     pub fn write<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
         let r = self.info.regs;
         let state = self.wait;
@@ -752,30 +760,49 @@ impl<'d> UartTx<'d, Async> {
         poll_fn(move |cx| {
             let _ = &guard;
 
-            clear(r, tx_sources());
+            // `written` is the phase as well as the position, so draining costs no extra state in the
+            // future: the buffer is exhausted only once, and every poll after that is a drain poll.
+            if written < buffer.len() {
+                clear(r, tx_sources());
 
-            while let Some(&byte) = buffer.get(written) {
-                if r.stat().read().txff() {
-                    break;
+                while let Some(&byte) = buffer.get(written) {
+                    if r.stat().read().txff() {
+                        break;
+                    }
+
+                    compiler_fence(Ordering::Release);
+                    r.txdata().write(|w| w.set_data(byte));
+                    written += 1;
                 }
 
-                compiler_fence(Ordering::Release);
-                r.txdata().write(|w| w.set_data(byte));
-                written += 1;
+                if written < buffer.len() {
+                    state.tx_waker.register(cx.waker());
+                    unmask(r, tx_sources());
+
+                    return Poll::Pending;
+                }
             }
 
-            if written == buffer.len() {
+            // Cleared before the test, so an end-of-transmission left over from an earlier write
+            // cannot answer for this one.
+            clear(r, eot_sources());
+
+            if !busy(r) {
                 return Poll::Ready(Ok(()));
             }
 
             state.tx_waker.register(cx.waker());
-            unmask(r, tx_sources());
+            unmask(r, eot_sources());
 
             Poll::Pending
         })
     }
 
     /// Wait for the transmitter to go idle, so nothing is left in the FIFO or the shift register.
+    ///
+    /// [`write`](Self::write) already waits for this before it resolves, so calling this after one is
+    /// redundant. It is here for a transmitter that something else queued into — the blocking write
+    /// paths, or a [`TxWrite`] given up with [`disarm`](TxWrite::disarm).
     pub fn flush(&mut self) -> impl Future<Output = Result<(), Error>> + '_ {
         let r = self.info.regs;
         let state = self.wait;
@@ -1080,7 +1107,7 @@ impl<'d> Uart<'d, Async> {
         self.rx.read(buffer)
     }
 
-    /// Queue every byte of `buffer`; see [`UartTx::write`].
+    /// Send every byte of `buffer` and wait for the wire to go idle; see [`UartTx::write`].
     pub fn write<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
         self.tx.write(buffer)
     }
@@ -1256,7 +1283,7 @@ pub struct AsyncState {
     /// Woken for anything the receiver waits on — a FIFO at its level, and the timeout that delivers
     /// one that never reaches it.
     rx_waker: IrqWaker,
-    /// Woken for room in the transmit FIFO, and for the end of transmission a flush waits on.
+    /// Woken for room in the transmit FIFO, and for the end of transmission a drain waits on.
     tx_waker: IrqWaker,
 }
 

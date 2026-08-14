@@ -264,3 +264,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking**: mspm0/flash: `Flash::blocking_write` is gone — the byte path is private and reachable only through the `embedded_storage` impls, so nothing reaches the per-word reassembly by accident
 - feat: mspm0/adc: `BorrowedAdcChannel::steal` names a channel by its hardware number, so a caller reading whichever channel it is asked for does not need a match over every pin
 - feat: mspm0/tim: `Timer::reconfigure` applies a new `Config` without the reset and power-up sequence, re-deriving the sleep floor so a change of clock source cannot leave the counter guarded against the wrong sleep modes
+- **breaking**: mspm0/uart: the unbuffered async `write` waits for the transmitter to drain before it resolves, holding its sleep guard for the whole transmission, so a following `flush` is redundant rather than required
