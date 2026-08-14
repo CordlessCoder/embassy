@@ -263,3 +263,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/flash: `Flash::blocking_write_words` programs from a `&[u32]`, so a caller that already has words does not pay to have each flash word rebuilt from eight separately-loaded bytes
 - **breaking**: mspm0/flash: `Flash::blocking_write` is gone — the byte path is private and reachable only through the `embedded_storage` impls, so nothing reaches the per-word reassembly by accident
 - feat: mspm0/adc: `BorrowedAdcChannel::steal` names a channel by its hardware number, so a caller reading whichever channel it is asked for does not need a match over every pin
+- feat: mspm0/tim: `Timer::reconfigure` applies a new `Config` without the reset and power-up sequence, re-deriving the sleep floor so a change of clock source cannot leave the counter guarded against the wrong sleep modes

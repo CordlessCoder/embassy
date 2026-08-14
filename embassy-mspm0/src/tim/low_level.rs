@@ -220,6 +220,36 @@ impl<'d, T: Instance> Timer<'d, T> {
             operation_floor: sleep_floor::<T>(config.clock),
         }
     }
+
+    /// Apply a new [`Config`] to an instance that is already up, and stop the counter.
+    ///
+    /// For an instance that changes role while the program runs — a PWM source that becomes a one-shot
+    /// countdown, say. [`new`](Self::new) cannot do it: it re-runs reset and power-up, which restarts
+    /// the peripheral rather than re-aiming it.
+    ///
+    /// The counter is stopped first and left stopped, so [`start`](Self::start) is what resumes it.
+    /// Stopping is not ceremony — `config` can reverse the counting direction, and a counter that
+    /// changes direction mid-count is left at a value the new mode never meant to produce.
+    /// [`Config::counter_on_enable`] then decides what the next `start` does with it.
+    ///
+    /// The reload value survives, since nothing in `Config` names it. Set it with
+    /// [`set_load`](Self::set_load) if the new role wants a different period.
+    ///
+    /// This is also what keeps the sleep guard honest. The floor a running counter holds comes from
+    /// its clock, so a role change that swaps the clock source re-derives it here — writing `CLKSEL`
+    /// through [`regs`](Self::regs) instead leaves the old floor in place, and the counter is then
+    /// guarded against the wrong sleep modes with nothing reporting it.
+    pub fn reconfigure(&mut self, config: &Config) {
+        self.stop();
+
+        apply_config::<T>(config);
+
+        #[cfg(feature = "low-power")]
+        {
+            self.operation_floor = sleep_floor::<T>(config.clock);
+        }
+    }
+
     /// Configure `channel` to drive a PWM output, without claiming a pin for it.
     ///
     /// [`SimplePwm`](super::simple_pwm::SimplePwm) is the ordinary way to get PWM, and it takes the
@@ -391,16 +421,6 @@ impl<'d, T: Instance> Timer<'d, T> {
 /// Separate from [`Timer::new`] so the time driver can share the sequence without owning a `Peri` — its
 /// `static` needs a `const` initialiser, so it cannot hold a `Timer`.
 pub(crate) fn configure<T: Instance>(config: &Config) {
-    assert!((1..=8).contains(&config.divider), "timer divider must be 1 to 8");
-    assert!(
-        (1..=256).contains(&config.prescaler),
-        "timer prescaler must be 1 to 256"
-    );
-    assert!(
-        config.prescaler == 1 || T::info().prescaler,
-        "this timer instance has no prescaler"
-    );
-
     let r = T::info().regs;
 
     r.gprcm(0).rstctl().write(|w| {
@@ -430,6 +450,29 @@ pub(crate) fn configure<T: Instance>(config: &Config) {
     // each here, so this is roughly 80 MCLK cycles against a requirement of 8. Do not trim it toward
     // the TRM's figure — the units are not the same.
     cortex_m::asm::delay(16);
+
+    apply_config::<T>(config);
+
+    r.counterregs(0).load().write_value(T::Word::MAX.into());
+}
+
+/// Program `config` into an instance that is already powered up and out of reset.
+///
+/// Everything [`configure`] sets that survives being set again, which is all of it bar the reload
+/// value. Split out so [`Timer::reconfigure`] can change a running instance's role without the reset
+/// and power-up sequence, which would be a restart rather than a mode change.
+fn apply_config<T: Instance>(config: &Config) {
+    assert!((1..=8).contains(&config.divider), "timer divider must be 1 to 8");
+    assert!(
+        (1..=256).contains(&config.prescaler),
+        "timer prescaler must be 1 to 256"
+    );
+    assert!(
+        config.prescaler == 1 || T::info().prescaler,
+        "this timer instance has no prescaler"
+    );
+
+    let r = T::info().regs;
 
     // SLAU847D 23.2.1 "TIMCLK Configuration": source, then dividers, then enable the clock.
     r.clksel().write(|w| match config.clock {
@@ -471,8 +514,6 @@ pub(crate) fn configure<T: Instance>(config: &Config) {
         w.set_cac(CxC::Cctl0);
         w.set_clc(CxC::Cctl0);
     });
-
-    r.counterregs(0).load().write_value(T::Word::MAX.into());
 }
 
 /// Shallowest sleep level to block so an instance clocked from `clock` keeps counting, if any.
