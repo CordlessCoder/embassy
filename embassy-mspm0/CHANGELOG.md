@@ -262,3 +262,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking**: mspm0/dma: a strided transfer derives its count from the buffer's length divided by the stride, so the slice bounds the memory touched instead of being overrun by `stride - 1` elements per transfer
 - feat: mspm0/flash: `Flash::blocking_write_words` programs from a `&[u32]`, so a caller that already has words does not pay to have each flash word rebuilt from eight separately-loaded bytes
 - **breaking**: mspm0/flash: `Flash::blocking_write` is gone — the byte path is private and reachable only through the `embedded_storage` impls, so nothing reaches the per-word reassembly by accident
+- feat: mspm0/adc: `BorrowedAdcChannel::steal` names a channel by its hardware number, so a caller reading whichever channel it is asked for does not need a match over every pin

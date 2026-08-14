@@ -654,6 +654,38 @@ impl<T> BorrowedAdcChannel<'_, T> {
     }
 }
 
+impl<T> BorrowedAdcChannel<'static, T> {
+    /// Name a channel by its hardware number, without holding the pin that reaches it.
+    ///
+    /// The typed channels are the ordinary way in, and they fold to a constant, so reach for this
+    /// only where the number is not known until the program runs — a command that reads whichever
+    /// channel it is asked for. One of these replaces a match over every pin, and with it a copy of
+    /// the conversion per arm.
+    ///
+    /// Nothing is configured on the way through. Putting a pad into analog mode, and starting whatever
+    /// a channel is wired behind, is the typed channel's `setup` — which this skips. So a channel that
+    /// is only a pad must already be in analog mode, and one behind an amplifier or a reference cannot
+    /// be reached this way at all.
+    ///
+    /// # Safety
+    ///
+    /// This is where the pin's ownership is bypassed, and that is the whole of the contract: nothing
+    /// stops the pad this channel reaches from being held, and driven, by another driver at the same
+    /// time. The caller keeps two things apart that the type system otherwise would — that the pad is
+    /// not being driven as an output while it is converted, and that two readers do not disagree about
+    /// what it is for.
+    ///
+    /// A number no channel answers to is *not* unsound. `MEMCTL.CHANSEL` is five bits and the write is
+    /// masked, so an out-of-range channel selects an input the device does not have and the conversion
+    /// reads an unreliable value. It is a wrong reading, not undefined behaviour.
+    pub unsafe fn steal(channel: u8) -> Self {
+        Self {
+            channel,
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<T: Instance> AdcChannel<T> for BorrowedAdcChannel<'_, T> {}
 impl<T: Instance> SealedAdcChannel<T> for BorrowedAdcChannel<'_, T> {
     fn channel(&self) -> u8 {
