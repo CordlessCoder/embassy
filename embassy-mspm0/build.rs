@@ -1643,6 +1643,11 @@ fn generate_interrupts() -> TokenStream {
             let name = Ident::new(interrupt.name, Span::call_site());
 
             quote! {
+                // Ahead of the unmask, so an edge cannot arrive at the reset priority first.
+                if let Some(priority) = priority {
+                    crate::interrupt::typelevel::#name::set_priority_with_cs(cs, priority);
+                }
+
                 crate::interrupt::typelevel::#name::enable();
             }
         });
@@ -1653,10 +1658,15 @@ fn generate_interrupts() -> TokenStream {
             #(#interrupts),*
         }
 
-        pub fn enable_group_interrupts(_cs: critical_section::CriticalSection) {
+        pub fn enable_group_interrupts(
+            cs: critical_section::CriticalSection,
+            priority: Option<crate::interrupt::Priority>,
+        ) {
             use crate::interrupt::typelevel::Interrupt;
 
-            // This is empty for C1105/6
+            // Both unused for C1105/6, which group nothing.
+            let _ = (cs, priority);
+
             #[allow(unused_unsafe)]
             unsafe {
                 #(#group_interrupt_enables)*

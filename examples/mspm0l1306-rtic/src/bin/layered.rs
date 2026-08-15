@@ -32,9 +32,8 @@ mod app {
     use defmt::info;
     use embassy_mspm0::gpio::{self, Input, Level, Output, Pull};
     use embassy_mspm0::interrupt::Priority;
-    use embassy_mspm0::interrupt::typelevel::Interrupt as _;
     use embassy_mspm0::mode::Async;
-    use embassy_mspm0::{Config, bind_group_interrupts, interrupt};
+    use embassy_mspm0::{Config, InterruptPolicy, bind_group_interrupts, interrupt};
     use embassy_time::Timer;
 
     // The HAL's own binding. RTIC is not involved, and does not need to be.
@@ -56,18 +55,21 @@ mod app {
     fn init(_: init::Context) -> (Shared, Local) {
         info!("Hello world!");
 
-        let p = embassy_mspm0::init(Config::default());
+        // The edge reaches the CPU on GROUP1's NVIC line. Left at the reset priority it is the
+        // highest in the system and preempts `on_pend` as well as the tasks, so give it the level of
+        // the task it wakes. Asking `init` for it rather than setting it afterwards is what keeps an
+        // edge from being taken at the reset priority in between. On a chip where GPIO shares a group
+        // this moves every source on that group, not just this pin.
+        let mut config = Config::default();
+        config.interrupts = InterruptPolicy::Prioritise(Priority::P2);
+
+        let p = embassy_mspm0::init(config);
 
         let mut led = Output::new(p.PA0, Level::Low);
         // LED1 is active low.
         led.set_high();
 
         let button = Input::new_async(p.PA14, Pull::Up, Irqs);
-
-        // The edge reaches the CPU on GROUP1's NVIC line, which nothing has given a priority, so it
-        // would preempt `on_pend` as well as the tasks. Put it level with the task it wakes. On a
-        // chip where GPIO shares a group this moves every source on that group, not just this pin.
-        interrupt::typelevel::GROUP1::set_priority(Priority::P2);
 
         watch::spawn(button, led).map_err(|_| ()).unwrap();
         report::spawn().map_err(|_| ()).unwrap();

@@ -268,4 +268,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: a transmit drain waits on the transmit FIFO on every device, so a transmitter with no receive pin no longer waits forever on a flag that a reception also sets
 - feat: mspm0: `bind_interrupts!` and `bind_group_interrupts!` take `unsafe struct` to bind handlers without emitting a vector-table entry, so a scheduler that owns the vector — RTIC's `#[task(binds = ...)]` — can drive the async drivers
 - feat: mspm0: `idle` sleeps once under a caller's critical section, picking the deepest permitted mode with `low-power` and a prefetch-guarded `WFI` without, so a scheduler with no idle of its own does not have to reach for `unsafe`
+- feat: mspm0: `Config::interrupts` says whether `init` enables the interrupt-group lines and at what priority, so an application whose scheduler owns the NVIC can keep them, and one that wants them prioritised no longer has a window where an edge is taken at the reset priority
 - feat: mspm0: `interrupt_group::ack` clears a group's latched source without dispatching it, for a handler that services the group's sources itself

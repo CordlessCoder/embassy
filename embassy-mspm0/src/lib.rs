@@ -527,6 +527,42 @@ pub struct Config {
     #[cfg(all(feature = "low-power", feature = "_time-driver"))]
     pub min_sleep: embassy_time::Duration,
 
+    /// Which interrupt lines [`init`] enables, and at what priority.
+    ///
+    /// Covers the interrupt groups and the dedicated GPIO line — the ones no driver owns, so nothing
+    /// else would enable them. A driver with an NVIC line of its own enables it when constructed and
+    /// is not affected.
+    pub interrupts: InterruptPolicy,
+}
+
+/// Which interrupt lines [`init`] enables on the application's behalf.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
+pub enum InterruptPolicy {
+    /// Enable every interrupt group, and the dedicated GPIO line where the chip has one, leaving the
+    /// priority where reset left it.
+    ///
+    /// Reset leaves it at 0, the highest the NVIC has, so these preempt everything. That is what an
+    /// application with no other scheduler wants and is what this crate has always done.
+    #[default]
+    Enable,
+
+    /// Enable the same lines at `priority`, set inside the critical section that unmasks them.
+    ///
+    /// Setting it afterwards instead leaves a window in which an edge is taken at the reset priority.
+    Prioritise(interrupt::Priority),
+
+    /// Enable nothing, because something else owns the NVIC.
+    ///
+    /// Under [RTIC](https://rtic.rs) this is what `#[task(binds = GROUP1)]` means: its `pre_init` sets
+    /// the priority and unmasks before `#[init]` runs, and enabling the line again here would only put
+    /// back what was deliberately left alone.
+    ///
+    /// **Nothing checks that something else did the work.** A binary that selects this and then binds
+    /// no handler for a group leaves the line masked, so an edge is latched, never delivered, and the
+    /// driver waiting on it waits forever.
+    External,
 }
 
 impl Config {
@@ -548,6 +584,7 @@ impl Config {
             dma_round_robin: false,
             #[cfg(all(feature = "low-power", feature = "_time-driver"))]
             min_sleep: low_power::DEFAULT_MIN_SLEEP,
+            interrupts: InterruptPolicy::Enable,
         }
     }
 }
@@ -596,14 +633,10 @@ pub fn init(config: Config) -> Peripherals {
 
         // Without `rt` there is no handler behind these, so the first edge would reach `DefaultHandler`.
         #[cfg(feature = "rt")]
-        _generated::enable_group_interrupts(cs);
-
-        // Where GPIOA has an NVIC line of its own rather than sharing an interrupt group,
-        // `enable_group_interrupts` does not reach it.
-        #[cfg(all(gpioa_interrupt, feature = "rt"))]
-        unsafe {
-            use crate::_generated::interrupt::typelevel::Interrupt;
-            crate::interrupt::typelevel::GPIOA::enable();
+        match config.interrupts {
+            InterruptPolicy::Enable => enable_hal_interrupts(cs, None),
+            InterruptPolicy::Prioritise(priority) => enable_hal_interrupts(cs, Some(priority)),
+            InterruptPolicy::External => {}
         }
 
         dma::init(cs, config.dma_burst_size, config.dma_round_robin);
@@ -616,6 +649,29 @@ pub fn init(config: Config) -> Peripherals {
 
         peripherals
     })
+}
+
+/// Enable the interrupt lines no driver owns: the groups, and the dedicated GPIO line where the chip
+/// gives one.
+///
+/// `priority` is applied inside the caller's section, ahead of each unmask, so no edge is taken at the
+/// reset priority on the way past.
+#[cfg(feature = "rt")]
+fn enable_hal_interrupts(cs: critical_section::CriticalSection, priority: Option<interrupt::Priority>) {
+    _generated::enable_group_interrupts(cs, priority);
+
+    // Where GPIOA has an NVIC line of its own rather than sharing an interrupt group,
+    // `enable_group_interrupts` does not reach it.
+    #[cfg(gpioa_interrupt)]
+    {
+        use crate::_generated::interrupt::typelevel::Interrupt;
+
+        if let Some(priority) = priority {
+            crate::interrupt::typelevel::GPIOA::set_priority_with_cs(cs, priority);
+        }
+
+        unsafe { crate::interrupt::typelevel::GPIOA::enable() };
+    }
 }
 
 /// Sleep until an interrupt, once.
