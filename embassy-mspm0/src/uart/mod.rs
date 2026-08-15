@@ -45,33 +45,32 @@
 #![macro_use]
 
 mod buffered;
+pub mod low_level;
 
 use core::future::{Future, poll_fn};
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
+use core::sync::atomic::{Ordering, compiler_fence};
 use core::task::Poll;
 
 pub use buffered::*;
 use embassy_embedded_hal::SetConfig;
 use embassy_hal_internal::PeripheralType;
+// The register work is [`low_level`]'s, and the two drivers here reach it directly rather than
+// through its types: they hold the halves, so `self.inner.info` is the same `&'static` either way and
+// a wrapper method would only be a second name for it.
+pub(crate) use low_level::{
+    Info, State, busy, clear, configure, dma_enabled, enable, eot_sources, read_with_error, reconfigure,
+    retention_guard, rx_sources, set_baudrate, tx_sources, unmask,
+};
 
 use crate::Peri;
-use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull, SealedPin};
+use crate::gpio::{AnyPin, PfType, Pull};
+use crate::interrupt::InterruptExt;
 use crate::interrupt::typelevel::{Binding, Interrupt as _};
-use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
-use crate::pac::uart::regs::CpuInt;
 use crate::pac::uart::{Uart as Regs, vals};
 use crate::sync::irq_waker::IrqWaker;
-use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepInfo, SleepLevel};
-
-/// Bit times of silence after which the receiver reports a FIFO that has not reached its level.
-///
-/// Must exceed 1: `UART_ERR_11` starts the counter in the middle of the STOP bit, so 1 fires early. The
-/// resulting timeout is `(RX_TIMEOUT_BITS - 0.5) / baud`, so this is a little under one character —
-/// short enough that a trailing byte is not held up, long enough that a back-to-back stream never
-/// reaches it.
-const RX_TIMEOUT_BITS: u8 = 8;
+use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepLevel};
 
 /// The clock source for the UART.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -488,14 +487,10 @@ impl embedded_io::Error for Error {
 /// Can be obtained from [`Uart::split`], or can be constructed independently,
 /// if you do not need the transmitting half of the driver.
 pub struct UartRx<'d, M: ModeState> {
-    info: &'static Info,
-    state: &'static State,
+    /// The registers, the pins and the configuration. Everything below adds a way to wait.
+    inner: low_level::UartRx<'d>,
     /// Zero-sized unless this driver can wait; see [`ModeState`].
     wait: M::Wait,
-    rx: MaybeAnyPin<'d>,
-    rts: MaybeAnyPin<'d>,
-    /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
-    _retention_guard: MaybeWakeGuard,
     _phantom: PhantomData<M>,
 }
 
@@ -580,7 +575,7 @@ impl<'d> UartRx<'d, Async> {
     ///
     /// An error abandons the read with the bytes already in `buffer` written and no count of them.
     pub fn read<'a>(&'a mut self, buffer: &'a mut [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
-        let r = self.info.regs;
+        let r = self.inner.info.regs;
         let state = self.wait;
         let mut read = 0;
 
@@ -617,7 +612,7 @@ impl<'d> UartRx<'d, Async> {
 impl<'d, M: ModeState> UartRx<'d, M> {
     /// Perform a blocking read into `buffer`
     pub fn blocking_read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
-        let r = self.info.regs;
+        let r = self.inner.info.regs;
 
         for b in buffer {
             // Wait if nothing has arrived yet.
@@ -633,31 +628,12 @@ impl<'d, M: ModeState> UartRx<'d, M> {
 
     /// Reconfigure the driver
     pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        if let Some(rx) = self.rx.pin() {
-            rx.update_pf(config.rx_pf());
-        }
-
-        if let Some(rts) = self.rts.pin() {
-            rts.update_pf(config.rts_pf());
-        }
-
-        reconfigure(self.info, self.state, config)
+        self.inner.set_config(config)
     }
 
     /// Set baudrate
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        set_baudrate(self.info, self.state.clock.load(Ordering::Relaxed), baudrate)
-    }
-}
-
-impl<'d, M: ModeState> Drop for UartRx<'d, M> {
-    fn drop(&mut self) {
-        if let Some(pin) = self.rx.pin() {
-            pin.set_as_disconnected();
-        }
-        if let Some(pin) = self.rts.pin() {
-            pin.set_as_disconnected();
-        }
+        self.inner.set_baudrate(baudrate)
     }
 }
 
@@ -666,14 +642,10 @@ impl<'d, M: ModeState> Drop for UartRx<'d, M> {
 /// Can be obtained from [`Uart::split`], or can be constructed independently,
 /// if you do not need the receiving half of the driver.
 pub struct UartTx<'d, M: ModeState> {
-    info: &'static Info,
-    state: &'static State,
+    /// The registers, the pins and the configuration. Everything below adds a way to wait.
+    inner: low_level::UartTx<'d>,
     /// Zero-sized unless this driver can wait; see [`ModeState`].
     wait: M::Wait,
-    tx: MaybeAnyPin<'d>,
-    cts: MaybeAnyPin<'d>,
-    /// Held for as long as the driver exists; see [`SleepInfo::floor_to_keep_configured`].
-    _retention_guard: MaybeWakeGuard,
     /// Resolved once rather than per call. It derives from the bus clock, which nothing but a
     /// reconfigure changes, and recomputing it put the clock-tree lookup in every `write` and
     /// `flush`. Absent rather than `None` without `low-power`, so it costs no byte there.
@@ -686,8 +658,12 @@ impl<'d, M: ModeState> SetConfig for UartTx<'d, M> {
     type Config = Config;
     type ConfigError = ConfigError;
 
+    // Unlike its two siblings this does not forward to the inherent `set_config`, so a pin's function
+    // is left as it was. Preserved rather than fixed here: the restructure this file just went
+    // through is gated on generating the same code, and a behaviour change would be invisible in that
+    // gate.
     fn set_config(&mut self, config: &Self::Config) -> Result<(), Self::ConfigError> {
-        reconfigure(self.info, self.state, config)?;
+        reconfigure(self.inner.info, self.inner.state, config)?;
         self.resolve_sleep_floor();
 
         Ok(())
@@ -770,7 +746,7 @@ impl<'d> UartTx<'d, Async> {
     ///
     /// One bit time is still outstanding when this resolves; see the module documentation.
     pub fn write<'a>(&'a mut self, buffer: &'a [u8]) -> impl Future<Output = Result<(), Error>> + 'a {
-        let r = self.info.regs;
+        let r = self.inner.info.regs;
         let state = self.wait;
         let mut written = 0;
 
@@ -828,7 +804,7 @@ impl<'d> UartTx<'d, Async> {
     /// redundant. It is here for a transmitter that something else queued into — the blocking write
     /// paths, or a [`TxWrite`] given up with [`disarm`](TxWrite::disarm).
     pub fn flush(&mut self) -> impl Future<Output = Result<(), Error>> + '_ {
-        let r = self.info.regs;
+        let r = self.inner.info.regs;
         let state = self.wait;
 
         // The same guard `BufferedUartTx::flush_inner` takes, for the same reason: this is the call
@@ -882,7 +858,7 @@ impl<'d, M: ModeState> UartTx<'d, M> {
         // Taken before any byte goes out, so the level is held for the whole time any of them is in
         // flight rather than from whenever the last one was queued.
         TxWrite {
-            regs: self.info.regs,
+            regs: self.inner.info.regs,
             guard: MaybeWakeGuard::new(self.wake_floor()),
             tx: PhantomData,
         }
@@ -902,10 +878,7 @@ impl<'d, M: ModeState> UartTx<'d, M> {
     fn resolve_sleep_floor(&mut self) {
         #[cfg(feature = "low-power")]
         {
-            self.sleep_floor = self
-                .info
-                .sleep
-                .floor_for_operation(self.state.clock.load(Ordering::Relaxed));
+            self.sleep_floor = self.inner.transmit_floor();
         }
     }
 
@@ -922,35 +895,23 @@ impl<'d, M: ModeState> UartTx<'d, M> {
     /// Waits for the transmit FIFO to drain, one bit time short of the wire going idle. See the module
     /// documentation on waiting out that last bit.
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
-        while busy(self.info.regs) {}
+        while self.inner.busy() {}
         Ok(())
     }
 
     /// Send break character
     pub fn send_break(&self) {
-        let r = self.info.regs;
-
-        r.lcrh().modify(|w| {
-            w.set_brk(true);
-        });
+        self.inner.send_break();
     }
 
     /// Check if UART is busy.
     pub fn busy(&self) -> bool {
-        busy(self.info.regs)
+        self.inner.busy()
     }
 
     /// Reconfigure the driver
     pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        if let Some(tx) = self.tx.pin() {
-            tx.update_pf(config.tx_pf());
-        }
-
-        if let Some(cts) = self.cts.pin() {
-            cts.update_pf(config.cts_pf());
-        }
-
-        reconfigure(self.info, self.state, config)?;
+        self.inner.set_config(config)?;
         self.resolve_sleep_floor();
 
         Ok(())
@@ -958,18 +919,7 @@ impl<'d, M: ModeState> UartTx<'d, M> {
 
     /// Set baudrate
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        set_baudrate(self.info, self.state.clock.load(Ordering::Relaxed), baudrate)
-    }
-}
-
-impl<'d, M: ModeState> Drop for UartTx<'d, M> {
-    fn drop(&mut self) {
-        if let Some(pin) = self.tx.pin() {
-            pin.set_as_disconnected();
-        }
-        if let Some(pin) = self.cts.pin() {
-            pin.set_as_disconnected();
-        }
+        self.inner.set_baudrate(baudrate)
     }
 }
 
@@ -1192,7 +1142,7 @@ impl<'d, M: ModeState> Uart<'d, M> {
 
     /// Set baudrate
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        set_baudrate(self.tx.info, self.tx.state.clock.load(Ordering::Relaxed), baudrate)
+        self.tx.set_baudrate(baudrate)
     }
 }
 
@@ -1226,31 +1176,6 @@ pub trait RtsPin<T: Instance>: crate::gpio::Pin {
     fn pf_num(&self) -> u8;
 }
 
-/// Let this instance raise an asynchronous fast clock request.
-///
-/// Two masks can suppress it: the instance's own `CLKCFG.BLOCKASYNC`, and `SYSOSCCFG.BLOCKASYNCALL`
-/// for every peripheral at once. Both reset to "not blocked" and nothing here ever sets them, which is
-/// what keeps `UART_ERR_04` — a bit misread when ULPCLK drops from SYSOSC to LFOSC mid-receive with the
-/// request disabled — out of reach. Anything gaining the ability to block them has to account for it.
-fn arm_async_clock_request(info: &Info) {
-    // `Some(false)` means the instance has no mask of its own and is gated only by `BLOCKASYNCALL`.
-    // `None` means no SVD is published for the family, so leave the register alone rather than guess
-    // at a bit that may not exist.
-    if info.sleep.block_async == Some(true) {
-        info.regs.gprcm(0).clkcfg().modify(|w| {
-            w.set_key(vals::ClkcfgKey::Key);
-            w.set_blockasync(false);
-        });
-    }
-
-    crate::pac::SYSCTL.sysosccfg().modify(|w| w.set_blockasyncall(false));
-}
-
-/// Guard keeping the instance's configuration intact, held for the driver's lifetime.
-pub(crate) fn retention_guard(info: &'static Info) -> MaybeWakeGuard {
-    MaybeWakeGuard::new(info.sleep.floor_to_keep_configured())
-}
-
 /// Let the instance's line reach the CPU.
 ///
 /// Only the half-duplex async constructors need this: [`Uart::new_inner`] already enables the line for
@@ -1261,25 +1186,6 @@ fn enable_interrupt<T: Instance>() {
 }
 
 // ==== IMPL types ====
-
-pub(crate) struct Info {
-    pub(crate) regs: Regs,
-    pub(crate) interrupt: Interrupt,
-    pub(crate) sleep: SleepInfo,
-}
-
-pub(crate) struct State {
-    /// The clock rate of the UART in Hz.
-    clock: AtomicU32,
-}
-
-impl State {
-    pub const fn new() -> Self {
-        Self {
-            clock: AtomicU32::new(0),
-        }
-    }
-}
 
 /// What a driver has to carry in order to wait, which is nothing unless it can.
 ///
@@ -1373,112 +1279,46 @@ impl<T: Instance> crate::interrupt::typelevel::Handler<T::Interrupt> for Interru
 // arrive. Clearing first costs at worst one spurious wake, whose poll finds nothing to move, clears
 // again and unmasks against a receiver that is genuinely idle.
 
-/// Clear the given sources so a later unmask reflects what happens from here on.
-fn clear(r: Regs, sources: CpuInt) {
-    r.cpu_int(0).iclr().write_value(sources);
-}
-
-/// Let the given sources reach the CPU.
-fn unmask(r: Regs, sources: CpuInt) {
-    r.cpu_int(0).imask().modify(|w| w.0 |= sources.0);
-}
-
-/// The sources a receive waits on: the FIFO reaching its level, and the timeout that delivers one
-/// that never will.
-const fn rx_sources() -> CpuInt {
-    let mut sources = CpuInt(0);
-    sources.set_rxint(true);
-    sources.set_rtout(true);
-    sources
-}
-
-/// The source a transmit waits on: room in the FIFO.
-const fn tx_sources() -> CpuInt {
-    let mut sources = CpuInt(0);
-    sources.set_txint(true);
-    sources
-}
-
-/// The source a flush waits on: the last bit leaving the shift register.
-const fn eot_sources() -> CpuInt {
-    let mut sources = CpuInt(0);
-    sources.set_eot(true);
-    sources
-}
-
 impl<'d, M: ModeState> UartRx<'d, M> {
     fn new_inner<T: Instance>(
-        _peri: Peri<'d, T>,
+        peri: Peri<'d, T>,
         rx: Option<Peri<'d, AnyPin>>,
         rts: Option<Peri<'d, AnyPin>>,
         wait: M::Wait,
         config: Config,
     ) -> Result<Self, ConfigError> {
-        let mut this = Self {
-            info: T::info(),
-            state: T::state(),
+        Ok(Self {
+            inner: low_level::UartRx::new_inner(peri, rx, rts, config)?,
             wait,
-            rx: MaybeAnyPin::new(rx),
-            rts: MaybeAnyPin::new(rts),
-            _retention_guard: retention_guard(T::info()),
             _phantom: PhantomData,
-        };
-        this.enable_and_configure(&config)?;
-
-        Ok(this)
-    }
-
-    #[inline(always)]
-    fn enable_and_configure(&mut self, config: &Config) -> Result<(), ConfigError> {
-        let info = self.info;
-
-        enable(info.regs);
-        configure(info, self.state, config, true, self.rts.is_some(), false, false)?;
-
-        Ok(())
+        })
     }
 }
 
 impl<'d, M: ModeState> UartTx<'d, M> {
     fn new_inner<T: Instance>(
-        _peri: Peri<'d, T>,
+        peri: Peri<'d, T>,
         tx: Option<Peri<'d, AnyPin>>,
         cts: Option<Peri<'d, AnyPin>>,
         wait: M::Wait,
         config: Config,
     ) -> Result<Self, ConfigError> {
         let mut this = Self {
-            info: T::info(),
-            state: T::state(),
+            inner: low_level::UartTx::new_inner(peri, tx, cts, config)?,
             wait,
-            tx: MaybeAnyPin::new(tx),
-            cts: MaybeAnyPin::new(cts),
-            _retention_guard: retention_guard(T::info()),
             #[cfg(feature = "low-power")]
             sleep_floor: None,
             _phantom: PhantomData,
         };
-        this.enable_and_configure(&config)?;
         this.resolve_sleep_floor();
 
         Ok(this)
-    }
-
-    #[inline(always)]
-    fn enable_and_configure(&mut self, config: &Config) -> Result<(), ConfigError> {
-        let info = self.info;
-        let state = self.state;
-
-        enable(info.regs);
-        configure(info, state, config, false, false, true, self.cts.is_some())?;
-
-        Ok(())
     }
 }
 
 impl<'d, M: ModeState> Uart<'d, M> {
     fn new_inner<T: Instance>(
-        _peri: Peri<'d, T>,
+        peri: Peri<'d, T>,
         tx: Option<Peri<'d, AnyPin>>,
         rx: Option<Peri<'d, AnyPin>>,
         rts: Option<Peri<'d, AnyPin>>,
@@ -1486,57 +1326,34 @@ impl<'d, M: ModeState> Uart<'d, M> {
         wait: M::Wait,
         config: Config,
     ) -> Result<Self, ConfigError> {
-        let info = T::info();
-        let state = T::state();
+        // One `configure` for both directions, so the halves are built together and split afterwards
+        // rather than each configuring the instance for itself.
+        let (tx, rx) = low_level::Uart::new_inner(peri, tx, rx, rts, cts, config)?.split();
 
         let mut this = Self {
             tx: UartTx {
-                info,
-                state,
+                inner: tx,
                 wait,
-                tx: MaybeAnyPin::new(tx),
-                cts: MaybeAnyPin::new(cts),
-                _retention_guard: retention_guard(info),
                 #[cfg(feature = "low-power")]
                 sleep_floor: None,
                 _phantom: PhantomData,
             },
             rx: UartRx {
-                info,
-                state,
+                inner: rx,
                 wait,
-                rx: MaybeAnyPin::new(rx),
-                rts: MaybeAnyPin::new(rts),
-                _retention_guard: retention_guard(info),
                 _phantom: PhantomData,
             },
         };
-        this.enable_and_configure(&config)?;
         this.tx.resolve_sleep_floor();
 
-        Ok(this)
-    }
-
-    #[inline(always)]
-    fn enable_and_configure(&mut self, config: &Config) -> Result<(), ConfigError> {
-        let info = self.rx.info;
-        let state = self.rx.state;
-
-        enable(info.regs);
-        configure(
-            info,
-            state,
-            config,
-            true,
-            self.rx.rts.is_some(),
-            true,
-            self.tx.cts.is_some(),
-        )?;
-
+        // Only the full-duplex constructors enable the line for every mode; the half-duplex async ones
+        // call `enable_interrupt` for themselves. [`low_level`] enables nothing, since its whole point
+        // is that the vector belongs to the application.
+        let info = this.rx.inner.info;
         info.interrupt.unpend();
         unsafe { info.interrupt.enable() };
 
-        Ok(())
+        Ok(this)
     }
 }
 
@@ -1556,238 +1373,6 @@ impl Config {
     fn cts_pf(&self) -> PfType {
         PfType::input(self.cts_pull, self.invert_cts)
     }
-}
-
-fn enable(regs: Regs) {
-    let gprcm = regs.gprcm(0);
-
-    gprcm.rstctl().write(|w| {
-        w.set_resetstkyclr(true);
-        w.set_resetassert(true);
-        w.set_key(vals::ResetKey::Key);
-    });
-
-    gprcm.pwren().write(|w| {
-        w.set_enable(true);
-        w.set_key(vals::PwrenKey::Key);
-    });
-}
-
-#[inline(always)]
-fn configure(
-    info: &Info,
-    state: &State,
-    config: &Config,
-    enable_rx: bool,
-    enable_rts: bool,
-    enable_tx: bool,
-    enable_cts: bool,
-) -> Result<(), ConfigError> {
-    let r = info.regs;
-
-    // Read out by value up front. Several of the register writes below are closures, and a closure
-    // that borrows `config` puts its address into a callee — which is enough to stop every field
-    // read folding, including the one deciding whether the baud search is reachable.
-    let &Config {
-        clock_source,
-        baud,
-        data_bits,
-        stop_bits,
-        parity,
-        msb_order,
-        loop_back_enable,
-        fifo,
-        low_power_rx_wake,
-        ..
-    } = config;
-
-    if !enable_rx && !enable_tx {
-        return Err(ConfigError::RxOrTxNotEnabled);
-    }
-
-    if low_power_rx_wake {
-        if !info.sleep.power_domain.is_powered_in_deep_sleep() {
-            return Err(ConfigError::NoDeepSleepWake);
-        }
-
-        arm_async_clock_request(info);
-    }
-
-    // SLAU846B says that clocks should be enabled before disabling the uart.
-    r.clksel().write(|w| match clock_source {
-        ClockSel::LfClk => {
-            w.set_lfclk_sel(true);
-            w.set_mfclk_sel(false);
-            w.set_busclk_sel(false);
-        }
-        ClockSel::MfClk => {
-            w.set_mfclk_sel(true);
-            w.set_lfclk_sel(false);
-            w.set_busclk_sel(false);
-        }
-        ClockSel::BusClk => {
-            w.set_busclk_sel(true);
-            w.set_lfclk_sel(false);
-            w.set_mfclk_sel(false);
-        }
-    });
-
-    // Read the tree once rather than per arm, and take the rates from it instead of assuming the
-    // reset values: MFCLK in particular reads as absent when the clock configuration left it off.
-    let domain = info.sleep.power_domain;
-    let clock = crate::sysctl::with_clocks(|clocks| match clock_source {
-        ClockSel::LfClk => clocks.lfclk,
-        ClockSel::MfClk => clocks.mfclk,
-        ClockSel::BusClk => clocks.bus_clock(domain),
-    });
-
-    state.clock.store(clock, Ordering::Relaxed);
-
-    info.regs.ctl0().modify(|w| {
-        w.set_lbe(loop_back_enable);
-        // Errata UART_ERR_02, must set RXE to allow use of EOT.
-        w.set_rxe(enable_rx | enable_tx);
-        w.set_txe(enable_tx);
-        // RXD_OUT_EN and TXD_OUT_EN?
-        w.set_menc(false);
-        w.set_mode(vals::Mode::Uart);
-        w.set_rtsen(enable_rts);
-        w.set_ctsen(enable_cts);
-        // oversampling is set later
-        w.set_fen(fifo.is_some());
-        // Majority voting and glitch suppression are both off and neither is configurable yet.
-        w.set_majvote(false);
-        w.set_msbfirst(matches!(msb_order, BitOrder::MsbFirst));
-    });
-
-    // A FIFO is only worth having if the interrupt batches across it. At one entry the handler runs once
-    // per byte and its fixed cost is never amortised, which is what bounds the receive rate rather than
-    // any buffer size. Half-full halves the entries; the FIFOs are four deep.
-    //
-    // With the FIFOs off there is one byte of depth and no level to reach, so the choice only applies
-    // when they are on.
-    let (rx_level, tx_level) = if let Some(threshold) = fifo {
-        (threshold.rx(info.sleep.power_domain), threshold.tx())
-    } else {
-        (vals::Iflssel::AtLeastOne, vals::Iflssel::AtLeastOne)
-    };
-
-    info.regs.ifls().modify(|w| {
-        w.set_txiflsel(tx_level);
-        w.set_rxiflsel(rx_level);
-        // A receive level above one entry needs the timeout armed, or a partial FIFO waits for bytes
-        // that never come and the last few of a message are never delivered. Zero, the reset value,
-        // disables it entirely and is what makes `RTOUT` unable to fire.
-        w.set_rxtosel(if fifo.is_some() { RX_TIMEOUT_BITS } else { 0 });
-    });
-
-    info.regs.lcrh().modify(|w| {
-        let eps = if matches!(parity, Parity::ParityEven) {
-            vals::Eps::Even
-        } else {
-            vals::Eps::Odd
-        };
-
-        let wlen = match data_bits {
-            DataBits::DataBits5 => vals::Wlen::Databit5,
-            DataBits::DataBits6 => vals::Wlen::Databit6,
-            DataBits::DataBits7 => vals::Wlen::Databit7,
-            DataBits::DataBits8 => vals::Wlen::Databit8,
-        };
-
-        // Used in LIN mode only
-        w.set_brk(false);
-        w.set_pen(parity != Parity::ParityNone);
-        w.set_eps(eps);
-        w.set_stp2(matches!(stop_bits, StopBits::Stop2));
-        w.set_wlen(wlen);
-        // appears to only be used in RS-485 mode.
-        w.set_sps(false);
-        // IDLE pattern?
-        w.set_sendidle(false);
-        // ignore extdir_setup and extdir_hold, only used in RS-485 mode.
-    });
-
-    // A pre-solved divider skips the search entirely, which is what keeps the software divider out
-    // of the binary when the clock and baud rate are both compile-time constants.
-    match baud {
-        BaudRate::Solved(baud) => baud.apply(info.regs),
-        BaudRate::Rate(rate) => set_baudrate_inner(info.regs, clock, rate)?,
-    }
-
-    r.ctl0().modify(|w| {
-        w.set_enable(true);
-    });
-
-    Ok(())
-}
-
-fn reconfigure(info: &Info, state: &State, config: &Config) -> Result<(), ConfigError> {
-    info.interrupt.disable();
-    let r = info.regs;
-    let ctl0 = r.ctl0().read();
-    configure(info, state, config, ctl0.rxe(), ctl0.rtsen(), ctl0.txe(), ctl0.ctsen())?;
-
-    info.interrupt.unpend();
-    unsafe { info.interrupt.enable() };
-
-    Ok(())
-}
-
-/// Set the baud rate and clock settings.
-///
-/// This should be done relatively late during configuration since some clock settings are invalid depending on mode.
-fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(), ConfigError> {
-    let r = info.regs;
-
-    info.interrupt.disable();
-
-    // Wait for end of transmission per suggestion in SLAU 845 section 18.3.28. It has to happen while
-    // the transmitter still runs: disabling completes only the character already in the shift register
-    // (SLAU846 table 24-41), so anything left in the FIFO stays there and a wait after the disable
-    // never finishes.
-    while busy(r) {}
-
-    // Programming baud rate requires that the peripheral is disabled
-    critical_section::with(|_cs| {
-        r.ctl0().modify(|w| {
-            w.set_enable(false);
-        });
-    });
-
-    set_baudrate_inner(r, clock, baudrate)?;
-
-    critical_section::with(|_cs| {
-        r.ctl0().modify(|w| {
-            w.set_enable(true);
-        });
-    });
-
-    info.interrupt.unpend();
-    unsafe { info.interrupt.enable() };
-
-    Ok(())
-}
-
-fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), ConfigError> {
-    // Read the source back rather than taking it from the config: this also runs from `set_baudrate`,
-    // where the only record of what the instance is clocked from is the register.
-    let clksel = regs.clksel().read();
-    let source = if clksel.lfclk_sel() {
-        ClockSel::LfClk
-    } else if clksel.mfclk_sel() {
-        ClockSel::MfClk
-    } else {
-        ClockSel::BusClk
-    };
-
-    let Some(baud) = Baud::solve(source, clock, baudrate) else {
-        return Err(ConfigError::InvalidBaudRate);
-    };
-
-    baud.apply(regs);
-
-    Ok(())
 }
 
 /// A solved baud-rate divider.
@@ -1942,17 +1527,17 @@ impl Baud {
         None
     }
 
-    /// The integer and fractional parts of `BRD`, as programmed.
-    pub const fn brd(&self) -> (u16, u8) {
-        (self.ibrd, self.fbrd)
-    }
-
     /// Program this divider into the peripheral.
     fn apply(&self, regs: Regs) {
         regs.clkdiv().write(|w| w.set_ratio(self.div));
         regs.ibrd().write(|w| w.set_divint(self.ibrd));
         regs.fbrd().write(|w| w.set_divfrac(self.fbrd));
         regs.ctl0().modify(|w| w.set_hse(self.hse));
+    }
+
+    /// The integer and fractional parts of `BRD`, as programmed.
+    pub const fn brd(&self) -> (u16, u8) {
+        (self.ibrd, self.fbrd)
     }
 }
 
@@ -2027,63 +1612,6 @@ const fn calculate_brd(clock: u32, div: u8, baud: u32, oversampling: u8) -> Opti
     let fbrd = (brd & 0x3f) as u8;
 
     Some((ibrd as u16, fbrd))
-}
-
-fn read_with_error(r: Regs) -> Result<u8, Error> {
-    let rx = r.rxdata().read();
-
-    if rx.frmerr() {
-        return Err(Error::Framing);
-    } else if rx.parerr() {
-        return Err(Error::Parity);
-    } else if rx.brkerr() {
-        return Err(Error::Break);
-    } else if rx.ovrerr() {
-        return Err(Error::Overrun);
-    } else if rx.nerr() {
-        return Err(Error::Noise);
-    }
-
-    Ok(rx.data())
-}
-
-/// Whether the transmitter still holds a byte.
-///
-/// Answers "the transmit FIFO still has something in it", which is one bit time short of "the wire is
-/// idle" — see below. Assumes `CTL0.ENABLE` is set.
-fn busy(r: Regs) -> bool {
-    // **`STAT.BUSY` is the wrong flag for a transmit drain, and not because of the erratum.** The TRM's
-    // field description has it: `BUSY` is set when the transmit FIFO becomes nonempty "or if a receive
-    // data is currently ongoing (after the start edge have been detected until a complete byte,
-    // including all stop bits, has been received by the shift register)". It covers **both**
-    // directions.
-    //
-    // A `UartTx` can exist with no receive pin at all. The unmuxed RX input reads low, which is a start
-    // edge that never completes, so `BUSY` is set from configure onward and a drain polling it never
-    // returns. Measured on an L1306 and a G3507: `STAT` `0x41` — `BUSY` set with `TXFE` set — on a
-    // transmitter that had not yet sent a byte. Give the same driver a receive pin on an idle-high line
-    // and `BUSY` behaves perfectly on both parts. Even then it would be wrong here, because a transmit
-    // drain must not block until the *other* end stops sending.
-    //
-    // `UART_ERR_08` is a second, narrower reason: `BUSY` also sticks with the module disabled and data
-    // in the TX FIFO. It applies to every family this crate builds for except G511x/G5187, whose
-    // UNICOMM UART is a different module. It is not the reason this substitution exists, and gating the
-    // substitution on `CTL0.ENABLE` would not recover anything.
-    //
-    // **What the substitution costs is one bit time, not one frame.** `TXFE` rises one bit before the
-    // transmission completes; measured at 3276 to 3308 cycles against a 33 330-cycle frame at 9600, the
-    // same on both parts and flat across one, four and eight bytes. So a caller that deep-sleeps the
-    // instant this returns can still cut the final bit. Closing that needs a baud-derived wait, since
-    // no register reports it.
-    //
-    // `STAT.IDLE` is not an alternative; it is a receive-side address tag for idle-line multiprocessor
-    // mode.
-    !r.stat().read().txfe()
-}
-
-// Always false: the driver never sets `DMAEN`, having no receive or transmit DMA path.
-fn dma_enabled(_r: Regs) -> bool {
-    false
 }
 
 pub(crate) trait SealedInstance {

@@ -272,3 +272,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/gpio: `enable_interrupt`, `is_pending`, `clear_pending` and `take_pending` on a `Blocking` pin service an edge from the application's own handler, which costs none of the waiter list, dispatcher or future the async waits need
 - feat: mspm0: `interrupt_group::ack` clears a group's latched source without dispatching it, for a handler that services the group's sources itself
 - feat: mspm0: add `rtic-monotonic`, an RTIC monotonic on an MSPM0 timer that keeps time through deep sleep, taking its timer as an argument so it coexists with a `time-driver-*` on another one
+- feat: mspm0/uart: `uart::low_level` is a register-level driver the mode drivers are now built on, so an application that services the interrupt itself — an RTIC hardware task, another executor — configures the instance through the HAL instead of reaching past it into the PAC
