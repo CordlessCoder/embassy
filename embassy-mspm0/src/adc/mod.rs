@@ -2,19 +2,21 @@
 
 #![macro_use]
 
+pub mod low_level;
+
 use core::future::poll_fn;
-use core::hint::unreachable_unchecked;
 use core::marker::PhantomData;
 use core::num::NonZeroU16;
 use core::task::Poll;
 
 use embassy_hal_internal::PeripheralType;
+use low_level::{ADC_CLK_MAX_HZ, ADC_CLK_MIN_HZ, clock_range, sample_clock_div};
 
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::adc::{Adc as Regs, regs, vals};
 use crate::sync::irq_waker::IrqWaker;
-use crate::sysctl::{SleepLevel, WakeGuard};
+use crate::sysctl::WakeGuard;
 use crate::{Peri, interrupt};
 
 /// Maximum length allowed for [`Adc::irq_read_sequence`].
@@ -27,15 +29,13 @@ pub struct InterruptHandler<T: Instance> {
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
-        let r = T::info().regs;
         let state = T::state();
-
-        let mis = r.cpu_int(0).mis().read().0;
+        let mis = low_level::masked_status::<T>().0 & low_level::RESULT_SOURCES.0;
 
         // Check if any MEMRES bits were set. irq reads will enable the IRQ for the last channel in use.
-        if mis >> 8 != 0 {
+        if mis != 0 {
             // Clear the MEMRES interrupt bits.
-            r.cpu_int(0).iclr().write_value(regs::CpuInt(mis & 0xFFFF_FF00));
+            low_level::clear::<T>(regs::CpuInt(mis));
             state.waker.wake();
         }
     }
@@ -68,17 +68,6 @@ pub enum SampleClock {
     /// [`sysctl::clock::Config::with_hfclk`]: crate::sysctl::clock::Config::with_hfclk
     #[cfg(mspm0_hfxt)]
     Hfclk,
-}
-
-impl SampleClock {
-    const fn to_sampclk(self) -> vals::Sampclk {
-        match self {
-            Self::Ulpclk => vals::Sampclk::Ulpclk,
-            Self::Sysosc => vals::Sampclk::Sysosc,
-            #[cfg(mspm0_hfxt)]
-            Self::Hfclk => vals::Sampclk::Hfclk,
-        }
-    }
 }
 
 /// How the sample clock reaches the hardware.
@@ -246,28 +235,6 @@ pub enum Vrsel {
     IntrefVrefm,
 }
 
-impl Vrsel {
-    /// The `MEMCTL.VRSEL` encoding.
-    ///
-    /// A match rather than a cast: the discriminants used to be written out and read back with
-    /// `as u8`, which made the `repr` load-bearing from a register write several hundred lines away.
-    ///
-    /// The two negative-reference selections exist only where `MEMCTL.VRSEL` is five wide, which is
-    /// the same condition `adc_neg_vref` is generated from — so every variant that compiles is one
-    /// this device has, and there is nothing left to check at run time.
-    const fn to_vals(self) -> vals::Vrsel {
-        match self {
-            Self::VddaVssa => vals::Vrsel::VddaVssa,
-            Self::ExtrefVrefm => vals::Vrsel::ExtrefVrefm,
-            Self::IntrefVssa => vals::Vrsel::IntrefVssa,
-            #[cfg(adc_neg_vref)]
-            Self::VddaVrefm => vals::Vrsel::VddaVrefm,
-            #[cfg(adc_neg_vref)]
-            Self::IntrefVrefm => vals::Vrsel::IntrefVrefm,
-        }
-    }
-}
-
 /// How many conversions the hardware averages into one result.
 ///
 /// Each setting divides by what it accumulated, so the result stays on the same scale as an
@@ -290,21 +257,6 @@ pub enum Averaging {
     X64,
     /// Average 128 conversions.
     X128,
-}
-
-impl Averaging {
-    /// The accumulate count and the matching right shift (SLAU846 table 18-1).
-    const fn to_regs(self) -> (vals::Avgn, u8) {
-        match self {
-            Self::X2 => (vals::Avgn::Avg2, 1),
-            Self::X4 => (vals::Avgn::Avg4, 2),
-            Self::X8 => (vals::Avgn::Avg8, 3),
-            Self::X16 => (vals::Avgn::Avg16, 4),
-            Self::X32 => (vals::Avgn::Avg32, 5),
-            Self::X64 => (vals::Avgn::Avg64, 6),
-            Self::X128 => (vals::Avgn::Avg128, 7),
-        }
-    }
 }
 
 /// Sample conversion parameters.
@@ -452,15 +404,8 @@ impl Default for Config {
 /// lost at every instance count a part reaches. [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm)
 /// carries the figures and what did pay.
 pub struct Adc<'d, T: Instance, M: Mode> {
-    #[allow(unused)]
-    adc: crate::Peri<'d, T>,
-    /// Shallowest sleep to block while a conversion runs, or [`None`] if none needs blocking.
-    ///
-    /// The answer rather than the rate it was worked out from. Both inputs are known when the driver
-    /// is built and the arithmetic is `const`, so keeping the rate would mean storing four bytes to
-    /// redo a calculation per conversion instead of one byte to skip it.
-    #[allow(unused)]
-    sleep_floor: Option<SleepLevel>,
+    /// The registers, the clock selection and the sleep floor. Everything here adds a way to wait.
+    inner: low_level::Adc<'d, T>,
     _mode: PhantomData<M>,
 }
 
@@ -468,8 +413,7 @@ impl<'d, T: Instance> Adc<'d, T, Blocking> {
     /// Create a blocking ADC driver.
     pub fn new_blocking(peri: Peri<'d, T>, config: Config) -> Self {
         Adc {
-            adc: peri,
-            sleep_floor: Self::setup(config),
+            inner: low_level::Adc::new(peri, config),
             _mode: PhantomData,
         }
     }
@@ -478,57 +422,35 @@ impl<'d, T: Instance> Adc<'d, T, Blocking> {
 impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
     /// Read an ADC pin.
     pub fn blocking_read<'a>(&mut self, channel: impl BorrowedChannel<'a, T>, conversion: Conversion) -> u16 {
-        let r = T::info().regs;
-        let channel = channel.reborrow_adc();
-
         // A sampling future dropped half way through leaves a conversion running.
-        while r.ctl0().read().enc() {}
+        while low_level::is_converting::<T>() {}
 
-        Self::setup_one(channel.get_hw_channel(), conversion);
-
-        r.ctl0().modify(|w| {
-            w.set_enc(true);
-        });
-
-        r.ctl1().modify(|w| {
-            w.set_sc(true);
-        });
+        low_level::setup_one::<T>(channel.reborrow_adc().get_hw_channel(), conversion);
+        low_level::start::<T>();
 
         // Wait for conversion
-        while r.ctl0().read().enc() {}
-        r.memres(0).read().data()
+        while low_level::is_converting::<T>() {}
+        low_level::result::<T>(0)
     }
 
     pub fn resolution(&self) -> Resolution {
-        let r = T::info().regs;
-        let ctl2 = r.ctl2().read();
-        from_res(ctl2.res())
+        self.inner.resolution()
     }
 
     pub fn set_resolution(&mut self, resolution: Resolution) {
-        let r = T::info().regs;
-
-        r.ctl2().modify(|w| {
-            w.set_res(to_res(resolution));
-        });
+        self.inner.set_resolution(resolution);
     }
 
     /// Set one comparator's sample period, in ADC sample clock cycles.
     ///
     /// Panics if `period` is above [`Config::MAX_SAMPLE_PERIOD`].
     pub fn set_sample_period(&mut self, comparator: SampleTimeComparator, period: NonZeroU16) {
-        assert!(period <= Config::MAX_SAMPLE_PERIOD);
-        let r = T::info().regs;
-
-        r.scomp(comparator.index()).write(|w| {
-            w.set_val(period.get());
-        });
+        self.inner.set_sample_period(comparator, period);
     }
 
     /// One comparator's sample period, in ADC sample clock cycles.
     pub fn sample_period(&self, comparator: SampleTimeComparator) -> u16 {
-        let r = T::info().regs;
-        r.scomp(comparator.index()).read().val()
+        self.inner.sample_period(comparator)
     }
 }
 
@@ -538,11 +460,11 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
-        let sleep_floor = Self::setup(config);
+        let inner = low_level::Adc::new(peri, config);
         unsafe { T::info().interrupt.enable() };
+
         Self {
-            adc: peri,
-            sleep_floor,
+            inner,
             _mode: PhantomData,
         }
     }
@@ -553,34 +475,24 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         // clock was always SYSOSC and MCLK always ran from it, but a configured tree can now put
         // HFCLK far above an LFCLK-sourced MCLK — where the MCLK answer would allow a sleep deep
         // enough to stop the clock the conversion is running on.
-        self.sleep_floor.map(WakeGuard::new)
+        self.inner.conversion_floor().map(WakeGuard::new)
     }
 
     /// Read an ADC pin asynchronously using the irq handler.
     pub async fn irq_read<'a>(&mut self, channel: impl BorrowedChannel<'a, T>, conversion: Conversion) -> u16 {
         let _guard = self.conversion_guard();
-        let r = T::info().regs;
         let channel = channel.reborrow_adc();
 
         // Wait until ADC is not converting to start - an active conversion might've been cancelled.
         Self::wait_for_conversion().await;
-        Self::setup_one(channel.get_hw_channel(), conversion);
+        low_level::setup_one::<T>(channel.get_hw_channel(), conversion);
 
-        // Write is used to zero the other MEMRES interrupt bits.
-        r.cpu_int(0).imask().write(|w| {
-            w.set_memresifg(0, true);
-        });
-
-        r.ctl0().modify(|w| {
-            w.set_enc(true);
-        });
-
-        r.ctl1().modify(|w| {
-            w.set_sc(true);
-        });
+        // Armed alone, so nothing else in the mask is left over to wake this.
+        low_level::arm_only::<T>(low_level::Event::Result(0));
+        low_level::start::<T>();
 
         Self::wait_for_conversion().await;
-        r.memres(0).read().data()
+        low_level::result::<T>(0)
     }
 
     /// Read one or multiple ADC regular channels using the irq handler.
@@ -604,30 +516,18 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
 
         let _guard = self.conversion_guard();
         let sequence_len = sequence.len();
-        let r = T::info().regs;
 
         Self::wait_for_conversion().await;
-        Self::setup_sequence(sequence.map(|(ch, conv)| (ch.get_hw_channel(), conv)));
+        low_level::setup_sequence::<T>(sequence.map(|(ch, conv)| (ch.get_hw_channel(), conv)));
 
-        // Only wake up when the last bit is set.
-        //
-        // Write is used to zero the other MEMRES interrupt bits.
-        r.cpu_int(0).imask().write(|w| {
-            w.set_memresifg(sequence_len - 1, true);
-        });
-
-        r.ctl0().modify(|w| {
-            w.set_enc(true);
-        });
-
-        r.ctl1().modify(|w| {
-            w.set_sc(true);
-        });
+        // Only the last result wakes this; the earlier ones set their flags as they land.
+        low_level::arm_only::<T>(low_level::Event::Result(sequence_len as u8 - 1));
+        low_level::start::<T>();
 
         Self::wait_for_conversion().await;
 
         for (i, reading) in readings.iter_mut().enumerate() {
-            *reading = r.memres(i).read().data();
+            *reading = low_level::result::<T>(i);
         }
     }
 
@@ -902,135 +802,6 @@ const ADC_MEMCTL: u8 = crate::_generated::ADC_MEMCTL;
 const _: () = core::assert!(ADC_VRSEL == if cfg!(adc_neg_vref) { 5 } else { 3 });
 
 impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
-    /// Program the peripheral, and return the shallowest sleep a conversion on it can tolerate.
-    ///
-    /// Resolved here rather than kept as a rate: `floor_for_operation` is `const` and both its
-    /// inputs are known by the end of this function, so the driver stores the answer.
-    fn setup(config: Config) -> Option<SleepLevel> {
-        assert!(config.sample_period_0 <= Config::MAX_SAMPLE_PERIOD);
-        assert!(config.sample_period_1 <= Config::MAX_SAMPLE_PERIOD);
-
-        let r = T::info().regs;
-        let (source, adcclk_hz, sclkdiv, frange) = adc_clock_regs(config.sample_clk);
-
-        r.gprcm(0).rstctl().write(|w| {
-            w.set_resetstkyclr(true);
-            w.set_resetassert(true);
-            w.set_key(vals::ResetKey::Key);
-        });
-
-        r.gprcm(0).pwren().modify(|reg| {
-            reg.set_enable(true);
-            reg.set_key(vals::PwrenKey::Key);
-        });
-
-        // Wait for power up
-        cortex_m::asm::delay(16);
-
-        r.gprcm(0).clkcfg().write(|w| {
-            w.set_key(vals::ClkcfgKey::Key);
-            w.set_sampclk(source.to_sampclk());
-        });
-
-        r.ctl0().write(|w| {
-            w.set_enc(false);
-            // TODO: power down config
-            w.set_pwrdn(vals::Pwrdn::Manual);
-            w.set_sclkdiv(sclkdiv);
-        });
-
-        r.clkfreq().write(|w| {
-            w.set_frange(frange);
-        });
-
-        r.ctl1().write(|w| {
-            w.set_trigsrc(vals::Trigsrc::Software);
-            // Configured, not converting; a read starts it.
-            w.set_sc(false);
-            w.set_conseq(vals::Conseq::Sequence);
-            w.set_sampmode(vals::Sampmode::Auto);
-
-            // One rate for the peripheral; `Conversion::average` picks which conversions use it.
-            let (avgn, avgd) = match config.averaging {
-                Some(averaging) => averaging.to_regs(),
-                None => (vals::Avgn::Disable, 0),
-            };
-            w.set_avgn(avgn);
-            w.set_avgd(avgd);
-        });
-
-        r.ctl2().write(|w| {
-            // Binary unsigned
-            w.set_df(false);
-            w.set_res(to_res(config.resolution));
-            w.set_rstsampcapen(false);
-            w.set_dmaen(false);
-            w.set_fifoen(false);
-            w.set_sampcnt(0);
-            w.set_startadd(0);
-            w.set_endadd(0);
-        });
-
-        r.scomp(SampleTimeComparator::Scomp0.index()).write(|w| {
-            w.set_val(config.sample_period_0.get());
-        });
-
-        r.scomp(SampleTimeComparator::Scomp1.index()).write(|w| {
-            w.set_val(config.sample_period_1.get());
-        });
-
-        <T as crate::sysctl::LowPowerInstance>::SLEEP.floor_for_operation(adcclk_hz)
-    }
-
-    /// Program one `MEMCTL` entry.
-    fn write_memctl(i: usize, ch: u8, conversion: Conversion) {
-        let r = T::info().regs;
-
-        // Read back rather than kept on the driver: the rate lives in `CTL1` from `Config`, and a
-        // copy here could disagree with what is actually programmed.
-        assert!(
-            !conversion.average || r.ctl1().read().avgn() != vals::Avgn::Disable,
-            "Conversion::average needs Config::averaging set"
-        );
-
-        r.memctl(i).write(|w| {
-            w.set_chansel(ch);
-            w.set_vrsel(conversion.vrsel.to_vals());
-            w.set_stime(convert_stime(conversion.stime));
-            w.set_avgen(conversion.average);
-            w.set_bcsen(false);
-            w.set_trig(vals::Trig::AutoNext);
-            w.set_wincomp(false);
-        });
-    }
-
-    /// Set the conversion window to `MEMCTL[0..=last]`.
-    fn set_window(last: usize) {
-        T::info().regs.ctl2().modify(|w| {
-            w.set_startadd(0);
-            w.set_endadd(last as u8);
-        });
-    }
-
-    /// A sequence of one, without building an iterator for it.
-    ///
-    /// Single-channel reads are the common case. Going through `setup_sequence` left a one-element
-    /// loop whose iterator stopped being inlined once a second instance gave it a second call site.
-    fn setup_one(ch: u8, conversion: Conversion) {
-        Self::write_memctl(0, ch, conversion);
-        Self::set_window(0);
-    }
-
-    fn setup_sequence(sequence: impl ExactSizeIterator<Item = (u8, Conversion)>) {
-        let len = sequence.len();
-
-        for (i, (ch, conversion)) in sequence.enumerate() {
-            Self::write_memctl(i, ch, conversion);
-        }
-
-        Self::set_window(len - 1);
-    }
-
     /// Return `impl Future` to reduce async state machine size.
     ///
     /// Parks on the conversion interrupt rather than polling for it. The caller arms the interrupt for
@@ -1039,13 +810,11 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
     /// conversion a cancelled read left running, whose interrupt is still armed.
     #[inline]
     fn wait_for_conversion() -> impl Future<Output = ()> {
-        let r = T::info().regs;
-
         poll_fn(move |cx| {
             // Registered before the test, so a conversion that finishes in between still wakes this.
             T::state().waker.register(cx.waker());
 
-            if r.ctl0().read().enc() {
+            if low_level::is_converting::<T>() {
                 Poll::Pending
             } else {
                 Poll::Ready(())
@@ -1088,187 +857,6 @@ pub(crate) trait SealedAdcChannel<T> {
 trait SealedBorrowedChannel<'a, T> {
     fn reborrow_adc(self) -> BorrowedAdcChannel<'a, T>;
 }
-
-const fn to_res(resolution: Resolution) -> vals::Res {
-    match resolution {
-        Resolution::Bits12 => vals::Res::Bit12,
-        Resolution::Bits10 => vals::Res::Bit10,
-        Resolution::Bits8 => vals::Res::Bit8,
-    }
-}
-
-const fn from_res(res: vals::Res) -> Resolution {
-    match res {
-        vals::Res::Bit12 => Resolution::Bits12,
-        vals::Res::Bit10 => Resolution::Bits10,
-        vals::Res::Bit8 => Resolution::Bits8,
-        // SAFETY: The HAL will never program an invalid value.
-        vals::Res::_RESERVED_3 => unsafe { unreachable_unchecked() },
-    }
-}
-
-const fn convert_stime(stime: SampleTimeComparator) -> vals::Stime {
-    match stime {
-        SampleTimeComparator::Scomp0 => vals::Stime::SelScomp0,
-        SampleTimeComparator::Scomp1 => vals::Stime::SelScomp1,
-    }
-}
-
-/// What ADCCLK runs at with `source` selected as the sample clock.
-///
-/// # Panics
-/// If the source is outside `fADCCLK`. Selecting [`SampleClock::Hfclk`] without configuring HFCLK
-/// reads as stopped and lands here, as does [`SampleClock::Ulpclk`] under an LFCLK-sourced MCLK.
-fn adc_clock_hz(source: SampleClock) -> u32 {
-    let hz = crate::sysctl::with_clocks(|clocks| match source {
-        SampleClock::Ulpclk => clocks.ulpclk,
-
-        // Switching SYSOSC off does not take the ADC with it: the TRM (G-series 18.2.5) has the ADC
-        // request SYSOSC back at its base frequency for the duration of a conversion, so that is
-        // the rate the registers have to be programmed for.
-        SampleClock::Sysosc => match clocks.sysosc {
-            0 => crate::sysctl::clock::SYSOSC_BASE_HZ,
-            hz => hz,
-        },
-
-        #[cfg(mspm0_hfxt)]
-        SampleClock::Hfclk => clocks.hfclk,
-    });
-
-    assert!(
-        (ADC_CLK_MIN_HZ..=ADC_CLK_MAX_HZ).contains(&hz),
-        "the selected ADC sample clock is stopped or outside this device's fADCCLK range"
-    );
-
-    hz
-}
-
-/// The source, the rate, and the `CTL0.SCLKDIV`/`CLKFREQ.FRANGE` pair `sel` implies.
-///
-/// One function rather than separate calls in `setup`: a second instance then shares one body,
-/// instead of outlining the clock helpers and duplicating the divider ladder at each call site.
-///
-/// Nothing here runs for a [`SampleClockSel::Solved`], which is the point of solving.
-///
-/// `inline(always)` on the match and not on the body it calls. Left to itself LLVM outlines the
-/// whole of this at two instances, and the shared copy keeps the solving arm — the tree read, both
-/// ladders and the range check — alive for callers that solved at compile time and reach none of it.
-/// Measured on `dup_adc2s`: 1940 bytes with one shared body against 1596 with the match folded.
-#[inline(always)]
-fn adc_clock_regs(sel: SampleClockSel) -> (SampleClock, u32, vals::Sclkdiv, vals::Frange) {
-    match sel {
-        SampleClockSel::Solved(solved) => (solved.source, solved.adcclk_hz, solved.sclkdiv, solved.frange),
-        SampleClockSel::Source(source) => solve_clock_regs(source),
-    }
-}
-
-/// Work the rate, divider and band out from the clock tree.
-///
-/// Deliberately out of line from [`adc_clock_regs`]: a second instance that also solves at run time
-/// shares this one body instead of duplicating the divider ladder at its call site.
-fn solve_clock_regs(source: SampleClock) -> (SampleClock, u32, vals::Sclkdiv, vals::Frange) {
-    let adcclk = adc_clock_hz(source);
-    (source, adcclk, sample_clock_div(adcclk), clock_range(adcclk))
-}
-
-/// `fADCCLK`, the range this device's datasheet specifies for the selected sample clock.
-///
-/// Per device, and narrower than [`FRANGE_MIN_HZ`]..[`FRANGE_MAX_HZ`]: MSPM0C1104 is 12-24 MHz where
-/// most parts are 4-32 or 4-48, and it does not follow the family or the SYSCTL version — MSPM0G3507
-/// and MSPM0G5187 share both and are 4-48 and 4-32 respectively.
-const ADC_CLK_MIN_HZ: u32 = crate::_generated::ADC_CLK_MIN_HZ;
-const ADC_CLK_MAX_HZ: u32 = crate::_generated::ADC_CLK_MAX_HZ;
-
-/// Span of ADCCLK the `CLKFREQ.FRANGE` bands cover, from band 0's floor to band 7's ceiling.
-///
-/// A property of the register field, the same on every device. What the device actually supports is
-/// [`ADC_CLK_MIN_HZ`]..[`ADC_CLK_MAX_HZ`], which is always inside this.
-const FRANGE_MIN_HZ: u32 = 1_000_000;
-const FRANGE_MAX_HZ: u32 = 48_000_000;
-
-/// Rate this driver aims to run SAMPCLK at.
-///
-/// `SCOMPx` counts the sample window in SAMPCLK cycles, so holding SAMPCLK steady is what keeps
-/// [`Config::sample_period_0`] a fixed duration across clock trees. Its 125 ns period leaves twice
-/// the 62.5 ns minimum sampling time the datasheets specify.
-const TARGET_SAMPCLK_HZ: u32 = 8_000_000;
-
-/// Largest `SCLKDIV` this picks. Beyond it the divider ladder stops being powers of two.
-const MAX_SCLKDIV_INDEX: u8 = vals::Sclkdiv::DivBy8.to_bits();
-
-/// Smallest `CTL0.SCLKDIV` that brings `adcclk_hz` down to [`TARGET_SAMPCLK_HZ`] or below.
-///
-/// A shift rather than a chain of comparisons: the first four `SCLKDIV` encodings are the powers of
-/// two in order, so the encoding is the shift that reaches the target.
-const fn sample_clock_div(adcclk_hz: u32) -> vals::Sclkdiv {
-    let mut i = 0;
-
-    while i < MAX_SCLKDIV_INDEX && adcclk_hz > TARGET_SAMPCLK_HZ << i {
-        i += 1;
-    }
-
-    vals::Sclkdiv::from_bits(i)
-}
-
-/// The `CLKFREQ.FRANGE` band `adcclk_hz` falls in.
-///
-/// Describes ADCCLK itself, *before* `SCLKDIV`. A band that does not match the real input gives
-/// "unintended results" (SLAU846 table 18-2). Bands are open at the bottom and closed at the top, so
-/// a rate on a boundary belongs to the lower one.
-const fn clock_range(adcclk_hz: u32) -> vals::Frange {
-    let mut i = 0;
-
-    while i < FRANGE_CEILINGS.len() - 1 && adcclk_hz > FRANGE_CEILINGS[i] as u32 * FRANGE_STEP_HZ {
-        i += 1;
-    }
-
-    vals::Frange::from_bits(i as u8)
-}
-
-/// Unit the `FRANGE` band ceilings are all multiples of.
-const FRANGE_STEP_HZ: u32 = 4_000_000;
-
-/// Each `FRANGE` band's ceiling in [`FRANGE_STEP_HZ`] units, in band order.
-///
-/// A table rather than a chain of comparisons: eight 32-bit rates put eight literals in the constant
-/// pool, and every ceiling divides by 4 MHz into a byte.
-const FRANGE_CEILINGS: [u8; 8] = [1, 2, 4, 5, 6, 8, 10, 12];
-
-const _: () = {
-    use crate::sysctl::clock::SYSOSC_BASE_HZ;
-
-    // Band edges, against table 18-2.
-    core::assert!(matches!(clock_range(4_000_000), vals::Frange::Range1to4));
-    core::assert!(matches!(clock_range(4_000_001), vals::Frange::Range4to8));
-    core::assert!(matches!(clock_range(24_000_000), vals::Frange::Range20to24));
-    core::assert!(matches!(clock_range(24_000_001), vals::Frange::Range24to32));
-    core::assert!(matches!(clock_range(32_000_000), vals::Frange::Range24to32));
-    core::assert!(matches!(clock_range(48_000_000), vals::Frange::Range40to48));
-
-    // The reset tree keeps the divider the hardcoded value used to give, on either base frequency.
-    // The band is where it differs: on a 24 MHz part the old `Range24to32` named a band SYSOSC
-    // never reached.
-    core::assert!(SYSOSC_BASE_HZ == 32_000_000 || SYSOSC_BASE_HZ == 24_000_000);
-    core::assert!(matches!(sample_clock_div(SYSOSC_BASE_HZ), vals::Sclkdiv::DivBy4));
-
-    // The 4 MHz SYSOSC operating point sits at the bottom of the `fADCCLK` range, where no division
-    // is left to do.
-    core::assert!(matches!(sample_clock_div(4_000_000), vals::Sclkdiv::DivBy1));
-
-    // The window `adc_clock_hz` accepts is exactly the one `clock_range` can name: nothing below it
-    // has a band, and `sample_clock_div` assumes nothing above it can occur.
-    core::assert!(matches!(clock_range(FRANGE_MIN_HZ), vals::Frange::Range1to4));
-    core::assert!(matches!(clock_range(FRANGE_MAX_HZ), vals::Frange::Range40to48));
-    core::assert!(matches!(sample_clock_div(FRANGE_MAX_HZ), vals::Sclkdiv::DivBy8));
-
-    // The device's own range has to sit inside what `FRANGE` can name, or a legal ADCCLK would have
-    // no band to describe it.
-    core::assert!(ADC_CLK_MIN_HZ >= FRANGE_MIN_HZ && ADC_CLK_MAX_HZ <= FRANGE_MAX_HZ);
-
-    // SYSOSC at its base frequency is the reset sample clock, so it must be in range on every part
-    // or the ADC is unusable before any tree is configured. The other sources depend on the tree.
-    core::assert!(SYSOSC_BASE_HZ >= ADC_CLK_MIN_HZ && SYSOSC_BASE_HZ <= ADC_CLK_MAX_HZ);
-};
 
 macro_rules! impl_adc_instance {
     ($instance: ident) => {
@@ -1351,7 +939,7 @@ mod averaging_tests {
             (Averaging::X64, 64),
             (Averaging::X128, 128),
         ] {
-            let (avgn, avgd) = averaging.to_regs();
+            let (avgn, avgd) = low_level::averaging_regs(averaging);
             assert_eq!(1u32 << avgd, count, "{averaging:?} divides by the wrong amount");
             assert_eq!(avgn.to_bits(), avgd, "{averaging:?} count and shift disagree");
         }

@@ -273,3 +273,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0: `interrupt_group::ack` clears a group's latched source without dispatching it, for a handler that services the group's sources itself
 - feat: mspm0: add `rtic-monotonic`, an RTIC monotonic on an MSPM0 timer that keeps time through deep sleep, taking its timer as an argument so it coexists with a `time-driver-*` on another one
 - feat: mspm0/uart: `uart::low_level` is a register-level driver the mode drivers are now built on, so an application that services the interrupt itself — an RTIC hardware task, another executor — configures the instance through the HAL instead of reaching past it into the PAC
+- feat: mspm0/adc: `adc::low_level` is a register-level driver the mode drivers are now built on, so an application that services the conversion interrupt itself configures the instance through the HAL instead of reaching past it into the PAC
+- fix: mspm0/uart: arm the receive timeout whenever the FIFOs are on, which a trigger level above one entry requires or a partial FIFO is never delivered
+- fix: mspm0/uart: a buffered async write yields once per call, so a receiver joined or selected with a long transmission is still polled during it rather than going deaf until it ends
+- fix: mspm0/uart: pend the buffered UART's interrupt by hand only when the transmit buffer was empty, as the blocking path already did, instead of on every write
+- **breaking** mspm0/uart: `Config::fifo_enable` is replaced by `Config::fifo`, an `Option<FifoThreshold>` naming how full a FIFO must be before it interrupts. It now defaults to on at half-full, which raises the rate the receiver can sustain from roughly 230400 to 921600
