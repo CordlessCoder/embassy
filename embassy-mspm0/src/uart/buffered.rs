@@ -658,11 +658,7 @@ pub(crate) struct BufferedState {
 }
 
 // these must match bits 8..12 in RXDATA, but shifted by 8 to the right
-const RXE_NOISE: u8 = 16;
-const RXE_OVERRUN: u8 = 8;
-const RXE_BREAK: u8 = 4;
-const RXE_PARITY: u8 = 2;
-const RXE_FRAMING: u8 = 1;
+use low_level::RX_OVERRUN as RXE_OVERRUN;
 
 impl BufferedState {
     pub const fn new() -> Self {
@@ -925,19 +921,7 @@ impl<'d> BufferedUartRx<'d> {
             errs
         });
 
-        if errs & RXE_NOISE != 0 {
-            Some(Error::Noise)
-        } else if errs & RXE_OVERRUN != 0 {
-            Some(Error::Overrun)
-        } else if errs & RXE_BREAK != 0 {
-            Some(Error::Break)
-        } else if errs & RXE_PARITY != 0 {
-            Some(Error::Parity)
-        } else if errs & RXE_FRAMING != 0 {
-            Some(Error::Framing)
-        } else {
-            None
-        }
+        low_level::fault_of_flags(errs)
     }
 }
 

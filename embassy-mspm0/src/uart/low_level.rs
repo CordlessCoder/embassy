@@ -849,6 +849,17 @@ pub(crate) fn write_byte(r: Regs, byte: u8) {
     r.txdata().write(|w| w.set_data(byte));
 }
 
+/// The `RXDATA` overrun bit, built from its own setter so it cannot drift from the register.
+///
+/// The only fault bit anything needs by value: the buffered driver counts the bytes an overrun lost,
+/// which is a different question from which fault to report. [`fault_of`] answers that one, through
+/// the register's own accessors, and is the only other place the layout is written.
+pub(crate) const RX_OVERRUN: u8 = {
+    let mut w = regs::Rxdata(0);
+    w.set_ovrerr(true);
+    (w.0 >> 8) as u8
+};
+
 /// The `CPU_INT` sources for the four faults [`Event`] names.
 ///
 /// `NERR` is not among them: majority voting is off and nothing configures it, so the source cannot
@@ -865,7 +876,9 @@ pub(crate) const fn error_sources() -> CpuInt {
 /// The fault a received word carries, taking the lowest flag bit set.
 ///
 /// A byte can arrive with several faults and `Error` names one, so the order is a decision: **least
-/// significant bit first**, which is framing, parity, break, overrun, noise.
+/// significant bit first**, which is framing, parity, break, overrun, noise. It is the register's own
+/// order and it is now the only one — the buffered driver used to run the ladder the other way, so
+/// the two drivers named a doubly-faulted byte differently.
 ///
 /// Takes the whole word rather than [`read_flagged`]'s mask: the byte and the flags come out of one
 /// read either way, and testing the fields directly is what the accessors lower to. Going through
@@ -885,6 +898,16 @@ pub(crate) const fn fault_of(rx: regs::Rxdata) -> Option<Error> {
     } else {
         None
     }
+}
+
+/// The fault an accumulated flag mask reports, by the same rule as [`fault_of`].
+///
+/// Puts the flags back where the register had them so there is one ladder rather than two facing
+/// each other. The caller here is off the receive path — it reports faults already counted — so the
+/// shift costs nothing that matters.
+#[inline]
+pub(crate) const fn fault_of_flags(flags: u8) -> Option<Error> {
+    fault_of(regs::Rxdata((flags as u32) << 8))
 }
 
 /// One byte, and the fault bits the receiver tagged it with as a raw mask.
@@ -1304,3 +1327,40 @@ pub(crate) fn dma_enabled(_r: Regs) -> bool {
     false
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flags(set: impl Fn(&mut regs::Rxdata)) -> u8 {
+        let mut word = regs::Rxdata(0);
+        set(&mut word);
+
+        (word.0 >> 8) as u8
+    }
+
+    /// Which fault a multiply-faulted byte reports is a decision, so it is pinned here rather than
+    /// left to whichever of the two ladders someone reads first — they used to disagree.
+    #[test]
+    fn a_fault_is_the_lowest_bit_set() {
+        let framing = flags(|w| w.set_frmerr(true));
+        let parity = flags(|w| w.set_parerr(true));
+        let brk = flags(|w| w.set_brkerr(true));
+        let overrun = flags(|w| w.set_ovrerr(true));
+        let noise = flags(|w| w.set_nerr(true));
+
+        // `fault_of` is written lowest-bit-first by hand, so the bits have to be in that order for
+        // the ladder to mean what it says.
+        core::assert!(
+            framing < parity && parity < brk && brk < overrun && overrun < noise,
+            "the fault bits are not in the order fault_of tests them"
+        );
+
+        core::assert_eq!(fault_of_flags(0), None);
+        core::assert_eq!(fault_of_flags(framing), Some(Error::Framing));
+        core::assert_eq!(fault_of_flags(noise), Some(Error::Noise));
+
+        core::assert_eq!(fault_of_flags(framing | noise), Some(Error::Framing));
+        core::assert_eq!(fault_of_flags(overrun | noise), Some(Error::Overrun));
+        core::assert_eq!(fault_of_flags(parity | brk | overrun), Some(Error::Parity));
+    }
+}
