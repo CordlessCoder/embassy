@@ -77,7 +77,7 @@ use super::{
 use crate::Peri;
 use crate::gpio::{AnyPin, MaybeAnyPin, SealedPin};
 use crate::interrupt::{Interrupt, InterruptExt};
-use crate::pac::uart::regs::CpuInt;
+use crate::pac::uart::regs::{self, CpuInt};
 use crate::pac::uart::{Uart as Regs, vals};
 use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepInfo, SleepLevel};
 
@@ -130,6 +130,17 @@ pub enum Event {
 
     /// The clear-to-send input changed level.
     Cts,
+
+    /// Anything a receive waits on: the FIFO reaching its level, or the timeout that delivers a
+    /// message shorter than it.
+    ///
+    /// A group, so one [`take_active`](Uart::take_active) answers "is there something to read" and
+    /// clears whichever half of it fired.
+    AnyReceive,
+
+    /// Any line fault: [`Framing`](Event::Framing), [`Parity`](Event::Parity),
+    /// [`Break`](Event::Break) or [`Overrun`](Event::Overrun).
+    AnyError,
 }
 
 impl Event {
@@ -146,6 +157,8 @@ impl Event {
             Event::Break => mask.set_brkerr(true),
             Event::Overrun => mask.set_ovrerr(true),
             Event::Cts => mask.set_cts(true),
+            Event::AnyReceive => return rx_sources(),
+            Event::AnyError => return error_sources(),
         }
 
         mask
@@ -336,6 +349,29 @@ impl<'d> Uart<'d> {
         clear_pending(self.rx.info.regs, event);
     }
 
+    /// Whether `event` is latched **and** unmasked, clearing the part of it that is.
+    ///
+    /// What raised the line, which is what a handler dispatches on: one `MIS` read and at most one
+    /// `ICLR` write, whatever the event covers. [`Event::AnyReceive`] makes it the whole receive
+    /// group, so "is there something to read" is one call rather than two.
+    ///
+    /// Leaves a latched-but-masked source alone, so a source the caller has not armed keeps its flag
+    /// for whoever does ask. [`is_pending`](Self::is_pending) reads `RIS` and ignores the mask.
+    #[inline]
+    pub fn take_active(&mut self, event: Event) -> bool {
+        take_active(self.rx.info.regs, event)
+    }
+
+    /// Take one byte from the receive FIFO, keeping it even when the receiver faulted it.
+    ///
+    /// [`try_read`](Self::try_read) reports a fault as an `Err` and **discards the byte**, which is
+    /// wrong for an overrun: the loss happened before this byte, and the byte itself is good. A
+    /// caller draining into its own buffer wants this one.
+    #[inline]
+    pub fn try_read_flagged(&mut self) -> Option<(u8, Option<Error>)> {
+        self.rx.try_read_flagged()
+    }
+
     /// Shallowest sleep level that keeps a transmission running, if one is needed at all.
     ///
     /// See [`UartTx::transmit_floor`].
@@ -501,6 +537,19 @@ impl<'d> UartTx<'d> {
         clear_pending(self.info.regs, event);
     }
 
+    /// Whether `event` is latched **and** unmasked, clearing the part of it that is.
+    ///
+    /// What raised the line, which is what a handler dispatches on: one `MIS` read and at most one
+    /// `ICLR` write, whatever the event covers. [`Event::AnyReceive`] makes it the whole receive
+    /// group, so "is there something to read" is one call rather than two.
+    ///
+    /// Leaves a latched-but-masked source alone, so a source the caller has not armed keeps its flag
+    /// for whoever does ask. [`is_pending`](Self::is_pending) reads `RIS` and ignores the mask.
+    #[inline]
+    pub fn take_active(&mut self, event: Event) -> bool {
+        take_active(self.info.regs, event)
+    }
+
     /// Apply a new [`Config`], keeping the pins.
     #[inline]
     pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
@@ -648,6 +697,37 @@ impl<'d> UartRx<'d> {
         clear_pending(self.info.regs, event);
     }
 
+    /// Whether `event` is latched **and** unmasked, clearing the part of it that is.
+    ///
+    /// What raised the line, which is what a handler dispatches on: one `MIS` read and at most one
+    /// `ICLR` write, whatever the event covers. [`Event::AnyReceive`] makes it the whole receive
+    /// group, so "is there something to read" is one call rather than two.
+    ///
+    /// Leaves a latched-but-masked source alone, so a source the caller has not armed keeps its flag
+    /// for whoever does ask. [`is_pending`](Self::is_pending) reads `RIS` and ignores the mask.
+    #[inline]
+    pub fn take_active(&mut self, event: Event) -> bool {
+        take_active(self.info.regs, event)
+    }
+
+    /// Take one byte from the receive FIFO, keeping it even when the receiver faulted it.
+    ///
+    /// [`try_read`](Self::try_read) reports a fault as an `Err` and **discards the byte**, which is
+    /// wrong for an overrun: the loss happened before this byte, and the byte itself is good. A
+    /// caller draining into its own buffer wants this one.
+    #[inline]
+    pub fn try_read_flagged(&mut self) -> Option<(u8, Option<Error>)> {
+        let r = self.info.regs;
+
+        if rx_empty(r) {
+            return None;
+        }
+
+        let rx = read_raw(r);
+
+        Some((rx.data(), fault_of(rx)))
+    }
+
     /// Apply a new [`Config`], keeping the pins.
     #[inline]
     pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
@@ -730,6 +810,18 @@ pub(crate) fn mask(r: Regs, sources: CpuInt) {
     r.cpu_int(0).imask().modify(|w| w.0 &= !sources.0);
 }
 
+/// Clear whichever of `event`'s sources are both latched and unmasked, reporting whether any were.
+#[inline]
+pub(crate) fn take_active(r: Regs, event: Event) -> bool {
+    let active = masked_status(r).0 & event.mask().0;
+
+    if active != 0 {
+        clear(r, CpuInt(active));
+    }
+
+    active != 0
+}
+
 /// Every source that is both latched and unmasked, in one read.
 ///
 /// What a handler dispatches on. [`is_pending`] answers per event and reads `RIS`, so it reports a
@@ -757,15 +849,60 @@ pub(crate) fn write_byte(r: Regs, byte: u8) {
     r.txdata().write(|w| w.set_data(byte));
 }
 
+/// The `CPU_INT` sources for the four faults [`Event`] names.
+///
+/// `NERR` is not among them: majority voting is off and nothing configures it, so the source cannot
+/// fire. [`buffered`](super::buffered) arms it anyway because it always has.
+pub(crate) const fn error_sources() -> CpuInt {
+    let mut sources = CpuInt(0);
+    sources.set_frmerr(true);
+    sources.set_parerr(true);
+    sources.set_brkerr(true);
+    sources.set_ovrerr(true);
+    sources
+}
+
+/// The fault a received word carries, taking the lowest flag bit set.
+///
+/// A byte can arrive with several faults and `Error` names one, so the order is a decision: **least
+/// significant bit first**, which is framing, parity, break, overrun, noise.
+///
+/// Takes the whole word rather than [`read_flagged`]'s mask: the byte and the flags come out of one
+/// read either way, and testing the fields directly is what the accessors lower to. Going through
+/// the shifted mask instead measured 8 bytes on a blocking receive.
+#[inline]
+pub(crate) const fn fault_of(rx: regs::Rxdata) -> Option<Error> {
+    if rx.frmerr() {
+        Some(Error::Framing)
+    } else if rx.parerr() {
+        Some(Error::Parity)
+    } else if rx.brkerr() {
+        Some(Error::Break)
+    } else if rx.ovrerr() {
+        Some(Error::Overrun)
+    } else if rx.nerr() {
+        Some(Error::Noise)
+    } else {
+        None
+    }
+}
+
 /// One byte, and the fault bits the receiver tagged it with as a raw mask.
 ///
 /// [`read_with_error`] is the same read reported as a `Result`, which keeps only the first fault and
 /// discards the byte. A driver that counts faults, or that wants the byte an overrun arrived with,
 /// needs both halves.
+#[inline]
 pub(crate) fn read_flagged(r: Regs) -> (u8, u8) {
-    let data = r.rxdata().read();
+    let data = read_raw(r);
 
     (data.data(), (data.0 >> 8) as u8)
+}
+
+/// The receive word: one byte and the flags the receiver tagged it with, unseparated.
+#[inline]
+pub(crate) fn read_raw(r: Regs) -> regs::Rxdata {
+    r.rxdata().read()
 }
 
 /// The receive FIFO level `threshold` selects, as the register encodes it for an instance in `domain`.
@@ -1118,22 +1255,14 @@ pub(crate) fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Resul
     Ok(())
 }
 
+#[inline]
 pub(crate) fn read_with_error(r: Regs) -> Result<u8, Error> {
-    let rx = r.rxdata().read();
+    let rx = read_raw(r);
 
-    if rx.frmerr() {
-        return Err(Error::Framing);
-    } else if rx.parerr() {
-        return Err(Error::Parity);
-    } else if rx.brkerr() {
-        return Err(Error::Break);
-    } else if rx.ovrerr() {
-        return Err(Error::Overrun);
-    } else if rx.nerr() {
-        return Err(Error::Noise);
+    match fault_of(rx) {
+        Some(error) => Err(error),
+        None => Ok(rx.data()),
     }
-
-    Ok(rx.data())
 }
 
 /// Whether the transmitter still holds a byte.
@@ -1174,3 +1303,4 @@ pub(crate) fn busy(r: Regs) -> bool {
 pub(crate) fn dma_enabled(_r: Regs) -> bool {
     false
 }
+

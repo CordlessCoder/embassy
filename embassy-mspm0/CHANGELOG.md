@@ -278,3 +278,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: a buffered async write yields once per call, so a receiver joined or selected with a long transmission is still polled during it rather than going deaf until it ends
 - fix: mspm0/uart: pend the buffered UART's interrupt by hand only when the transmit buffer was empty, as the blocking path already did, instead of on every write
 - **breaking** mspm0/uart: `Config::fifo_enable` is replaced by `Config::fifo`, an `Option<FifoThreshold>` naming how full a FIFO must be before it interrupts. It now defaults to on at half-full, which raises the rate the receiver can sustain from roughly 230400 to 921600
+- feat: mspm0/uart: `low_level` gains `take_active`, the grouped `Event::AnyReceive` and `Event::AnyError`, and `try_read_flagged`, so an application servicing the interrupt itself can dispatch on what raised the line in one read and keep the byte an overrun arrived with
