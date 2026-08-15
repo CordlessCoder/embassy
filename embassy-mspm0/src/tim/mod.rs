@@ -8,7 +8,7 @@ pub mod low_level;
 // The timekeeping core, for whichever front-end is compiled. Nothing else needs it.
 // `pub` only so the RTIC monotonic's generated backends can name the counter in a trait
 // signature. Nothing in it is callable from outside this crate.
-#[cfg(feature = "_time-driver")]
+#[cfg(any(feature = "_time-driver", feature = "rtic-monotonic"))]
 #[doc(hidden)]
 pub mod period;
 pub mod simple_pwm;

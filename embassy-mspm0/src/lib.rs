@@ -36,6 +36,8 @@ pub mod opa;
 mod prefetch;
 #[cfg(feature = "_probe")]
 pub mod probe;
+#[cfg(feature = "rtic-monotonic")]
+pub mod rtic_monotonic;
 pub(crate) mod sync;
 pub mod sysctl;
 pub mod tim;
@@ -118,6 +120,10 @@ pub use pac::NVIC_PRIO_BITS;
 #[doc(hidden)]
 pub use crate::_generated::group_demux as _group_demux;
 pub use crate::_generated::interrupt;
+#[cfg(feature = "rtic-monotonic")]
+pub use crate::_generated::rtic_backend;
+#[cfg(feature = "rtic-monotonic")]
+pub use {fugit, rtic_time};
 /// The interrupt enum, at the path RTIC's `#[app(device = embassy_mspm0)]` expects it.
 ///
 /// Needed only by a hardware task: `#[task(binds = ...)]` names the enum from the crate root, while

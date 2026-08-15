@@ -271,3 +271,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0: `Config::interrupts` says whether `init` enables the interrupt-group lines and at what priority, so an application whose scheduler owns the NVIC can keep them, and one that wants them prioritised no longer has a window where an edge is taken at the reset priority
 - feat: mspm0/gpio: `enable_interrupt`, `is_pending`, `clear_pending` and `take_pending` on a `Blocking` pin service an edge from the application's own handler, which costs none of the waiter list, dispatcher or future the async waits need
 - feat: mspm0: `interrupt_group::ack` clears a group's latched source without dispatching it, for a handler that services the group's sources itself
+- feat: mspm0: add `rtic-monotonic`, an RTIC monotonic on an MSPM0 timer that keeps time through deep sleep, taking its timer as an argument so it coexists with a `time-driver-*` on another one

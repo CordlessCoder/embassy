@@ -6,7 +6,7 @@ use crate::Peri;
 use crate::pac::tim::vals::{Cm, Cvae, CxC, PwrenKey, Repeat, ResetKey};
 use crate::pac::tim::{Tim, regs};
 use crate::sysctl::MaybeWakeGuard;
-#[cfg(any(feature = "low-power", feature = "_time-driver"))]
+#[cfg(any(feature = "low-power", feature = "_time-driver", feature = "rtic-monotonic"))]
 use crate::sysctl::SleepLevel;
 use crate::tim::{Channel, ClockSel, CountingMode, Instance, Word};
 
@@ -522,7 +522,7 @@ fn apply_config<T: Instance>(config: &Config) {
 ///
 /// Depends on the configured tree, so this reads the live clocks rather than answering at compile
 /// time as it did while the tree was fixed.
-#[cfg(any(feature = "low-power", feature = "_time-driver"))]
+#[cfg(any(feature = "low-power", feature = "_time-driver", feature = "rtic-monotonic"))]
 pub(crate) fn sleep_floor<T: Instance>(clock: ClockSel) -> Option<SleepLevel> {
     let clock_hz = crate::sysctl::with_clocks(|clocks| clock.frequency(clocks, T::SLEEP.power_domain));
 

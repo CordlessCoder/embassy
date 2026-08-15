@@ -10,7 +10,7 @@ rtic = { version = "2", features = ["thumbv6-backend"] }
 
 # `low-power` is on and no time driver is selected, which is the whole point of this crate: nothing
 # here pulls embassy-time, embassy-time-driver or embassy-executor. `cargo tree` is the check.
-embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", default-features = false, features = ["mspm0l1306rhb", "rt", "unsafe-atomics-single-core", "low-power"] }
+embassy-mspm0 = { version = "0.1.0", path = "../../embassy-mspm0", default-features = false, features = ["mspm0l1306rhb", "rt", "unsafe-atomics-single-core", "low-power", "rtic-monotonic"] }
 
 critical-section = "1.1"
 cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }

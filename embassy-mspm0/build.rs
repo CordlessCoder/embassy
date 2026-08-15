@@ -1516,6 +1516,8 @@ fn generate_timers() -> TokenStream {
                 impls.push(quote! {
                     impl_tim_instance_general_2ch!(#name);
                 });
+
+                impls.push(rtic_monotonic_backend(peripheral.name));
             }
 
             if timer.ccp_channels >= 4 {
@@ -1533,10 +1535,38 @@ fn generate_timers() -> TokenStream {
             }
 
             impls
+        })
+        .collect::<Vec<_>>();
+
+    // The marker types the per-timer backends are implemented on, in a module of their own so an
+    // application can name one without the peripheral singleton of the same name getting in the way.
+    let backends = METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.timer.map(|timer| (peripheral, timer)))
+        .filter(|(peripheral, timer)| !is_basic_timer(peripheral) && timer.ccp_channels >= 2)
+        .map(|(peripheral, _)| {
+            let name = Ident::new(peripheral.name, Span::call_site());
+            let doc = format!("The RTIC monotonic backend counting `{}`.", peripheral.name);
+
+            quote! {
+                #[doc = #doc]
+                #[allow(non_camel_case_types)]
+                pub struct #name;
+            }
         });
 
     quote! {
         #(#timer_impls)*
+
+        /// The RTIC monotonic backends, one per timer with the two capture/compare channels the
+        /// period scheme needs.
+        ///
+        /// Named by [`rtic_monotonic!`](crate::rtic_monotonic) rather than used directly.
+        #[cfg(feature = "rtic-monotonic")]
+        pub mod rtic_backend {
+            #(#backends)*
+        }
     }
 }
 
@@ -2170,6 +2200,64 @@ fn rustfmt(path: impl AsRef<Path>) {
 /// `LD` on the same counter the clock is read from; and SLAU847 §29.1.2 clocks every counter from the
 /// bus clock, whose rate changes with the power mode, where the driver wants LFCLK so that STANDBY
 /// does not stop it. Nothing loses by it: every device with a TIMB also has a TIMA and a TIMG.
+/// One RTIC monotonic backend per timer with the two capture/compare channels the period scheme needs.
+///
+/// The queue and the counter have to be statics, and a static cannot be generic, so there is one set
+/// per timer rather than one generic set. Nothing references the ones an application does not name, so
+/// they cost it nothing.
+fn rtic_monotonic_backend(name: &str) -> TokenStream {
+    let peri = Ident::new(name, Span::call_site());
+    let counter = format_ident!("{}_COUNTER", name);
+    let queue = format_ident!("{}_QUEUE", name);
+
+    quote! {
+        #[cfg(feature = "rtic-monotonic")]
+        const _: () = {
+            static #counter: crate::tim::period::PeriodCounter<crate::peripherals::#peri> =
+                crate::tim::period::PeriodCounter::new();
+            static #queue: rtic_time::timer_queue::TimerQueue<crate::_generated::rtic_backend::#peri> =
+                rtic_time::timer_queue::TimerQueue::new();
+
+            impl crate::rtic_monotonic::MonotonicBackend for crate::_generated::rtic_backend::#peri {
+                type Timer = crate::peripherals::#peri;
+
+                fn counter() -> &'static crate::tim::period::PeriodCounter<crate::peripherals::#peri> {
+                    &#counter
+                }
+            }
+
+            impl rtic_time::timer_queue::TimerQueueBackend for crate::_generated::rtic_backend::#peri {
+                type Ticks = u64;
+
+                fn now() -> u64 {
+                    #counter.now()
+                }
+
+                fn set_compare(instant: u64) {
+                    crate::rtic_monotonic::set_compare::<Self>(instant);
+                }
+
+                fn clear_compare_flag() {
+                    // `take_events` in the handler has already cleared it, and clearing it again here
+                    // would drop an event latched since.
+                }
+
+                fn pend_interrupt() {
+                    use embassy_hal_internal::interrupt::InterruptExt;
+
+                    use crate::interrupt::typelevel::Interrupt;
+
+                    <crate::peripherals::#peri as crate::tim::Instance>::Interrupt::IRQ.pend();
+                }
+
+                fn timer_queue() -> &'static rtic_time::timer_queue::TimerQueue<Self> {
+                    &#queue
+                }
+            }
+        };
+    }
+}
+
 const TIME_DRIVER_TIMERS: &[&str] = &[
     "TIMG0", "TIMG1", "TIMG2", "TIMG3", "TIMG4", "TIMG5", "TIMG6", "TIMG7", "TIMG8", "TIMG9", "TIMG10", "TIMG11",
     "TIMG12", "TIMG13", "TIMG14", "TIMA0", "TIMA1",

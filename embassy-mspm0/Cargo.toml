@@ -85,6 +85,11 @@ rand_core = "0.10"
 # emulated. Which way is a choice the `atomics-*` features make; one of them must be on.
 portable-atomic = { version = "1.14.0" }
 
+# The RTIC monotonic's backend and its `fugit` instants. Optional, and off unless `rtic-monotonic` is
+# selected: nothing else in this crate knows RTIC exists.
+rtic-time = { version = "2.0.1", optional = true }
+fugit = { version = "0.3.7", optional = true }
+
 [build-dependencies]
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
@@ -199,6 +204,13 @@ _probe = []
 # needs it, and that field exists only where a time driver does. Anything selecting a time driver is an
 # `embassy-time` user already — implementing its driver trait is what the feature is for.
 _time-driver = ["dep:embassy-time-driver", "dep:embassy-time-queue-utils", "dep:embassy-time"]
+
+## An [RTIC](https://rtic.rs) monotonic, instantiated with [`rtic_monotonic!`].
+##
+## Backed by the same timer core as the `embassy-time` driver, so it keeps time through deep sleep —
+## which a SysTick-based monotonic cannot. Takes its timer as an argument rather than by feature, so it
+## coexists with a `time-driver-*` as long as the two are given different timers.
+rtic-monotonic = ["dep:rtic-time", "dep:fugit"]
 
 ## Enable APIs that wait on `embassy-time`, such as [`wwdt::Watchdog::run`].
 time = ["dep:embassy-time", "embassy-embedded-hal/time"]
