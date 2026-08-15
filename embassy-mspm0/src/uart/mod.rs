@@ -70,7 +70,7 @@ use crate::interrupt::typelevel::{Binding, Interrupt as _};
 use crate::mode::{Async, Blocking, Mode};
 use crate::pac::uart::{Uart as Regs, vals};
 use crate::sync::irq_waker::IrqWaker;
-use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepLevel};
+use crate::sysctl::{MaybeWakeGuard, SleepLevel};
 
 /// The clock source for the UART.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -217,40 +217,6 @@ pub enum FifoThreshold {
 
     /// All four. Most batching, and the longest a byte can wait for the timeout to deliver it.
     Full,
-}
-
-impl FifoThreshold {
-    /// The receive level, as the register encodes it for an instance in `domain`.
-    ///
-    /// **A PD0 instance has only two levels**, one entry and full, encoded differently from every other
-    /// instance's; SLAU846 Table 24-44 says anything else falls back to the reset value. Rather than
-    /// leave that silent, everything from half up takes the full level.
-    ///
-    /// Rounding *up* is measured, not a guess. On a G3507, whose `UART1` is PD0, half-mapped-to-full
-    /// receives a 921600 baud stream with 0.27% loss where half-mapped-to-one-entry loses 19%. The finer
-    /// levels a non-PD0 instance has are the untested path here.
-    const fn rx(self, domain: PowerDomain) -> vals::Iflssel {
-        match (domain, self) {
-            (PowerDomain::Pd0, Self::AtLeastOne | Self::Quarter) => vals::Iflssel::OneFourthUlp,
-            (PowerDomain::Pd0, Self::Half | Self::ThreeQuarter | Self::Full) => vals::Iflssel::FullUlp,
-            (_, Self::AtLeastOne) => vals::Iflssel::AtLeastOne,
-            (_, Self::Quarter) => vals::Iflssel::OneFourth,
-            (_, Self::Half) => vals::Iflssel::Half,
-            (_, Self::ThreeQuarter) => vals::Iflssel::ThreeFourth,
-            (_, Self::Full) => vals::Iflssel::Full,
-        }
-    }
-
-    /// The transmit level, which has no per-domain restriction.
-    const fn tx(self) -> vals::Iflssel {
-        match self {
-            Self::AtLeastOne => vals::Iflssel::AtLeastOne,
-            Self::Quarter => vals::Iflssel::OneFourth,
-            Self::Half => vals::Iflssel::Half,
-            Self::ThreeQuarter => vals::Iflssel::ThreeFourth,
-            Self::Full => vals::Iflssel::Full,
-        }
-    }
 }
 
 /// How the line rate reaches the hardware.
@@ -1523,14 +1489,6 @@ impl Baud {
         }
 
         None
-    }
-
-    /// Program this divider into the peripheral.
-    fn apply(&self, regs: Regs) {
-        regs.clkdiv().write(|w| w.set_ratio(self.div));
-        regs.ibrd().write(|w| w.set_divint(self.ibrd));
-        regs.fbrd().write(|w| w.set_divfrac(self.fbrd));
-        regs.ctl0().modify(|w| w.set_hse(self.hse));
     }
 
     /// The integer and fractional parts of `BRD`, as programmed.

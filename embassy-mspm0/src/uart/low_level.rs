@@ -71,7 +71,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{
-    Baud, BaudRate, BitOrder, ClockSel, Config, ConfigError, CtsPin, DataBits, Error, Instance, Parity,
+    Baud, BaudRate, BitOrder, ClockSel, Config, ConfigError, CtsPin, DataBits, Error, FifoThreshold, Instance, Parity,
     RtsPin, RxPin, StopBits, TxPin,
 };
 use crate::Peri;
@@ -79,7 +79,7 @@ use crate::gpio::{AnyPin, MaybeAnyPin, SealedPin};
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::pac::uart::regs::CpuInt;
 use crate::pac::uart::{Uart as Regs, vals};
-use crate::sysctl::{MaybeWakeGuard, SleepInfo, SleepLevel};
+use crate::sysctl::{MaybeWakeGuard, PowerDomain, SleepInfo, SleepLevel};
 
 /// Bit times of silence after which the receiver reports a FIFO that has not reached its level.
 ///
@@ -768,6 +768,52 @@ pub(crate) fn read_flagged(r: Regs) -> (u8, u8) {
     (data.data(), (data.0 >> 8) as u8)
 }
 
+/// The receive FIFO level `threshold` selects, as the register encodes it for an instance in `domain`.
+///
+/// **A PD0 instance has only two levels**, one entry and full, encoded differently from every other
+/// instance's; SLAU846 Table 24-44 says anything else falls back to the reset value. Rather than leave
+/// that silent, everything from half up takes the full level.
+///
+/// Rounding *up* is measured, not a guess. On a G3507, whose `UART1` is PD0, half-mapped-to-full
+/// receives a 921600 baud stream with 0.27% loss where half-mapped-to-one-entry loses 19%. The finer
+/// levels a non-PD0 instance has are the untested path here.
+const fn rx_level(threshold: FifoThreshold, domain: PowerDomain) -> vals::Iflssel {
+    match (domain, threshold) {
+        (PowerDomain::Pd0, FifoThreshold::AtLeastOne | FifoThreshold::Quarter) => vals::Iflssel::OneFourthUlp,
+        (PowerDomain::Pd0, FifoThreshold::Half | FifoThreshold::ThreeQuarter | FifoThreshold::Full) => {
+            vals::Iflssel::FullUlp
+        }
+        (_, FifoThreshold::AtLeastOne) => vals::Iflssel::AtLeastOne,
+        (_, FifoThreshold::Quarter) => vals::Iflssel::OneFourth,
+        (_, FifoThreshold::Half) => vals::Iflssel::Half,
+        (_, FifoThreshold::ThreeQuarter) => vals::Iflssel::ThreeFourth,
+        (_, FifoThreshold::Full) => vals::Iflssel::Full,
+    }
+}
+
+/// The transmit FIFO level, which has no per-domain restriction.
+const fn tx_level(threshold: FifoThreshold) -> vals::Iflssel {
+    match threshold {
+        FifoThreshold::AtLeastOne => vals::Iflssel::AtLeastOne,
+        FifoThreshold::Quarter => vals::Iflssel::OneFourth,
+        FifoThreshold::Half => vals::Iflssel::Half,
+        FifoThreshold::ThreeQuarter => vals::Iflssel::ThreeFourth,
+        FifoThreshold::Full => vals::Iflssel::Full,
+    }
+}
+
+/// Program a solved divider into the peripheral.
+///
+/// [`Baud`] itself stays with [`Config`] as the vocabulary a caller configures in — it can be solved
+/// at compile time, and `solve`'s arithmetic is the same whatever block runs it. Only this is the
+/// register work, and both callers of it are in this file.
+pub(crate) fn apply_baud(r: Regs, baud: &Baud) {
+    r.clkdiv().write(|w| w.set_ratio(baud.div));
+    r.ibrd().write(|w| w.set_divint(baud.ibrd));
+    r.fbrd().write(|w| w.set_divfrac(baud.fbrd));
+    r.ctl0().modify(|w| w.set_hse(baud.hse));
+}
+
 /// Hold the line low for a frame.
 pub(crate) fn send_break(r: Regs) {
     r.lcrh().modify(|w| w.set_brk(true));
@@ -949,7 +995,7 @@ pub(crate) fn configure(
     // With the FIFOs off there is one byte of depth and no level to reach, so the choice only applies
     // when they are on.
     let (rx_level, tx_level) = if let Some(threshold) = fifo {
-        (threshold.rx(info.sleep.power_domain), threshold.tx())
+        (rx_level(threshold, info.sleep.power_domain), tx_level(threshold))
     } else {
         (vals::Iflssel::AtLeastOne, vals::Iflssel::AtLeastOne)
     };
@@ -993,7 +1039,7 @@ pub(crate) fn configure(
     // A pre-solved divider skips the search entirely, which is what keeps the software divider out
     // of the binary when the clock and baud rate are both compile-time constants.
     match baud {
-        BaudRate::Solved(baud) => baud.apply(info.regs),
+        BaudRate::Solved(baud) => apply_baud(info.regs, &baud),
         BaudRate::Rate(rate) => set_baudrate_inner(info.regs, clock, rate)?,
     }
 
@@ -1067,7 +1113,7 @@ pub(crate) fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Resul
         return Err(ConfigError::InvalidBaudRate);
     };
 
-    baud.apply(regs);
+    apply_baud(regs, &baud);
 
     Ok(())
 }
