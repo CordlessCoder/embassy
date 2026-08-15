@@ -27,6 +27,7 @@ use core::marker::PhantomPinned;
 #[cfg(feature = "rt")]
 use core::task::{Context, Poll, Waker};
 
+use critical_section::CriticalSection;
 use embassy_hal_internal::{Peri, PeripheralType, impl_peripheral};
 
 #[cfg(feature = "rt")]
@@ -172,6 +173,112 @@ impl<'d> Flex<'d, Blocking> {
             pin: pin.into(),
             _mode: PhantomData,
         }
+    }
+
+    /// Latch this pin's edges and let them reach the CPU.
+    ///
+    /// For an application that writes its own handler. Selects the edges, drops any latched before the
+    /// call, arms `FASTWAKE` so the input synchroniser stays clocked in STOP and STANDBY, and unmasks
+    /// the pin. **The port's NVIC line is not touched**: that belongs to whoever owns the vector, and
+    /// [`Config::interrupts`](crate::Config::interrupts) says who.
+    ///
+    /// [`Flex<Async>`](Flex) is the other way to use these edges, and the two do not mix on one pin.
+    ///
+    /// # Servicing it alongside the async waits
+    ///
+    /// A handler that also dispatches to this crate's own edge waits must deal with its own pins
+    /// **first**, and clear each one before forwarding. `IIDX` reports the lowest set *enabled* status
+    /// bit and clears it as it is read, so a pin still pending when the demultiplexer runs is taken for
+    /// one of its own: the edge is consumed and the pin is left masked for good.
+    ///
+    /// ```rust,ignore
+    /// #[task(binds = GROUP1, local = [button])]
+    /// fn on_group1(cx: on_group1::Context) {
+    ///     if cx.local.button.take_pending() {
+    ///         // ...
+    ///     }
+    ///
+    ///     unsafe { Irqs::GROUP1() }
+    /// }
+    /// ```
+    ///
+    /// # Both directions, on some devices
+    ///
+    /// Where `GPIO_ERR_01` applies both edges are latched whatever `edge` asks for, because its case 2
+    /// otherwise loses every STANDBY1 wake after the first. Classify with [`Flex::get_level`] in the
+    /// handler rather than trusting the selection.
+    pub fn enable_interrupt(&mut self, edge: Edge) {
+        let block = self.pin.block();
+        let bit = self.pin.bit_index();
+
+        let polarity = if DETECT_BOTH_EDGES {
+            Polarity::RiseFall
+        } else {
+            edge.polarity()
+        };
+
+        // One section for the lot: every write below is either a read-modify-write of a register
+        // shared with the port's other pins, or one the handler must not see half of.
+        critical_section::with(|cs| {
+            set_polarity(cs, block, bit, polarity);
+
+            // After the polarity write, so selecting the event cannot leave a status bit behind.
+            block.cpu_int().iclr().write(|w| w.set_dio(bit, true));
+
+            block.fastwake().modify(|w| w.set_din(bit, true));
+
+            // Last, so nothing is delivered before the pin is fully set up.
+            block.cpu_int().imask().modify(|w| w.set_dio(bit, true));
+        });
+    }
+
+    /// Stop this pin's edges reaching the CPU, and drop any already latched.
+    ///
+    /// Leaves the selected edges and `FASTWAKE` alone, so a later [`Flex::enable_interrupt`] with the
+    /// same edge is just the unmask.
+    pub fn disable_interrupt(&mut self) {
+        let block = self.pin.block();
+        let bit = self.pin.bit_index();
+
+        critical_section::with(|_cs| {
+            block.cpu_int().imask().modify(|w| w.set_dio(bit, false));
+            block.cpu_int().iclr().write(|w| w.set_dio(bit, true));
+        });
+    }
+
+    /// Whether an edge is latched for this pin, whether or not it is unmasked.
+    ///
+    /// Reads `RIS`, so it neither clears the pin nor disturbs the port's `IIDX` ordering.
+    pub fn is_pending(&self) -> bool {
+        self.pin.block().cpu_int().ris().read().dio(self.pin.bit_index())
+    }
+
+    /// Drop a latched edge without acting on it.
+    pub fn clear_pending(&mut self) {
+        self.pin
+            .block()
+            .cpu_int()
+            .iclr()
+            .write(|w| w.set_dio(self.pin.bit_index(), true));
+    }
+
+    /// Whether an edge is latched, clearing it.
+    ///
+    /// What a handler wants: reading and clearing separately drops an edge that arrives between the
+    /// two, where this reports it on the next entry.
+    pub fn take_pending(&mut self) -> bool {
+        let block = self.pin.block();
+        let bit = self.pin.bit_index();
+
+        critical_section::with(|_cs| {
+            let pending = block.cpu_int().ris().read().dio(bit);
+
+            if pending {
+                block.cpu_int().iclr().write(|w| w.set_dio(bit, true));
+            }
+
+            pending
+        })
     }
 }
 
@@ -628,17 +735,16 @@ impl<F: Future<Output = ()>> Future for AlwaysOk<F> {
 ///
 /// Its case 2 loses every STANDBY1 wake after the first unless the pin detects both edges, so where it
 /// applies the direction is filtered in software instead.
-#[cfg(feature = "rt")]
 const DETECT_BOTH_EDGES: bool = cfg!(gpio_err_01);
 
-/// Which edge a task is waiting for.
+/// Which edge to detect.
 ///
-/// Pass this to [`Flex::wait_for_edge`] where the edge is chosen at run time. The three
-/// `wait_for_*_edge` methods are the same wait with the edge fixed, and cost a caller who knows it
-/// at compile time nothing extra.
+/// Pass this to [`Flex::wait_for_edge`] where the edge is chosen at run time, or to
+/// [`Flex::enable_interrupt`] where the handler is the application's own. The three `wait_for_*_edge`
+/// methods are the same wait with the edge fixed, and cost a caller who knows it at compile time
+/// nothing extra.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[cfg(feature = "rt")]
 pub enum Edge {
     /// A transition from low to high.
     Rising,
@@ -648,7 +754,6 @@ pub enum Edge {
     Any,
 }
 
-#[cfg(feature = "rt")]
 impl Edge {
     fn polarity(self) -> Polarity {
         match self {
@@ -659,12 +764,37 @@ impl Edge {
     }
 
     /// Whether an edge that left the pin reading `level` is one this wait asked for.
+    #[cfg(feature = "rt")]
     fn accepts(self, level: bool) -> bool {
         match self {
             Edge::Rising => level,
             Edge::Falling => !level,
             Edge::Any => true,
         }
+    }
+}
+
+/// Select which edges a pin latches, leaving everything else about it alone.
+///
+/// Both halves hold sixteen two-bit fields in a `u32`, and the metapac gives them separate types, so
+/// writing through those would emit this read-modify-write twice. Choosing the register first and
+/// editing the field by hand emits it once.
+///
+/// The section is a parameter because this is a read-modify-write of a register the port's other pins
+/// share, so it is a requirement rather than a convention.
+fn set_polarity(_cs: CriticalSection, block: gpio::Gpio, bit: usize, polarity: Polarity) {
+    let polarity_reg = if bit >= 16 {
+        block.polarity31_16().as_ptr() as *mut u32
+    } else {
+        block.polarity15_0().as_ptr() as *mut u32
+    };
+    let shift = (bit % 16) * 2;
+
+    // SAFETY: the pointer is one of this block's own polarity registers, and the caller's critical
+    // section keeps the read-modify-write whole against the port's interrupt.
+    unsafe {
+        let polarity_bits = polarity_reg.read_volatile() & !(0b11 << shift);
+        polarity_reg.write_volatile(polarity_bits | ((polarity as u32) << shift));
     }
 }
 
@@ -782,22 +912,7 @@ impl EdgeArm {
         };
 
         critical_section::with(|cs| {
-            // Both halves hold sixteen two-bit fields in a `u32`, and the metapac gives them separate
-            // types, so writing through those would emit this read-modify-write twice. Choosing the
-            // register first and editing the field by hand emits it once.
-            let polarity_reg = if self.bit >= 16 {
-                self.block.polarity31_16().as_ptr() as *mut u32
-            } else {
-                self.block.polarity15_0().as_ptr() as *mut u32
-            };
-            let shift = (self.bit() % 16) * 2;
-
-            // SAFETY: the pointer is one of this block's own polarity registers, and the critical
-            // section this runs in keeps the read-modify-write whole against the port's interrupt.
-            unsafe {
-                let polarity_bits = polarity_reg.read_volatile() & !(0b11 << shift);
-                polarity_reg.write_volatile(polarity_bits | ((polarity as u32) << shift));
-            }
+            set_polarity(cs, self.block, self.bit(), polarity);
 
             // Drop edges from before the wait, after the polarity write so that selecting the event
             // cannot leave a status bit behind.
@@ -904,6 +1019,32 @@ impl<'d> Input<'d, Blocking> {
         Self {
             pin: Self::configure(Flex::new(pin), pull),
         }
+    }
+
+    /// Latch this pin's edges and let them reach the CPU. See [`Flex::enable_interrupt`], which this
+    /// forwards to — including what it says about servicing a pin alongside the async waits.
+    pub fn enable_interrupt(&mut self, edge: Edge) {
+        self.pin.enable_interrupt(edge);
+    }
+
+    /// Stop this pin's edges reaching the CPU. See [`Flex::disable_interrupt`].
+    pub fn disable_interrupt(&mut self) {
+        self.pin.disable_interrupt();
+    }
+
+    /// Whether an edge is latched for this pin. See [`Flex::is_pending`].
+    pub fn is_pending(&self) -> bool {
+        self.pin.is_pending()
+    }
+
+    /// Drop a latched edge without acting on it. See [`Flex::clear_pending`].
+    pub fn clear_pending(&mut self) {
+        self.pin.clear_pending();
+    }
+
+    /// Whether an edge is latched, clearing it. See [`Flex::take_pending`].
+    pub fn take_pending(&mut self) -> bool {
+        self.pin.take_pending()
     }
 }
 
@@ -1100,6 +1241,32 @@ impl<'d> OutputOpenDrain<'d, Blocking> {
         Self {
             pin: Self::configure(Flex::new(pin), initial_output),
         }
+    }
+
+    /// Latch this pin's edges and let them reach the CPU. See [`Flex::enable_interrupt`], which this
+    /// forwards to — including what it says about servicing a pin alongside the async waits.
+    pub fn enable_interrupt(&mut self, edge: Edge) {
+        self.pin.enable_interrupt(edge);
+    }
+
+    /// Stop this pin's edges reaching the CPU. See [`Flex::disable_interrupt`].
+    pub fn disable_interrupt(&mut self) {
+        self.pin.disable_interrupt();
+    }
+
+    /// Whether an edge is latched for this pin. See [`Flex::is_pending`].
+    pub fn is_pending(&self) -> bool {
+        self.pin.is_pending()
+    }
+
+    /// Drop a latched edge without acting on it. See [`Flex::clear_pending`].
+    pub fn clear_pending(&mut self) {
+        self.pin.clear_pending();
+    }
+
+    /// Whether an edge is latched, clearing it. See [`Flex::take_pending`].
+    pub fn take_pending(&mut self) -> bool {
+        self.pin.take_pending()
     }
 }
 
