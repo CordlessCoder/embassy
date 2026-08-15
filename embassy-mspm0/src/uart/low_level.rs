@@ -436,11 +436,11 @@ impl<'d> UartTx<'d> {
     pub fn try_write(&mut self, byte: u8) -> bool {
         let r = self.info.regs;
 
-        if r.stat().read().txff() {
+        if tx_full(r) {
             return false;
         }
 
-        r.txdata().write(|w| w.set_data(byte));
+        write_byte(r, byte);
 
         true
     }
@@ -448,7 +448,7 @@ impl<'d> UartTx<'d> {
     /// Whether the transmit FIFO has no room.
     #[inline]
     pub fn is_tx_full(&self) -> bool {
-        self.info.regs.stat().read().txff()
+        tx_full(self.info.regs)
     }
 
     /// Whether the transmitter still holds a byte.
@@ -615,7 +615,7 @@ impl<'d> UartRx<'d> {
     pub fn try_read(&mut self) -> Option<Result<u8, Error>> {
         let r = self.info.regs;
 
-        if r.stat().read().rxfe() {
+        if rx_empty(r) {
             return None;
         }
 
@@ -625,7 +625,7 @@ impl<'d> UartRx<'d> {
     /// Whether the receive FIFO holds nothing.
     #[inline]
     pub fn is_rx_empty(&self) -> bool {
-        self.info.regs.stat().read().rxfe()
+        rx_empty(self.info.regs)
     }
 
     /// Let `event` reach the CPU, or stop it.
@@ -686,8 +686,18 @@ impl<'d> Drop for UartRx<'d> {
 
 // ==== The register work the mode drivers share ====
 //
-// Everything below is what [`Uart`] wraps, reached with a bare register block so the async and
-// blocking drivers can call it without going through this module's types.
+// Everything below is what the types above wrap, and every one of them takes a bare register block
+// rather than a `&self`.
+//
+// **That is what makes them reachable from the mode drivers, and it is not a stylistic preference.**
+// The async futures capture the register block by value instead of borrowing their driver, and
+// `TxWrite` holds one next to a `PhantomData` for the same reason — a `Drop` type with a route to the
+// whole driver stops the compiler proving nothing reads the clock `configure` stores, measured at 164
+// bytes. Neither can hold a `&low_level::UartTx`, so a primitive offered only as a method is a
+// primitive they have to open-code.
+//
+// So: a method above is a one-line wrapper over one of these, never the other way round. Adding a
+// register access to a method body puts a second copy of it in this file.
 
 pub(crate) fn enable_interrupt(regs: Regs, event: Event, enable: bool) {
     let mask = event.mask().0;
@@ -713,6 +723,38 @@ pub(crate) fn clear(r: Regs, sources: CpuInt) {
 /// Let the given sources reach the CPU.
 pub(crate) fn unmask(r: Regs, sources: CpuInt) {
     r.cpu_int(0).imask().modify(|w| w.0 |= sources.0);
+}
+
+/// Stop the given sources reaching the CPU.
+pub(crate) fn mask(r: Regs, sources: CpuInt) {
+    r.cpu_int(0).imask().modify(|w| w.0 &= !sources.0);
+}
+
+/// Every source that is both latched and unmasked, in one read.
+///
+/// What a handler dispatches on. [`is_pending`] answers per event and reads `RIS`, so it reports a
+/// source that is latched but masked — right for a caller polling one it never armed, wrong for
+/// deciding what raised the line.
+pub(crate) fn masked_status(r: Regs) -> CpuInt {
+    r.cpu_int(0).mis().read()
+}
+
+/// Whether the receive FIFO holds nothing.
+pub(crate) fn rx_empty(r: Regs) -> bool {
+    r.stat().read().rxfe()
+}
+
+/// Whether the transmit FIFO has no room.
+///
+/// Both this and [`rx_empty`] track `CTL0.FEN`, so they read correctly with the FIFOs off, where the
+/// depth is one byte.
+pub(crate) fn tx_full(r: Regs) -> bool {
+    r.stat().read().txff()
+}
+
+/// Queue one byte, having already found room with [`tx_full`].
+pub(crate) fn write_byte(r: Regs, byte: u8) {
+    r.txdata().write(|w| w.set_data(byte));
 }
 
 /// The sources a receive waits on: the FIFO reaching its level, and the timeout that delivers one

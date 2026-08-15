@@ -59,8 +59,8 @@ use embassy_hal_internal::PeripheralType;
 // through its types: they hold the halves, so `self.inner.info` is the same `&'static` either way and
 // a wrapper method would only be a second name for it.
 pub(crate) use low_level::{
-    Info, State, busy, clear, configure, dma_enabled, enable, eot_sources, read_with_error, reconfigure,
-    retention_guard, rx_sources, set_baudrate, tx_sources, unmask,
+    Info, State, busy, clear, configure, dma_enabled, enable, eot_sources, mask, masked_status, read_with_error,
+    reconfigure, retention_guard, rx_empty, rx_sources, set_baudrate, tx_full, tx_sources, unmask, write_byte,
 };
 
 use crate::Peri;
@@ -583,7 +583,7 @@ impl<'d> UartRx<'d, Async> {
             clear(r, rx_sources());
 
             while let Some(slot) = buffer.get_mut(read) {
-                if r.stat().read().rxfe() {
+                if rx_empty(r) {
                     break;
                 }
 
@@ -616,7 +616,7 @@ impl<'d, M: ModeState> UartRx<'d, M> {
 
         for b in buffer {
             // Wait if nothing has arrived yet.
-            while r.stat().read().rxfe() {}
+            while rx_empty(r) {}
 
             // Prevent the compiler from reading from buffer too early
             compiler_fence(Ordering::Acquire);
@@ -766,12 +766,12 @@ impl<'d> UartTx<'d, Async> {
                 clear(r, tx_sources());
 
                 while let Some(&byte) = buffer.get(written) {
-                    if r.stat().read().txff() {
+                    if tx_full(r) {
                         break;
                     }
 
                     compiler_fence(Ordering::Release);
-                    r.txdata().write(|w| w.set_data(byte));
+                    write_byte(r, byte);
                     written += 1;
                 }
 
@@ -957,13 +957,11 @@ impl<'a, 'd, M: ModeState> TxWrite<'a, 'd, M> {
             // spends the depth it was configured with: one byte would be in flight at a time whatever
             // `Config::fifo` asked for, and the call would return that much later with the rest still to
             // send. Both bits track `CTL0.FEN`, so this reads correctly with the FIFOs off too.
-            while r.stat().read().txff() {}
+            while tx_full(r) {}
 
             // Prevent the compiler from writing to buffer too early
             compiler_fence(Ordering::Release);
-            r.txdata().write(|w| {
-                w.set_data(b);
-            });
+            write_byte(r, b);
         }
 
         Ok(())
@@ -1246,13 +1244,13 @@ pub struct InterruptHandler<T: Instance> {
 impl<T: Instance> crate::interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
         let r = T::info().regs;
-        let int = r.cpu_int(0).mis().read();
+        let int = masked_status(r);
 
         // Mask rather than clear. Every source armed here is a FIFO level or a timeout, and `RIS` is
         // sticky: clearing it while the condition still holds re-raises the line the moment this
         // returns. The future clears and re-arms once it has drained, which is the only point at which
         // the condition is known to be gone.
-        r.cpu_int(0).imask().modify(|w| w.0 &= !int.0);
+        mask(r, int);
 
         let state = T::async_state();
 
