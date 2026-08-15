@@ -463,7 +463,7 @@ impl<'d> UartTx<'d> {
     /// Send a break.
     #[inline]
     pub fn send_break(&self) {
-        self.info.regs.lcrh().modify(|w| w.set_brk(true));
+        send_break(self.info.regs);
     }
 
     /// Shallowest sleep level that keeps a transmission running, if one is needed at all.
@@ -755,6 +755,22 @@ pub(crate) fn tx_full(r: Regs) -> bool {
 /// Queue one byte, having already found room with [`tx_full`].
 pub(crate) fn write_byte(r: Regs, byte: u8) {
     r.txdata().write(|w| w.set_data(byte));
+}
+
+/// One byte, and the fault bits the receiver tagged it with as a raw mask.
+///
+/// [`read_with_error`] is the same read reported as a `Result`, which keeps only the first fault and
+/// discards the byte. A driver that counts faults, or that wants the byte an overrun arrived with,
+/// needs both halves.
+pub(crate) fn read_flagged(r: Regs) -> (u8, u8) {
+    let data = r.rxdata().read();
+
+    (data.data(), (data.0 >> 8) as u8)
+}
+
+/// Hold the line low for a frame.
+pub(crate) fn send_break(r: Regs) {
+    r.lcrh().modify(|w| w.set_brk(true));
 }
 
 /// The sources a receive waits on: the FIFO reaching its level, and the timeout that delivers one

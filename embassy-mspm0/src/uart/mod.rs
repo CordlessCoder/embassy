@@ -59,8 +59,8 @@ use embassy_hal_internal::PeripheralType;
 // through its types: they hold the halves, so `self.inner.info` is the same `&'static` either way and
 // a wrapper method would only be a second name for it.
 pub(crate) use low_level::{
-    Info, State, busy, clear, configure, dma_enabled, enable, eot_sources, mask, masked_status, read_with_error,
-    reconfigure, retention_guard, rx_empty, rx_sources, set_baudrate, tx_full, tx_sources, unmask, write_byte,
+    Info, State, busy, clear, eot_sources, mask, masked_status, read_with_error, reconfigure, rx_empty, rx_sources,
+    tx_full, tx_sources, unmask, write_byte,
 };
 
 use crate::Peri;

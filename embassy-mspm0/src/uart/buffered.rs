@@ -12,8 +12,10 @@ use embedded_hal_nb::nb;
 use crate::gpio::{AnyPin, MaybeAnyPin, SealedPin};
 use crate::interrupt::typelevel::Binding;
 use crate::pac::uart::Uart as Regs;
+use crate::pac::uart::regs::CpuInt;
 use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::{MaybeWakeGuard, SleepLevel};
+use crate::uart::low_level::{self, Event};
 use crate::uart::{Config, ConfigError, CtsPin, Error, Info, Instance, RtsPin, RxPin, State, TxPin};
 use crate::{Peri, interrupt, pac};
 
@@ -251,7 +253,7 @@ impl<'d> BufferedUartRx<'d> {
             rts.update_pf(config.rts_pf());
         }
 
-        super::reconfigure(self.info, &self.state.state, config)?;
+        low_level::reconfigure(self.info, &self.state.state, config)?;
 
         if !self.reborrowed {
             self.wake_guard = self.rx_wake_guard(config.low_power_rx_wake);
@@ -261,7 +263,7 @@ impl<'d> BufferedUartRx<'d> {
 
     /// Set baudrate
     pub fn set_baudrate(&mut self, baudrate: u32) -> Result<(), ConfigError> {
-        super::set_baudrate(self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
+        low_level::set_baudrate(self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
     }
 
     /// Floor to hold while armed for receive-wake, or the plain operating floor otherwise.
@@ -309,11 +311,8 @@ impl Drop for BufferedUartRx<'_> {
                 // Same as the transmit half above, and the receive sources are the worse of the two to
                 // leave behind: nothing drains the FIFO once the buffer is gone, so a level that is
                 // already met keeps the line asserted rather than raising one stray interrupt.
-                self.info.regs.cpu_int(0).imask().modify(|w| {
-                    w.set_rxint(false);
-                    w.set_rtout(false);
-                });
-                self.info.regs.cpu_int(0).iclr().write(|w| w.set_rtout(true));
+                low_level::mask(self.info.regs, low_level::rx_sources());
+                low_level::clear_pending(self.info.regs, Event::RxTimeout);
             }
 
             if let Some(pin) = self.rx.pin() {
@@ -392,12 +391,12 @@ impl<'d> BufferedUartTx<'d> {
             cts.update_pf(config.cts_pf());
         }
 
-        super::reconfigure(self.info, &self.state.state, config)
+        low_level::reconfigure(self.info, &self.state.state, config)
     }
 
     /// Set baudrate
     pub fn set_baudrate(&self, baudrate: u32) -> Result<(), ConfigError> {
-        super::set_baudrate(self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
+        low_level::set_baudrate(self.info, self.state.state.clock.load(Ordering::Relaxed), baudrate)
     }
 
     /// Write to UART TX buffer, blocking execution until done.
@@ -415,23 +414,19 @@ impl<'d> BufferedUartTx<'d> {
         // An empty ring only means the interrupt handed everything to the hardware. The FIFO and shift
         // register still have to drain, and deep sleep entered before they do cuts the frame mid-byte.
         while !state.tx_buf.is_empty() {}
-        while super::busy(self.info.regs) {}
+        while low_level::busy(self.info.regs) {}
 
         Ok(())
     }
 
     /// Check if UART is busy.
     pub fn busy(&self) -> bool {
-        super::busy(self.info.regs)
+        low_level::busy(self.info.regs)
     }
 
     /// Send break character
     pub fn send_break(&mut self) {
-        let r = self.info.regs;
-
-        r.lcrh().modify(|w| {
-            w.set_brk(true);
-        });
+        low_level::send_break(self.info.regs);
     }
 }
 
@@ -455,8 +450,8 @@ impl Drop for BufferedUartTx<'_> {
                 // off with it. A completion left armed here raises an interrupt that finds a
                 // deinitialised buffer and does nothing but cost a wake — and left pending, it fires
                 // again the moment a new transmitter arms it.
-                self.info.regs.cpu_int(0).imask().modify(|w| w.set_eot(false));
-                self.info.regs.cpu_int(0).iclr().write(|w| w.set_eot(true));
+                low_level::mask(self.info.regs, low_level::eot_sources());
+                low_level::clear(self.info.regs, low_level::eot_sources());
             }
 
             if let Some(pin) = self.tx.pin() {
@@ -609,11 +604,11 @@ impl embedded_hal_nb::serial::Read for BufferedUart<'_> {
 
 impl embedded_hal_nb::serial::Read for BufferedUartRx<'_> {
     fn read(&mut self) -> nb::Result<u8, Self::Error> {
-        if self.info.regs.stat().read().rxfe() {
+        if low_level::rx_empty(self.info.regs) {
             return Err(nb::Error::WouldBlock);
         }
 
-        super::read_with_error(self.info.regs).map_err(nb::Error::Other)
+        low_level::read_with_error(self.info.regs).map_err(nb::Error::Other)
     }
 }
 
@@ -706,7 +701,7 @@ impl<'d> BufferedUart<'d> {
                 tx: MaybeAnyPin::new(tx),
                 cts: MaybeAnyPin::new(cts),
                 reborrowed: false,
-                _retention_guard: super::retention_guard(info),
+                _retention_guard: low_level::retention_guard(info),
             },
             rx: BufferedUartRx {
                 info,
@@ -715,7 +710,7 @@ impl<'d> BufferedUart<'d> {
                 rts: MaybeAnyPin::new(rts),
                 reborrowed: false,
                 wake_guard: MaybeWakeGuard::none(),
-                _retention_guard: super::retention_guard(info),
+                _retention_guard: low_level::retention_guard(info),
             },
         };
         this.enable_and_configure(tx_buffer, rx_buffer, &config)?;
@@ -738,8 +733,8 @@ impl<'d> BufferedUart<'d> {
         assert!(!rx_buffer.is_empty());
 
         init_buffers(info, state, Some(tx_buffer), Some(rx_buffer));
-        super::enable(info.regs);
-        super::configure(
+        low_level::enable(info.regs);
+        low_level::configure(
             info,
             &state.state,
             config,
@@ -749,13 +744,7 @@ impl<'d> BufferedUart<'d> {
             self.tx.cts.is_some(),
         )?;
 
-        info.regs.cpu_int(0).imask().modify(|w| {
-            w.set_rxint(true);
-            // Unmasked here rather than only after the first read: with a receive level above one entry,
-            // a first message shorter than that level is delivered by the timeout alone.
-            w.set_rtout(true);
-            arm_errors(w);
-        });
+        low_level::unmask(info.regs, RX_ARMED);
 
         info.interrupt.unpend();
         unsafe { info.interrupt.enable() };
@@ -779,7 +768,7 @@ impl<'d> BufferedUartRx<'d> {
             rts: MaybeAnyPin::new(rts),
             reborrowed: false,
             wake_guard: MaybeWakeGuard::none(),
-            _retention_guard: super::retention_guard(T::info()),
+            _retention_guard: low_level::retention_guard(T::info()),
         };
         this.enable_and_configure(rx_buffer, &config)?;
         this.wake_guard = this.rx_wake_guard(config.low_power_rx_wake);
@@ -793,14 +782,10 @@ impl<'d> BufferedUartRx<'d> {
         let state = self.state;
 
         init_buffers(info, state, None, Some(rx_buffer));
-        super::enable(info.regs);
-        super::configure(info, &self.state.state, config, true, self.rts.is_some(), false, false)?;
+        low_level::enable(info.regs);
+        low_level::configure(info, &self.state.state, config, true, self.rts.is_some(), false, false)?;
 
-        info.regs.cpu_int(0).imask().modify(|w| {
-            w.set_rxint(true);
-            w.set_rtout(true);
-            arm_errors(w);
-        });
+        low_level::unmask(info.regs, RX_ARMED);
 
         info.interrupt.unpend();
         unsafe { info.interrupt.enable() };
@@ -857,10 +842,7 @@ impl<'d> BufferedUartRx<'d> {
 
         // (Re-)Enable the interrupt to receive more data in case it was
         // disabled because the buffer was full or errors were detected.
-        self.info.regs.cpu_int(0).imask().modify(|w| {
-            w.set_rxint(true);
-            w.set_rtout(true);
-        });
+        low_level::unmask(self.info.regs, low_level::rx_sources());
     }
 
     /// we are ready to read if there is data in the buffer
@@ -898,10 +880,7 @@ impl<'d> BufferedUartRx<'d> {
 
         // (Re-)Enable the interrupt to receive more data in case it was
         // disabled because the buffer was full or errors were detected.
-        self.info.regs.cpu_int(0).imask().modify(|w| {
-            w.set_rxint(true);
-            w.set_rtout(true);
-        });
+        low_level::unmask(self.info.regs, low_level::rx_sources());
 
         Poll::Ready(result)
     }
@@ -976,7 +955,7 @@ impl<'d> BufferedUartTx<'d> {
             tx: MaybeAnyPin::new(tx),
             cts: MaybeAnyPin::new(cts),
             reborrowed: false,
-            _retention_guard: super::retention_guard(T::info()),
+            _retention_guard: low_level::retention_guard(T::info()),
         };
 
         this.enable_and_configure(tx_buffer, &config)?;
@@ -1082,7 +1061,7 @@ impl<'d> BufferedUartTx<'d> {
             // The ring empties as soon as the interrupt moves the last byte into the hardware FIFO, so
             // the hardware has to be checked too. The end-of-transmission interrupt re-polls this once
             // it drains, which is why waiting here does not need to spin.
-            if !state.tx_buf.is_empty() || super::busy(self.info.regs) {
+            if !state.tx_buf.is_empty() || low_level::busy(self.info.regs) {
                 state.tx_waker.register(cx.waker());
                 return Poll::Pending;
             }
@@ -1098,12 +1077,10 @@ impl<'d> BufferedUartTx<'d> {
         let state = self.state;
 
         init_buffers(info, state, Some(tx_buffer), None);
-        super::enable(info.regs);
-        super::configure(info, &state.state, config, false, false, true, self.cts.is_some())?;
+        low_level::enable(info.regs);
+        low_level::configure(info, &state.state, config, false, false, true, self.cts.is_some())?;
 
-        info.regs.cpu_int(0).imask().modify(|w| {
-            w.set_rxint(true);
-        });
+        low_level::unmask(info.regs, Event::Rx.mask());
 
         info.interrupt.unpend();
         unsafe { info.interrupt.enable() };
@@ -1141,10 +1118,10 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         markers
     };
 
-    let int = r.cpu_int(0).mis().read();
+    let int = low_level::masked_status(r);
 
     // Per https://github.com/embassy-rs/embassy/pull/1458, both buffered and unbuffered handlers may be bound.
-    if super::dma_enabled(r) {
+    if low_level::dma_enabled(r) {
         #[cfg(feature = "_probe")]
         crate::probe::clear(handler_marker);
 
@@ -1163,14 +1140,11 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         let mut dropped = 0u16;
 
         while n_read < rx_buf.len() {
-            let stat = r.stat().read();
-
-            if stat.rxfe() {
+            if low_level::rx_empty(r) {
                 break;
             }
 
-            let data = r.rxdata().read();
-            let flags = (data.0 >> 8) as u8;
+            let (byte, flags) = low_level::read_flagged(r);
 
             if flags != 0 {
                 errs |= flags;
@@ -1191,7 +1165,7 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
                 continue;
             }
 
-            rx_buf[n_read] = data.data();
+            rx_buf[n_read] = byte;
             n_read += 1;
         }
 
@@ -1226,10 +1200,7 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
             #[cfg(feature = "_probe")]
             crate::probe::set(mask_marker);
 
-            r.cpu_int(0).imask().modify(|w| {
-                w.set_rxint(false);
-                w.set_rtout(false);
-            });
+            low_level::mask(r, low_level::rx_sources());
 
             #[cfg(feature = "_probe")]
             crate::probe::clear(mask_marker);
@@ -1237,13 +1208,8 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
     }
 
     if int.eot() {
-        r.cpu_int(0).imask().modify(|w| {
-            w.set_eot(false);
-        });
-
-        r.cpu_int(0).iclr().write(|w| {
-            w.set_eot(true);
-        });
+        low_level::mask(r, low_level::eot_sources());
+        low_level::clear(r, low_level::eot_sources());
 
         #[cfg(feature = "_probe")]
         crate::probe::count(crate::probe::target(crate::probe::Marker::UartTxWake));
@@ -1262,23 +1228,17 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
         let mut n_written = 0;
 
         for tx_byte in buf.iter_mut() {
-            let stat = r.stat().read();
-
-            if stat.txff() {
+            if low_level::tx_full(r) {
                 break;
             }
 
-            r.txdata().write(|w| {
-                w.set_data(*tx_byte);
-            });
+            low_level::write_byte(r, *tx_byte);
             n_written += 1;
         }
 
         if n_written > 0 {
             // EOT will wake.
-            r.cpu_int(0).imask().modify(|w| {
-                w.set_eot(true);
-            });
+            low_level::unmask(r, low_level::eot_sources());
 
             tx_reader.pop_done(n_written);
         }
@@ -1286,22 +1246,15 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
 
     // Clear TX and error interrupt flags
     // RX interrupt flags are cleared by writing to ICLR.
-    let mis = r.cpu_int(0).mis().read();
-    r.cpu_int(0).iclr().write(|w| {
-        // The receive timeout is unmasked on every read and was never cleared here, so once it had
-        // fired the flag stayed set and each unmask re-asserted the interrupt: a second entry per read
-        // that finds the FIFO already drained and does nothing. Measured on isolated bytes, that was
-        // 2.00 handler entries per byte at 26.7 us against 1.01 at 16.2 us.
-        //
-        // Safe to clear unconditionally because `mis` is the *masked* status: when the ring filled and
-        // the timeout was masked above, this reads false and the pending delivery survives.
-        w.set_rtout(mis.rtout());
-        w.set_nerr(mis.nerr());
-        w.set_frmerr(mis.frmerr());
-        w.set_parerr(mis.parerr());
-        w.set_brkerr(mis.brkerr());
-        w.set_ovrerr(mis.ovrerr());
-    });
+    // The receive timeout is unmasked on every read and was never cleared here, so once it had fired
+    // the flag stayed set and each unmask re-asserted the interrupt: a second entry per read that finds
+    // the FIFO already drained and does nothing. Measured on isolated bytes, that was 2.00 handler
+    // entries per byte at 26.7 us against 1.01 at 16.2 us.
+    //
+    // Safe to clear unconditionally because `mis` is the *masked* status: when the ring filled and the
+    // timeout was masked above, those bits read false and the pending delivery survives.
+    let mis = low_level::masked_status(r);
+    low_level::clear(r, CpuInt(mis.0 & CLEARED_ON_EXIT.0));
 
     // Errors. Gated on the lot of them together: five separate bit tests run on every entry that has no
     // error to report, which is every entry on a healthy line.
@@ -1313,21 +1266,13 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
     crate::probe::clear(handler_marker);
 }
 
-/// Unmask the error interrupts.
-///
-/// Called where the receive interrupts are armed rather than where the buffers are set up: the
-/// peripheral is reset between the two, and an unmask before it does not survive.
-fn arm_errors(w: &mut pac::uart::regs::CpuInt) {
-    w.set_nerr(true);
-    w.set_frmerr(true);
-    w.set_parerr(true);
-    w.set_brkerr(true);
-    w.set_ovrerr(true);
-}
-
 /// The error bits of `CPU_INT`, built from the setters so it cannot drift from the register.
+///
+/// `NERR` is in here and is not a [`Event`] variant: majority voting is off and nothing configures it,
+/// so the source cannot fire. Armed anyway, because it always has been and a bit that never asserts
+/// costs nothing — but it is why this set is not spelled out of `Event`.
 const ERROR_INTERRUPTS: u32 = {
-    let mut w = pac::uart::regs::CpuInt(0);
+    let mut w = CpuInt(0);
     w.set_nerr(true);
     w.set_frmerr(true);
     w.set_parerr(true);
@@ -1335,6 +1280,18 @@ const ERROR_INTERRUPTS: u32 = {
     w.set_ovrerr(true);
     w.0
 };
+
+/// What arming the receiver unmasks: the FIFO level, the timeout that delivers a message shorter than
+/// that level, and the line faults.
+///
+/// Unmasked where the receive interrupts are armed rather than where the buffers are set up: the
+/// peripheral is reset between the two, and an unmask before it does not survive.
+const RX_ARMED: CpuInt = CpuInt(low_level::rx_sources().0 | ERROR_INTERRUPTS);
+
+/// What the handler clears on its way out: everything it has finished acting on.
+///
+/// The receive FIFO level is not in here — that one is cleared by draining the FIFO.
+const CLEARED_ON_EXIT: CpuInt = CpuInt(Event::RxTimeout.mask().0 | ERROR_INTERRUPTS);
 
 /// Add this entry's line faults to the running count.
 ///
