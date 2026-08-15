@@ -150,10 +150,7 @@ mod thread {
                             #[cfg(not(feature = "low-power"))]
                             {
                                 let _ = cs;
-                                let _prefetch = crate::prefetch::PrefetchSuspend::new();
-                                cortex_m::asm::dsb();
-                                cortex_m::asm::wfi();
-                                cortex_m::asm::isb();
+                                crate::prefetch::guarded_wfi();
                             }
                         }
                     });

@@ -36,8 +36,8 @@ use panic_probe as _;
 #[rtic::app(device = embassy_mspm0, peripherals = false, dispatchers = [SPI0, I2C1])]
 mod app {
     use defmt::info;
+    use embassy_mspm0::Config;
     use embassy_mspm0::gpio::{Level, Output};
-    use embassy_mspm0::{Config, low_power};
     use embassy_time::Timer;
 
     /// Long enough that the sleep dominates the time spent awake, and long enough to watch.
@@ -60,11 +60,11 @@ mod app {
         (Shared {}, Local {})
     }
 
-    /// Thread mode, below every task — the one place `sleep` may be called from.
+    /// Thread mode, below every task — the one place a sleep may be entered from.
     #[idle]
     fn idle(_: idle::Context) -> ! {
         loop {
-            critical_section::with(|cs| unsafe { low_power::sleep(cs) });
+            critical_section::with(embassy_mspm0::idle);
         }
     }
 

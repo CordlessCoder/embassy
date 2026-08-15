@@ -33,7 +33,6 @@ pub mod low_power;
 pub mod mathacl;
 #[cfg(opa)]
 pub mod opa;
-#[cfg(any(feature = "low-power", feature = "_executor"))]
 mod prefetch;
 #[cfg(feature = "_probe")]
 pub mod probe;
@@ -617,6 +616,58 @@ pub fn init(config: Config) -> Peripherals {
 
         peripherals
     })
+}
+
+/// Sleep until an interrupt, once.
+///
+/// The idle policy for a scheduler that has none of its own. With `low-power` this enters the deepest
+/// mode the held [`WakeGuard`](sysctl::WakeGuard)s and the next scheduled wake permit; without it, a
+/// plain `WFI`. Either way the instruction prefetcher is suspended across it, which `CPU_ERR_03` asks
+/// for and a bare `WFI` does not do.
+///
+/// The section comes from the caller so that whatever decides there is nothing to do can decide it in
+/// the same one — a race there is a wake missed and slept through. Under [RTIC](https://rtic.rs) there
+/// is nothing to check and `#[idle]` is the whole of it:
+///
+/// ```rust,ignore
+/// #[idle]
+/// fn idle(_: idle::Context) -> ! {
+///     loop {
+///         critical_section::with(embassy_mspm0::idle);
+///     }
+/// }
+/// ```
+///
+/// [`low_power::sleep`] is the same sleep without the guard rail below, for a caller that has already
+/// established it.
+///
+/// # Panics
+///
+/// In debug builds, when called from a handler. `WFI` there is woken only by an interrupt of *higher*
+/// priority than the one running, so the lowest-priority handler never returns — and an RTIC software
+/// task runs inside its dispatcher's handler, which is how this gets reached by accident. Release
+/// builds do not check.
+pub fn idle(cs: critical_section::CriticalSection) {
+    debug_assert!(
+        matches!(
+            cortex_m::peripheral::SCB::vect_active(),
+            cortex_m::peripheral::scb::VectActive::ThreadMode
+        ),
+        "embassy_mspm0::idle sleeps, so it must run in thread mode rather than in a handler"
+    );
+
+    // SAFETY: thread mode, which the assertion above catches in a debug build and the doc comment
+    // carries in a release one.
+    #[cfg(feature = "low-power")]
+    unsafe {
+        low_power::sleep(cs)
+    };
+
+    #[cfg(not(feature = "low-power"))]
+    {
+        let _ = cs;
+        prefetch::guarded_wfi();
+    }
 }
 
 pub(crate) mod sealed {

@@ -1,7 +1,8 @@
 //! Suspending the instruction prefetcher across an idle.
 //!
-//! Not gated on `low-power`: the erratum this works around applies to a plain `WFI` as much as to a
-//! deep sleep, so [`crate::executor`] needs it whether or not the deep-sleep machinery is compiled in.
+//! Not gated at all: the erratum this works around applies to a plain `WFI` as much as to a deep
+//! sleep, so [`crate::idle`] and [`crate::executor`] both need it whether or not the deep-sleep
+//! machinery is compiled in.
 
 use crate::pac;
 
@@ -53,4 +54,21 @@ impl Drop for PrefetchSuspend {
     fn drop(&mut self) {
         pac::CPUSS.ctl().write_value(self.0);
     }
+}
+
+/// `WFI` with the prefetcher suspended across it.
+///
+/// The idle for a build with no sleep guards to consult and no mode to pick. With `low-power` both
+/// callers take [`crate::low_power::sleep`] instead, which does its own suspending, so this is gated
+/// the same way they are rather than left as dead code.
+///
+/// Always inlined, so the two callers pay what writing these four lines out cost them before.
+#[cfg(not(feature = "low-power"))]
+#[inline(always)]
+pub(crate) fn guarded_wfi() {
+    let _prefetch = PrefetchSuspend::new();
+
+    cortex_m::asm::dsb();
+    cortex_m::asm::wfi();
+    cortex_m::asm::isb();
 }

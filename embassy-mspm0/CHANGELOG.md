@@ -267,4 +267,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **breaking**: mspm0/uart: the unbuffered async `write` waits for the transmitter to drain before it resolves, holding its sleep guard for the whole transmission, so a following `flush` is redundant rather than required
 - fix: mspm0/uart: a transmit drain waits on the transmit FIFO on every device, so a transmitter with no receive pin no longer waits forever on a flag that a reception also sets
 - feat: mspm0: `bind_interrupts!` and `bind_group_interrupts!` take `unsafe struct` to bind handlers without emitting a vector-table entry, so a scheduler that owns the vector — RTIC's `#[task(binds = ...)]` — can drive the async drivers
+- feat: mspm0: `idle` sleeps once under a caller's critical section, picking the deepest permitted mode with `low-power` and a prefetch-guarded `WFI` without, so a scheduler with no idle of its own does not have to reach for `unsafe`
 - feat: mspm0: `interrupt_group::ack` clears a group's latched source without dispatching it, for a handler that services the group's sources itself

@@ -45,7 +45,7 @@ mod app {
     #[idle]
     fn idle(_: idle::Context) -> ! {
         loop {
-            critical_section::with(|cs| unsafe { embassy_mspm0::low_power::sleep(cs) });
+            critical_section::with(embassy_mspm0::idle);
         }
     }
 
