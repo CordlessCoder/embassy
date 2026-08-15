@@ -91,6 +91,13 @@ pub enum Event {
 
     /// A result was below the window comparator's low threshold.
     WindowLow,
+
+    /// Any `MEMRES` result at all.
+    ///
+    /// A sequence arms only its last result and lets the earlier ones latch quietly, so a handler
+    /// asking "did the conversion finish" wants the group rather than one index.
+    /// [`take_active`](Adc::take_active) with this is what the asynchronous driver's own handler does.
+    AnyResult,
 }
 
 impl Event {
@@ -107,6 +114,7 @@ impl Event {
             Event::SequenceTimeout => mask.set_tovifg(true),
             Event::WindowHigh => mask.set_highifg(true),
             Event::WindowLow => mask.set_lowifg(true),
+            Event::AnyResult => return RESULT_SOURCES,
         }
 
         mask
@@ -252,8 +260,24 @@ impl<'d, T: Instance> Adc<'d, T> {
     }
 
     /// Whether `event` is latched, whether or not it is unmasked.
+    ///
+    /// Reads `RIS`, so it answers about the source and not about what raised the line. Where only
+    /// some of the sources are armed — a sequence arms its last result alone — that is the wrong
+    /// question, and [`take_active`](Self::take_active) is the right one.
     pub fn is_pending(&self, event: Event) -> bool {
         is_pending::<T>(event)
+    }
+
+    /// Whether `event` is latched **and** unmasked, clearing the part of it that is.
+    ///
+    /// What raised the line, which is what a handler dispatches on: one `MIS` read and at most one
+    /// `ICLR` write, whatever the event covers. `Event::AnyResult` makes it the whole result group,
+    /// which is the shape a sequence's handler wants.
+    ///
+    /// Leaves a latched-but-masked source alone, so a result the caller has not armed keeps its flag
+    /// for whoever does ask.
+    pub fn take_active(&mut self, event: Event) -> bool {
+        take_active::<T>(event)
     }
 
     /// Drop `event`'s latched flag.
@@ -469,6 +493,17 @@ pub(crate) fn enable_interrupt<T: Instance>(event: Event, enable: bool) {
 /// Unmask `event` and mask everything else, in one write.
 pub(crate) fn arm_only<T: Instance>(event: Event) {
     T::info().regs.cpu_int(0).imask().write_value(event.mask());
+}
+
+/// Clear whichever of `event`'s sources are both latched and unmasked, reporting whether any were.
+pub(crate) fn take_active<T: Instance>(event: Event) -> bool {
+    let active = masked_status::<T>().0 & event.mask().0;
+
+    if active != 0 {
+        clear::<T>(regs::CpuInt(active));
+    }
+
+    active != 0
 }
 
 pub(crate) fn is_pending<T: Instance>(event: Event) -> bool {

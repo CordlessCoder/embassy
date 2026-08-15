@@ -14,7 +14,7 @@ use low_level::{ADC_CLK_MAX_HZ, ADC_CLK_MIN_HZ, clock_range, sample_clock_div};
 
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
-use crate::pac::adc::{Adc as Regs, regs, vals};
+use crate::pac::adc::{Adc as Regs, vals};
 use crate::sync::irq_waker::IrqWaker;
 use crate::sysctl::WakeGuard;
 use crate::{Peri, interrupt};
@@ -29,14 +29,10 @@ pub struct InterruptHandler<T: Instance> {
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
-        let state = T::state();
-        let mis = low_level::masked_status::<T>().0 & low_level::RESULT_SOURCES.0;
-
-        // Check if any MEMRES bits were set. irq reads will enable the IRQ for the last channel in use.
-        if mis != 0 {
-            // Clear the MEMRES interrupt bits.
-            low_level::clear::<T>(regs::CpuInt(mis));
-            state.waker.wake();
+        // Only the last result of a sequence is armed, so this asks about the group and clears
+        // whichever of it actually raised the line.
+        if low_level::take_active::<T>(low_level::Event::AnyResult) {
+            T::state().waker.wake();
         }
     }
 }
