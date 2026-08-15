@@ -575,6 +575,105 @@ fn generate_groups() -> TokenStream {
         quote! { $crate::#scanner!($($source)*); }
     });
 
+    // The same walk again, emitting a way to *call* the group's demultiplexer instead of a vector-table
+    // entry. `bind_group_interrupts!`'s `unsafe struct` arm uses these, where the vector belongs to
+    // something else.
+    //
+    // Several `impl` blocks on one type are allowed, so a scanner per group needs no coordination with
+    // its siblings.
+    let entries = METADATA.interrupt_groups.iter().filter(|_| has_rt).map(|group| {
+        let scanner = format_ident!("__mspm0_entries_{}", group.name.to_lowercase());
+        let symbol = Ident::new(group.name, Span::call_site());
+        let demux_name = Ident::new(&group.name.to_lowercase(), Span::call_site());
+        let doc = format!(
+            "Give `$name` a way to run `{}`'s demultiplexer, if anything binds a source on it.",
+            group.name
+        );
+        let summary = format!("Dispatch whatever fired on `{}` to the handlers bound here.", group.name);
+        let safety = format!(
+            "Call this only from `{}`'s own interrupt handler, and from exactly one place in the \
+             binary. Pins and peripherals serviced by hand must have their own status bits cleared \
+             first: `IIDX` reports the lowest set *enabled* bit, so anything still pending is claimed \
+             here.",
+            group.name
+        );
+
+        let hits = group.interrupts.iter().map(|interrupt| {
+            let source = Ident::new(interrupt.name, Span::call_site());
+
+            quote! {
+                ($vis:vis $name:ident; #source $($rest:tt)*) => {
+                    impl $name {
+                        #[doc = #summary]
+                        #[doc = ""]
+                        #[doc = "# Safety"]
+                        #[doc = ""]
+                        #[doc = #safety]
+                        #[allow(non_snake_case)]
+                        #[inline(always)]
+                        $vis unsafe fn #symbol() {
+                            $crate::_group_demux::#demux_name();
+                        }
+                    }
+                };
+            }
+        });
+
+        quote! {
+            #[doc = #doc]
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! #scanner {
+                #(#hits)*
+                ($vis:vis $name:ident; $other:tt $($rest:tt)*) => {
+                    $crate::#scanner!($vis $name; $($rest)*);
+                };
+                ($vis:vis $name:ident;) => {};
+            }
+        }
+    });
+
+    let entry_calls = METADATA.interrupt_groups.iter().filter(|_| has_rt).map(|group| {
+        let scanner = format_ident!("__mspm0_entries_{}", group.name.to_lowercase());
+
+        quote! { $crate::#scanner!($vis $name; $($source)*); }
+    });
+
+    // One acknowledgement per group, for a handler that services its sources itself and so has nothing
+    // to dispatch to.
+    let acks = METADATA.interrupt_groups.iter().map(|group| {
+        let name = Ident::new(&group.name.to_lowercase(), Span::call_site());
+        let number = Literal::u32_unsuffixed(group.number);
+        let doc = format!(
+            "Clear one of `{}`'s latched sources, and say which it was.",
+            group.name
+        );
+        let sources = group
+            .interrupts
+            .iter()
+            .map(|interrupt| format!("`{}`", interrupt.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let listing = format!("The sources on this group are {sources}, in `IIDX` order from 1.");
+
+        quote! {
+            #[doc = #doc]
+            #[doc = ""]
+            #[doc = "Returns the source's one-based `IIDX` index, or [`None`] when nothing was pending."]
+            #[doc = #listing]
+            #[doc = ""]
+            #[doc = "**Call this once per handler entry rather than looping on it.** The read clears \
+                    the highest-priority latched source and leaves the rest, so the group's line \
+                    stays asserted and the NVIC re-enters. That is cheaper than draining here, \
+                    whatever the number pending."]
+            pub fn #name() -> Option<core::num::NonZeroU8> {
+                let stat = crate::pac::CPUSS.int_group(#number).iidx().read().stat().to_bits();
+
+                core::num::NonZeroU8::new(stat)
+            }
+        }
+    });
+
     quote! {
         /// One demultiplexer per interrupt group, called by the vector-table symbol
         /// `bind_group_interrupts!` emits for it.
@@ -594,6 +693,13 @@ fn generate_groups() -> TokenStream {
             #(#sources)*
         }
 
+        /// Acknowledging a group without dispatching it.
+        ///
+        /// Empty on the chips that group nothing.
+        pub mod group_ack {
+            #(#acks)*
+        }
+
         #(#scanners)*
 
         /// The group handlers' vector-table entries, for the groups the bound sources actually land on.
@@ -604,6 +710,20 @@ fn generate_groups() -> TokenStream {
         macro_rules! __mspm0_group_vectors {
             ($($source:ident)*) => {
                 #(#scanner_calls)*
+            };
+        }
+
+        #(#entries)*
+
+        /// A demultiplexer call per group the bound sources land on, for a binary whose vector table
+        /// belongs to something else.
+        ///
+        /// Expands to nothing on a chip that groups nothing, and without `rt`.
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! __mspm0_group_entries {
+            ($vis:vis $name:ident; $($source:ident)*) => {
+                #(#entry_calls)*
             };
         }
     }

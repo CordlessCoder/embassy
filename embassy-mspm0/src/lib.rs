@@ -137,6 +137,16 @@ pub use crate::interrupt::Interrupt;
 /// [`interrupt::typelevel`] cannot describe these: it is keyed on NVIC numbers, and a group source
 /// has none. Bind them with [`bind_group_interrupts!`] instead.
 pub mod interrupt_group {
+    /// Clearing a group's latched source without dispatching it.
+    ///
+    /// One function per group, for a handler that services the group's sources itself and so has
+    /// nothing to hand them to. A handler that *does* dispatch does not need these:
+    /// [`bind_group_interrupts!`](crate::bind_group_interrupts)'s `unsafe struct` arm gives it an
+    /// entry point that acknowledges the group on the way past.
+    ///
+    /// **A group's sources are latched, and one read clears one of them.** Leave a source latched and
+    /// the group's line stays asserted, so the handler returns and the NVIC vectors straight back in.
+    pub use crate::_generated::group_ack as ack;
     // Empty on the 19 chips that group nothing and give every source an NVIC line of its own — the
     // C1105, C1106 and H3216 families — where a glob over an empty module is an unused import, which
     // `-D warnings` turns into a build failure.
@@ -187,8 +197,79 @@ pub mod interrupt_group {
 /// single invocation — a second one fails to link, naming the duplicated group. Sources sharing a
 /// group is the normal case rather than the exception: on most chips `GPIOA`, `GPIOB`, `TRNG` and the
 /// comparators are all on the same one.
+///
+/// # `unsafe struct`, for a vector table someone else owns
+///
+/// Write `unsafe struct` instead of `struct` and no vector-table entry is emitted. Everything else is
+/// the same, and each group the bound sources land on gets a function on the struct for whoever does
+/// own the vector to call:
+///
+/// ```rust,ignore
+/// bind_group_interrupts!(unsafe struct Irqs {
+///     GPIOA => gpio::InterruptHandler;
+/// });
+///
+/// #[task(binds = GROUP1, priority = 2)]
+/// fn on_group1(_: on_group1::Context) {
+///     unsafe { Irqs::GROUP1() }
+/// }
+/// ```
+///
+/// The once-per-binary rule relaxes with it, since there is no vector to duplicate: several
+/// invocations link, and a binary may own one group this way while the HAL owns another the safe way.
+/// Bind each *source* once.
+///
+/// **What the `unsafe` covers is the calling, not the wiring.** A binding whose group is never
+/// dispatched leaves a driver waiting forever, which is a hang and not unsoundness. The obligation is
+/// that the generated function runs only from that group's own handler, and from one place: the
+/// drivers' waker lists are written by exactly one context that cannot preempt itself.
 #[macro_export]
 macro_rules! bind_group_interrupts {
+    // Ahead of the safe arm so the `unsafe` is matched rather than backtracked into.
+    ($(#[$attr:meta])* $vis:vis unsafe struct $name:ident {
+        $(
+            $(#[cfg($cond_source:meta)])?
+            $source:ident => $(
+                $(#[cfg($cond_handler:meta)])?
+                $handler:ty
+            ),*;
+        )*
+    }) => {
+        #[derive(Copy, Clone)]
+        $(#[$attr])*
+        $vis struct $name;
+
+        // A way into each group's demultiplexer, where the safe arm emits that group's vector.
+        $crate::__mspm0_group_entries!($vis $name; $($source)*);
+
+        $(
+            #[allow(non_snake_case)]
+            #[unsafe(no_mangle)]
+            $(#[cfg($cond_source)])?
+            fn $source() {
+                unsafe {
+                    $(
+                        $(#[cfg($cond_handler)])?
+                        <$handler as $crate::interrupt_group::Handler<
+                            $crate::interrupt_group::$source,
+                        >>::on_interrupt();
+                    )*
+                }
+            }
+
+            $(#[cfg($cond_source)])?
+            $crate::bind_group_interrupts!(@inner
+                $(
+                    $(#[cfg($cond_handler)])?
+                    unsafe impl $crate::interrupt_group::Binding<
+                        $crate::interrupt_group::$source,
+                        $handler,
+                    > for $name {}
+                )*
+            );
+        )*
+    };
+
     ($(#[$attr:meta])* $vis:vis struct $name:ident {
         $(
             $(#[cfg($cond_source:meta)])?
@@ -271,9 +352,78 @@ macro_rules! bind_group_interrupts {
 ///     TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
 /// });
 /// ```
+/// # `unsafe struct`, for a vector table someone else owns
+///
+/// Write `unsafe struct` instead of `struct` and no vector-table entry is emitted. The
+/// [`Binding`](crate::interrupt::typelevel::Binding)s a driver asks for are the same; in place of the
+/// entry, each interrupt gets a function on the struct for whoever does own the vector to call:
+///
+/// ```rust,ignore
+/// bind_interrupts!(unsafe struct Irqs {
+///     UART0 => uart::InterruptHandler<peripherals::UART0>;
+/// });
+///
+/// #[task(binds = UART0, priority = 2)]
+/// fn on_uart(_: on_uart::Context) {
+///     unsafe { Irqs::UART0() }
+/// }
+/// ```
+///
+/// See [`bind_group_interrupts!`] for what the `unsafe` covers, and for the peripherals that share an
+/// NVIC line through an interrupt group.
 // developer note: this macro can't be in `embassy-hal-internal` due to the use of `$crate`.
 #[macro_export]
 macro_rules! bind_interrupts {
+    // Ahead of the safe arm so the `unsafe` is matched rather than backtracked into.
+    ($(#[$attr:meta])* $vis:vis unsafe struct $name:ident {
+        $(
+            $(#[cfg($cond_irq:meta)])?
+            $irq:ident => $(
+                $(#[cfg($cond_handler:meta)])?
+                $handler:ty
+            ),*;
+        )*
+    }) => {
+        #[derive(Copy, Clone)]
+        $(#[$attr])*
+        $vis struct $name;
+
+        impl $name {
+            $(
+                #[doc = concat!("Run every handler bound to `", stringify!($irq), "` here.")]
+                #[doc = ""]
+                #[doc = "# Safety"]
+                #[doc = ""]
+                #[doc = concat!(
+                    "Call this from `", stringify!($irq), "`'s own interrupt handler and from nowhere \
+                     else. A driver's waiter list is written by exactly one context that cannot \
+                     preempt itself, and a second caller breaks that.",
+                )]
+                #[allow(non_snake_case)]
+                #[inline(always)]
+                $(#[cfg($cond_irq)])?
+                $vis unsafe fn $irq() {
+                    unsafe {
+                        $(
+                            $(#[cfg($cond_handler)])?
+                            <$handler as $crate::interrupt::typelevel::Handler<$crate::interrupt::typelevel::$irq>>::on_interrupt();
+                        )*
+                    }
+                }
+            )*
+        }
+
+        $(
+            $(#[cfg($cond_irq)])?
+            $crate::bind_interrupts!(@inner
+                $(
+                    $(#[cfg($cond_handler)])?
+                    unsafe impl $crate::interrupt::typelevel::Binding<$crate::interrupt::typelevel::$irq, $handler> for $name {}
+                )*
+            );
+        )*
+    };
+
     ($(#[$attr:meta])* $vis:vis struct $name:ident {
         $(
             $(#[cfg($cond_irq:meta)])?
@@ -377,6 +527,7 @@ pub struct Config {
     /// nothing schedules a wake and the guards alone decide the depth.
     #[cfg(all(feature = "low-power", feature = "_time-driver"))]
     pub min_sleep: embassy_time::Duration,
+
 }
 
 impl Config {
