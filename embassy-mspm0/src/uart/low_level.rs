@@ -967,12 +967,6 @@ const fn tx_level(threshold: FifoThreshold) -> vals::Iflssel {
 /// [`Baud`] itself stays with [`Config`] as the vocabulary a caller configures in — it can be solved
 /// at compile time, and `solve`'s arithmetic is the same whatever block runs it. Only this is the
 /// register work, and both callers of it are in this file.
-///
-/// **Kept out of line deliberately.** It is 52 bytes of straight-line register writes with two call
-/// sites, and inlining it copies them both. It stayed a symbol here on every arm measured, and lost
-/// that status on a downstream 29 KB image where the 52 duly reappeared at a call site — the same
-/// shape `i2c::low_level::init` needed the same attribute for.
-#[inline(never)]
 pub(crate) fn apply_baud(r: Regs, baud: &Baud) {
     r.clkdiv().write(|w| w.set_ratio(baud.div));
     r.ibrd().write(|w| w.set_divint(baud.ibrd));
