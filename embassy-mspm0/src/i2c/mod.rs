@@ -880,6 +880,29 @@ impl<'d, M: Mode> SetConfig for I2c<'d, M> {
     }
 }
 
+impl<'d, M: Mode> I2c<'d, M> {
+    /// Reconfigure the driver.
+    ///
+    /// The whole of it lives on the core; these three are what the mode drivers have always exposed,
+    /// and they forward so that holding a `low_level::I2c` is not the only way to reach them.
+    #[inline]
+    pub fn set_config(&mut self, config: Config) -> Result<(), ConfigError> {
+        self.inner.set_config(config)
+    }
+
+    /// Whether the bus is stuck with a target holding `SDA` low.
+    #[inline]
+    pub fn bus_is_stuck(&self) -> bool {
+        self.inner.bus_is_stuck()
+    }
+
+    /// Clock a stuck target off `SDA`, then return the pins to the peripheral.
+    #[inline]
+    pub fn recover_stuck_bus(&mut self) -> Result<(), Error> {
+        self.inner.recover_stuck_bus()
+    }
+}
+
 impl<'d> I2c<'d, Blocking> {
     pub fn new_blocking<T: Instance>(
         peri: Peri<'d, T>,
