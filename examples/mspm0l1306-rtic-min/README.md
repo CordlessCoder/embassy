@@ -67,3 +67,9 @@ quoting the logger.
 - **`low_power::sleep` may only be called from `#[idle]`.** It has to run in thread mode; an RTIC
   software task runs in its dispatcher's interrupt handler, where a `WFI` at the lowest priority is
   never woken. The same call from a `#[task]` compiles and hangs.
+- **A software task's future does not show up in a section-based RAM count.** RTIC allocates the task
+  executor as a local in its generated `main` and publishes the pointer, so the future sits on a stack
+  frame held for the life of the program instead of in `.bss`. Comparing `.bss` against an executor
+  that puts its tasks in a static therefore reports a saving that is really a move, and a linker
+  stack-floor check does not see it either. Read the frame size off `main`'s prologue and add it. Every
+  binary here uses hardware tasks only, so none of them pays this.
