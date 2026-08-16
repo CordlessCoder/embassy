@@ -245,7 +245,7 @@ impl<'d, T: Instance> Flash<'d, T> {
     pub fn blocking_write_words(&mut self, offset: u32, words: &[u32]) -> Result<(), Error> {
         const HALVES: usize = WORD_SIZE / size_of::<u32>();
 
-        check_range(offset, words.len() * size_of::<u32>())?;
+        check_range(offset, size_of_val(words))?;
 
         if !is_aligned(offset, WORD_SIZE) || !words.len().is_multiple_of(HALVES) {
             return Err(Error::NotAligned);
