@@ -1881,11 +1881,22 @@ macro_rules! impl_wake_capable_pin {
 
 macro_rules! impl_pin {
     ($name: ident, $port: expr, $pin_num: expr) => {
+        impl crate::peripherals::$name {
+            /// What [`AnyPin::steal`](crate::gpio::AnyPin::steal) names this pin by.
+            ///
+            /// A handler that has to reach a pin it does not own needs the number, and the pin's own
+            /// driver is usually the only thing holding a handle. Writing `PA9::PIN_PORT` rather
+            /// than `9` puts the pin type in the caller's source, so moving the function to another
+            /// pin, or building for a package that does not bring this one out, is a compile error
+            /// instead of a handler that quietly services the wrong pin.
+            pub const PIN_PORT: u8 = ($port as u8) * 32 + $pin_num;
+        }
+
         impl crate::gpio::Pin for crate::peripherals::$name {}
         impl crate::gpio::SealedPin for crate::peripherals::$name {
             #[inline]
             fn pin_port(&self) -> u8 {
-                ($port as u8) * 32 + $pin_num
+                Self::PIN_PORT
             }
         }
 
