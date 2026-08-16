@@ -249,36 +249,24 @@ impl<'d> Flex<'d, Blocking> {
     /// Whether an edge is latched for this pin, whether or not it is unmasked.
     ///
     /// Reads `RIS`, so it neither clears the pin nor disturbs the port's `IIDX` ordering.
+    #[inline]
     pub fn is_pending(&self) -> bool {
-        self.pin.block().cpu_int().ris().read().dio(self.pin.bit_index())
+        self.pin.is_pending()
     }
 
     /// Drop a latched edge without acting on it.
+    #[inline]
     pub fn clear_pending(&mut self) {
-        self.pin
-            .block()
-            .cpu_int()
-            .iclr()
-            .write(|w| w.set_dio(self.pin.bit_index(), true));
+        self.pin.clear_pending();
     }
 
     /// Whether an edge is latched, clearing it.
     ///
     /// What a handler wants: reading and clearing separately drops an edge that arrives between the
     /// two, where this reports it on the next entry.
+    #[inline]
     pub fn take_pending(&mut self) -> bool {
-        let block = self.pin.block();
-        let bit = self.pin.bit_index();
-
-        critical_section::with(|_cs| {
-            let pending = block.cpu_int().ris().read().dio(bit);
-
-            if pending {
-                block.cpu_int().iclr().write(|w| w.set_dio(bit, true));
-            }
-
-            pending
-        })
+        self.pin.take_pending()
     }
 }
 
@@ -1406,13 +1394,71 @@ impl AnyPin {
     /// Create an [AnyPin] for a specific pin.
     ///
     /// # Safety
-    /// - `pin_port` should not be in use by another driver.
+    /// - `pin_port` should not be in use by another driver, with one exception: a handle taken only
+    ///   to reach [`is_pending`](Self::is_pending), [`clear_pending`](Self::clear_pending) or
+    ///   [`take_pending`](Self::take_pending) may name a pin a driver already holds. Those three
+    ///   touch `RIS`, which is read-only, and `ICLR`, which is write-one-to-clear — neither is a
+    ///   read-modify-write, so neither can disturb the port's other pins or a configuration write
+    ///   the owning driver is making. Nothing else here is safe to alias, and in particular a second
+    ///   handle must not be turned into a driver: [`Flex`]'s `Drop` disconnects the pin.
     /// - `pin_port` must name a pin this chip has. Two things rest on it: the edge waits index their
     ///   port's waiter list without a bounds check, and `gpio_pincm` tells the optimiser its `match`
     ///   is exhaustive over the real pins. A value outside them is undefined behaviour, not a panic.
     #[inline]
     pub unsafe fn steal(pin_port: u8) -> Peri<'static, Self> {
         Peri::new_unchecked(Self { pin_port })
+    }
+
+    /// Whether an edge is latched for this pin, whether or not it is unmasked.
+    ///
+    /// Reads `RIS`, so it neither clears the pin nor disturbs the port's `IIDX` ordering.
+    ///
+    /// # For a handler that owns no driver
+    ///
+    /// These three are on the pin rather than on [`Flex`] so that an interrupt handler can reach
+    /// them. A handler bound to a group source through
+    /// [`bind_group_interrupts!`](crate::bind_group_interrupts)'s `unsafe struct` arm has no driver
+    /// to call — the application holds it — and acknowledging the *group* does not clear the
+    /// *source*: the port's `RIS` bit survives it and the line asserts again immediately. Take an
+    /// [`AnyPin::steal`] handle for the pin and clear it here.
+    #[inline]
+    pub fn is_pending(&self) -> bool {
+        self.block().cpu_int().ris().read().dio(self.bit_index())
+    }
+
+    /// Drop a latched edge without acting on it.
+    ///
+    /// See [`AnyPin::is_pending`] for reaching this from a handler.
+    #[inline]
+    pub fn clear_pending(&self) {
+        self.block()
+            .cpu_int()
+            .iclr()
+            .write(|w| w.set_dio(self.bit_index(), true));
+    }
+
+    /// Whether an edge is latched, clearing it.
+    ///
+    /// What a handler wants: reading and clearing separately drops an edge that arrives between the
+    /// two, where this reports it on the next entry.
+    ///
+    /// See [`AnyPin::is_pending`] for reaching this from a handler, and
+    /// [`Flex::enable_interrupt`] for the order to service it in when this crate's own edge waits
+    /// share the port.
+    #[inline]
+    pub fn take_pending(&self) -> bool {
+        let block = self.block();
+        let bit = self.bit_index();
+
+        critical_section::with(|_cs| {
+            let pending = block.cpu_int().ris().read().dio(bit);
+
+            if pending {
+                block.cpu_int().iclr().write(|w| w.set_dio(bit, true));
+            }
+
+            pending
+        })
     }
 }
 

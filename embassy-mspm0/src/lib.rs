@@ -224,6 +224,17 @@ pub mod interrupt_group {
 /// invocations link, and a binary may own one group this way while the HAL owns another the safe way.
 /// Bind each *source* once.
 ///
+/// # Binding your own handler
+///
+/// The handler is any type implementing [`Handler<S>`](crate::interrupt_group::Handler), which is a
+/// plain public trait — an application's own type is bound exactly like one of this crate's, and the
+/// demultiplexer dispatches to it the same way. So two sources sharing a group can be serviced by two
+/// unrelated owners: a driver keeps the one it needs while the application takes the other.
+///
+/// Acknowledging the group does **not** clear the source that fired. A handler servicing a pin this
+/// way must clear it — [`AnyPin::is_pending`](crate::gpio::AnyPin::is_pending) says how to reach the
+/// pin without holding its driver — or the line asserts again the moment the handler returns.
+///
 /// **What the `unsafe` covers is the calling, not the wiring.** A binding whose group is never
 /// dispatched leaves a driver waiting forever, which is a hang and not unsoundness. The obligation is
 /// that the generated function runs only from that group's own handler, and from one place: the
