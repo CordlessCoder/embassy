@@ -257,10 +257,36 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// while the program runs, the channel is set up here and the pin is muxed separately with
     /// [`Flex::set_as_af`](crate::gpio::Flex::set_as_af).
     ///
-    /// Duty is then the channel's compare value, [`set_compare`](Self::set_compare), against
-    /// [`load`](Self::load).
+    /// The channel starts at 0% duty, which is a forced-output override rather than a compare
+    /// value. Use [`set_pwm_duty`](Self::set_pwm_duty) to drive it: writing
+    /// [`set_compare`](Self::set_compare) alone leaves the override in place and the output
+    /// clamped, with every other register reading correct.
     pub fn setup_pwm_channel(&mut self, channel: Channel, counting_mode: CountingMode) {
         super::simple_pwm::setup_channel(self.regs(), channel, counting_mode);
+    }
+
+    /// Duty value that means 100%, for a channel set up by
+    /// [`setup_pwm_channel`](Self::setup_pwm_channel).
+    ///
+    /// Equal to the period in ticks when edge-aligned, and half of it when center-aligned.
+    pub fn pwm_max_duty(&self) -> u32 {
+        super::simple_pwm::max_duty(self.regs())
+    }
+
+    /// Duty of `channel` in ticks.
+    pub fn pwm_duty(&self, channel: Channel) -> u32 {
+        super::simple_pwm::duty(self.regs(), channel)
+    }
+
+    /// Set `channel`'s duty in ticks, saturating at [`pwm_max_duty`](Self::pwm_max_duty).
+    ///
+    /// This is the duty setter for a channel set up by
+    /// [`setup_pwm_channel`](Self::setup_pwm_channel), and what
+    /// [`SimplePwmChannel::set_duty`](super::simple_pwm::SimplePwmChannel::set_duty) calls. Neither
+    /// extreme is reachable through the compare value, so both are held by a forced-output
+    /// override, and this is what lifts it.
+    pub fn set_pwm_duty(&self, channel: Channel, ticks: u32) {
+        super::simple_pwm::set_duty(self.regs(), channel, ticks);
     }
 
     /// Registers of this instance, for what this driver does not wrap.

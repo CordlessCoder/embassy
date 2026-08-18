@@ -420,13 +420,7 @@ impl<'d> SimplePwmChannel<'d> {
 
     /// Duty of this channel, in ticks.
     pub fn duty(&self) -> u32 {
-        let n = self.channel.index();
-
-        match self.regs.counterregs(0).ccact(n).read().swfrcact() {
-            Swfrcact::CcpLow => 0,
-            Swfrcact::CcpHigh => self.max_duty(),
-            _ => duty_from_compare(self.regs, self.regs.counterregs(0).cc(n).read()),
-        }
+        duty(self.regs, self.channel)
     }
 
     /// Set the duty in ticks, saturating at [`Self::max_duty`].
@@ -666,11 +660,25 @@ pub(crate) fn setup_channel(r: Tim, channel: Channel, counting_mode: CountingMod
     r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, false));
 }
 
+/// Duty of `channel` in ticks.
+///
+/// Reads the forced-output override first, since that is where both extremes live rather than in the
+/// compare value.
+pub(crate) fn duty(regs: Tim, channel: Channel) -> u32 {
+    let n = channel.index();
+
+    match regs.counterregs(0).ccact(n).read().swfrcact() {
+        Swfrcact::CcpLow => 0,
+        Swfrcact::CcpHigh => max_duty(regs),
+        _ => duty_from_compare(regs, regs.counterregs(0).cc(n).read()),
+    }
+}
+
 /// Set the duty in ticks, saturating at the period.
 ///
 /// Takes the register block and the channel rather than `&mut SimplePwmChannel`, so a caller reaches it
 /// with three registers instead of a handle it has to put on the stack first.
-fn set_duty(regs: Tim, channel: Channel, ticks: u32) {
+pub(crate) fn set_duty(regs: Tim, channel: Channel, ticks: u32) {
     let period = max_duty(regs);
     let ticks = ticks.min(period);
 
@@ -695,7 +703,7 @@ fn set_duty(regs: Tim, channel: Channel, ticks: u32) {
         .modify(|w| w.set_swfrcact(force));
 }
 
-fn max_duty(regs: Tim) -> u32 {
+pub(crate) fn max_duty(regs: Tim) -> u32 {
     let load = regs.counterregs(0).load().read();
 
     match low_level::counting_mode(regs) {
