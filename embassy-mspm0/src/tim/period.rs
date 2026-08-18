@@ -37,7 +37,7 @@ type W<T> = <T as Instance>::Word;
 /// The register's own type rather than a struct of `bool`s: the caller tests two or three bits of it
 /// and a struct costs twelve bytes in the handler to arrive at the same tests. `Z` is the counter
 /// reaching zero, `CCU(0)` its half-range compare, and `CCU(1)` the one the owner arms.
-pub(crate) type Events = mspm0_metapac::tim::regs::Int;
+pub(crate) type IntFlags = mspm0_metapac::tim::regs::Int;
 
 /// Timekeeping state for one timer instance.
 ///
@@ -217,7 +217,7 @@ impl<T: General2ChannelInstance> PeriodCounter<T> {
     ///
     /// Clearing before handling leaves anything latched during the handler pending, so it is picked up
     /// on re-entry rather than lost.
-    pub(crate) fn take_events(&self) -> Events {
+    pub(crate) fn take_events(&self) -> IntFlags {
         let r = self.regs();
         let mis = r.cpu_int(0).mis().read();
 

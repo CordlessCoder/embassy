@@ -11,7 +11,7 @@ use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Ccond, Coc, Cpv, Fp, Isel};
 use crate::sync::irq_waker::IrqWaker;
-use crate::tim::low_level::{self, Config as TimerConfig, Event, Timer};
+use crate::tim::low_level::{self, Config as TimerConfig, Event, Events, Timer};
 use crate::tim::{
     Ch0, Ch1, Ch2, Ch3, Channel, ClockSel, CountingMode, General2ChannelInstance, General4ChannelInstance, Instance,
     TimerChannel, TimerPin, Word,
@@ -104,15 +104,15 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         let wakers = T::cc_wakers();
 
         // Other events the caller enabled through `Timer` are not ours to acknowledge.
-        let fired = r.cpu_int(0).mis().read().0 & low_level::CC_UP_BITS;
+        let fired = low_level::active(r).intersection(Events::ANY_CAPTURE_OR_COMPARE_UP);
 
         // Mask rather than clear: the flag has to survive until the future reads `CC`.
-        r.cpu_int(0).imask().modify(|w| w.0 &= !fired);
+        low_level::enable_interrupts(r, fired, false);
 
         // The instance's own channels, not all four: a two-channel timer has neither the slots nor the
         // events for the other two.
         for (index, waker) in wakers.iter().enumerate() {
-            if fired & Event::CaptureOrCompareUp(Channel::ALL[index]).mask().0 != 0 {
+            if fired.contains(Event::CaptureOrCompareUp(Channel::ALL[index])) {
                 waker.wake();
             }
         }

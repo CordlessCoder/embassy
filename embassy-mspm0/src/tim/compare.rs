@@ -13,7 +13,7 @@ use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::Tim;
 use crate::pac::tim::vals::{Act, Ccpiv, Ccpo, Coc};
 use crate::sync::irq_waker::IrqWaker;
-use crate::tim::low_level::{self, Config as TimerConfig, Event, Timer};
+use crate::tim::low_level::{self, Config as TimerConfig, Event, Events, Timer};
 use crate::tim::{
     Ch0, Ch1, Ch2, Ch3, Channel, ClockSel, CountingDirection, General2ChannelInstance, General4ChannelInstance,
     Instance, TimerChannel, TimerPin, Word,
@@ -107,18 +107,20 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
         // Both directions, since the counting mode is a runtime choice. Only the enabled one can be
         // set in `MIS`, and other events the caller enabled through `Timer` are not ours to acknowledge.
-        let fired = r.cpu_int(0).mis().read().0 & (low_level::CC_UP_BITS | low_level::CC_DOWN_BITS);
+        let fired = low_level::active(r)
+            .intersection(Events::ANY_CAPTURE_OR_COMPARE_UP.union(Events::ANY_CAPTURE_OR_COMPARE_DOWN));
 
         // Mask rather than clear: the flag is what tells the waiting future the match happened.
-        r.cpu_int(0).imask().modify(|w| w.0 &= !fired);
+        low_level::enable_interrupts(r, fired, false);
 
         // The instance's own channels, not all four: a two-channel timer has neither the slots nor the
         // events for the other two.
         for (index, waker) in wakers.iter().enumerate() {
             let channel = Channel::ALL[index];
-            let mask = Event::CaptureOrCompareUp(channel).mask().0 | Event::CaptureOrCompareDown(channel).mask().0;
+            let mask =
+                Events::of(Event::CaptureOrCompareUp(channel)).union(Events::of(Event::CaptureOrCompareDown(channel)));
 
-            if fired & mask != 0 {
+            if !fired.intersection(mask).is_empty() {
                 waker.wake();
             }
         }

@@ -511,6 +511,35 @@ impl<'d, T: Instance> Timer<'d, T> {
         clear_pending(T::info().regs, event);
     }
 
+    /// Every event latched **and** unmasked: what raised the line.
+    ///
+    /// One `MIS` read whatever the set covers, which is what a handler dispatches on — asking
+    /// [`is_pending`](Self::is_pending) per event is one read each, and it cannot tell an event the
+    /// caller armed from one it did not.
+    ///
+    /// Leaves everything latched. Acknowledge with [`clear_events`](Self::clear_events), or mask
+    /// with [`enable_interrupts`](Self::enable_interrupts) where the flag itself is the record a
+    /// waiter reads.
+    pub fn active(&self) -> Events {
+        active(self.regs())
+    }
+
+    /// Every event latched, whether or not it is unmasked.
+    pub fn pending(&self) -> Events {
+        Events(self.regs().cpu_int(0).ris().read().0)
+    }
+
+    /// Acknowledge every event in `events`, in one write.
+    pub fn clear_events(&self, events: Events) {
+        self.regs().cpu_int(0).iclr().write_value(regs::Int(events.0));
+    }
+
+    /// Enable or disable the interrupt for every event in `events`, in one write.
+    ///
+    /// Events outside the set keep their setting.
+    pub fn enable_interrupts(&self, events: Events, enable: bool) {
+        enable_interrupts(self.regs(), events, enable);
+    }
 }
 
 /// Power up an instance and apply `config`, leaving the counter stopped.
@@ -632,20 +661,74 @@ pub(crate) fn sleep_floor<T: Instance>(clock: ClockSel) -> Option<SleepLevel> {
     T::SLEEP.floor_for_operation(clock_hz)
 }
 
-/// Every channel's up-direction capture/compare flag.
+/// A set of [`Event`]s, which is what the interrupt registers hold.
 ///
-/// The only bits the capture and compare handlers acknowledge, so an event the caller enabled through
-/// [`Timer`] is left alone.
-pub(crate) const CC_UP_BITS: u32 = Event::CaptureOrCompareUp(Channel::Ch0).mask().0
-    | Event::CaptureOrCompareUp(Channel::Ch1).mask().0
-    | Event::CaptureOrCompareUp(Channel::Ch2).mask().0
-    | Event::CaptureOrCompareUp(Channel::Ch3).mask().0;
+/// `IMASK`, `RIS`, `MIS` and `ICLR` share a layout, so one value serves for asking what is enabled,
+/// what is latched, what raised the line, and what to acknowledge. Reach it with
+/// [`Timer::active`](Timer::active) and [`Timer::pending`](Timer::pending).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Events(u32);
 
-/// Every channel's down-direction capture/compare flag.
-pub(crate) const CC_DOWN_BITS: u32 = Event::CaptureOrCompareDown(Channel::Ch0).mask().0
-    | Event::CaptureOrCompareDown(Channel::Ch1).mask().0
-    | Event::CaptureOrCompareDown(Channel::Ch2).mask().0
-    | Event::CaptureOrCompareDown(Channel::Ch3).mask().0;
+impl Events {
+    /// No events.
+    pub const NONE: Self = Self(0);
+
+    /// Every channel's up-direction capture/compare flag.
+    ///
+    /// All four, whatever the instance has — a channel a two-channel timer does not implement never
+    /// sets its bit, so the wider set costs a caller nothing.
+    pub const ANY_CAPTURE_OR_COMPARE_UP: Self = Self(
+        Event::CaptureOrCompareUp(Channel::Ch0).mask().0
+            | Event::CaptureOrCompareUp(Channel::Ch1).mask().0
+            | Event::CaptureOrCompareUp(Channel::Ch2).mask().0
+            | Event::CaptureOrCompareUp(Channel::Ch3).mask().0,
+    );
+
+    /// Every channel's down-direction capture/compare flag.
+    pub const ANY_CAPTURE_OR_COMPARE_DOWN: Self = Self(
+        Event::CaptureOrCompareDown(Channel::Ch0).mask().0
+            | Event::CaptureOrCompareDown(Channel::Ch1).mask().0
+            | Event::CaptureOrCompareDown(Channel::Ch2).mask().0
+            | Event::CaptureOrCompareDown(Channel::Ch3).mask().0,
+    );
+
+    /// The set holding just `event`.
+    pub const fn of(event: Event) -> Self {
+        Self(event.mask().0)
+    }
+
+    /// Whether `event` is in this set.
+    pub const fn contains(self, event: Event) -> bool {
+        self.0 & event.mask().0 != 0
+    }
+
+    /// Whether this set holds nothing.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Everything in either set.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Everything in both sets.
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// Everything in this set and not in `other`.
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+}
+
+impl From<Event> for Events {
+    fn from(event: Event) -> Self {
+        Self::of(event)
+    }
+}
 
 // The channel handles have the instance erased, so they reach these with a bare register block.
 
@@ -675,6 +758,15 @@ pub(crate) fn set_compare(regs: Tim, channel: Channel, value: u32) {
     regs.counterregs(0).cc(channel.index()).write_value(value);
 }
 
+pub(crate) fn active(regs: Tim) -> Events {
+    Events(regs.cpu_int(0).mis().read().0)
+}
+
+pub(crate) fn enable_interrupts(regs: Tim, events: Events, enable: bool) {
+    regs.cpu_int(0).imask().modify(|w| {
+        w.0 = if enable { w.0 | events.0 } else { w.0 & !events.0 };
+    });
+}
 
 /// Set the period so the counter completes one period at `hz`.
 ///
