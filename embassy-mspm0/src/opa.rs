@@ -677,6 +677,46 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
             },
         )
     }
+
+    /// Run `A` alone, with `B` left off.
+    ///
+    /// The handle is an ADC channel, and dropping it disables `A`.
+    ///
+    /// This is what an application wants when the pair's other topology is a chain: reaching a
+    /// single stage by building a chain and calling [`Cascade::stop_output`] settles an amplifier
+    /// that was never needed, and this does not enable `B` at all.
+    pub fn only_a<'x>(
+        &'x mut self,
+        input: impl Into<NonInvertingInput<'x, A>>,
+        stage: Stage,
+    ) -> OpaInternalOutput<'x, A> {
+        self.disable();
+
+        OpaInternalOutput {
+            _guard: self.a.enable(Opa::<A>::stage_cfg(input.into(), stage)),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Run `B` alone, with `A` left off.
+    ///
+    /// The handle is an ADC channel, and dropping it disables `B`.
+    ///
+    /// This is what an application wants when the pair's other topology is a chain: reaching a
+    /// single stage by building a chain and calling [`Cascade::stop_output`] settles an amplifier
+    /// that was never needed, and this does not enable `A` at all.
+    pub fn only_b<'x>(
+        &'x mut self,
+        input: impl Into<NonInvertingInput<'x, B>>,
+        stage: Stage,
+    ) -> OpaInternalOutput<'x, B> {
+        self.disable();
+
+        OpaInternalOutput {
+            _guard: self.b.enable(Opa::<B>::stage_cfg(input.into(), stage)),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 /// A standing chain, and both of its outputs.
