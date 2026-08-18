@@ -307,35 +307,7 @@ impl<'d, T: Instance> InputCapture<'d, T> {
 
     /// Program one channel's compare block for capture, following SLAU847F 28.2.3.1.2.1.
     fn setup_channel(&mut self, channel: Channel, edge: CaptureEdge, filter: Filter) {
-        let r = self.timer.regs();
-        let n = channel.index();
-
-        r.counterregs(0).ccctl(n).modify(|w| {
-            w.set_coc(Coc::Capture);
-            w.set_ccond(match edge {
-                CaptureEdge::Rising => Ccond::CcTrigRise,
-                CaptureEdge::Falling => Ccond::CcTrigFall,
-                CaptureEdge::Both => Ccond::CcTrigEdge,
-            });
-        });
-
-        r.commonregs(0).ccpd().modify(|w| w.set_c0ccp(n, false));
-
-        r.counterregs(0).ifctl(n).write(|w| {
-            w.set_isel(Isel::CcpxInput);
-            w.set_inv(false);
-            w.set_cpv(Cpv::ConsecPer);
-            w.set_fe(filter != Filter::None);
-
-            w.set_fp(match filter {
-                Filter::None | Filter::Ticks3 => Fp::_3,
-                Filter::Ticks5 => Fp::_5,
-                Filter::Ticks8 => Fp::_8,
-            });
-        });
-
-        // Discard any edge from before this driver existed.
-        self.timer.clear_pending(Event::CaptureOrCompareUp(channel));
+        setup_channel(self.timer.regs(), channel, edge, filter);
     }
 
     /// Borrow one channel to await its captures.
@@ -397,6 +369,41 @@ pub struct CaptureChannel<'d, W: Word> {
     _phantom: PhantomData<(&'d mut (), W)>,
 }
 
+/// Program one channel's compare block for capture, following SLAU847F 28.2.3.1.2.1.
+///
+/// Takes the register block rather than `&mut InputCapture<T>` so that one copy serves every timer
+/// instance, the same way [`simple_pwm`](super::simple_pwm)'s does.
+pub(crate) fn setup_channel(r: Tim, channel: Channel, edge: CaptureEdge, filter: Filter) {
+    let n = channel.index();
+
+    r.counterregs(0).ccctl(n).modify(|w| {
+        w.set_coc(Coc::Capture);
+        w.set_ccond(match edge {
+            CaptureEdge::Rising => Ccond::CcTrigRise,
+            CaptureEdge::Falling => Ccond::CcTrigFall,
+            CaptureEdge::Both => Ccond::CcTrigEdge,
+        });
+    });
+
+    r.commonregs(0).ccpd().modify(|w| w.set_c0ccp(n, false));
+
+    r.counterregs(0).ifctl(n).write(|w| {
+        w.set_isel(Isel::CcpxInput);
+        w.set_inv(false);
+        w.set_cpv(Cpv::ConsecPer);
+        w.set_fe(filter != Filter::None);
+
+        w.set_fp(match filter {
+            Filter::None | Filter::Ticks3 => Fp::_3,
+            Filter::Ticks5 => Fp::_5,
+            Filter::Ticks8 => Fp::_8,
+        });
+    });
+
+    // Discard any edge from before this driver existed.
+    low_level::clear_pending(r, Event::CaptureOrCompareUp(channel));
+}
+
 impl<W: Word> CaptureChannel<'_, W> {
     /// Wait for the next capture and return the counter value it recorded.
     ///
@@ -408,7 +415,7 @@ impl<W: Word> CaptureChannel<'_, W> {
             self.waker.register(cx.waker());
 
             if low_level::is_pending(self.regs, event) {
-                let value = W::from_reg(self.regs.counterregs(0).cc(self.channel.index()).read());
+                let value = W::from_reg(low_level::compare(self.regs, self.channel));
                 low_level::clear_pending(self.regs, event);
 
                 return Poll::Ready(value);

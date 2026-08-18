@@ -265,6 +265,53 @@ impl<'d, T: Instance> Timer<'d, T> {
         super::simple_pwm::setup_channel(self.regs(), channel, counting_mode);
     }
 
+    /// Configure `channel` to act on a compare match, without claiming a pin for it.
+    ///
+    /// [`Compare`](super::compare::Compare) is the ordinary way to get this, and it takes the pin.
+    /// `action` is what the match does to the output: `None` leaves the pin alone and only raises
+    /// [`Event::CaptureOrCompareUp`] or [`Event::CaptureOrCompareDown`], which is what a channel
+    /// used purely as a scheduling deadline wants.
+    ///
+    /// `direction` has to match the counting mode the instance is configured for — the match action
+    /// lives in a different field per direction, and programming the other one is accepted and does
+    /// nothing.
+    ///
+    /// The match value is [`set_compare`](Self::set_compare), and unlike the PWM channel there is no
+    /// override in the way.
+    pub fn setup_compare_channel(
+        &mut self,
+        channel: Channel,
+        action: Option<super::compare::CompareAction>,
+        direction: super::CountingDirection,
+    ) {
+        super::compare::setup_channel(self.regs(), channel, action, direction);
+    }
+
+    /// Configure `channel` to capture the counter on an edge, without claiming a pin for it.
+    ///
+    /// [`InputCapture`](super::input_capture::InputCapture) is the ordinary way to get this, and it
+    /// takes the pin. The captured value is [`compare`](Self::compare) — capture and compare share
+    /// the register, and `COC` is what decides which way it moves.
+    ///
+    /// `filter` is in counter ticks, so it is a period of the instance's clock rather than a time.
+    pub fn setup_capture_channel(
+        &mut self,
+        channel: Channel,
+        edge: super::input_capture::CaptureEdge,
+        filter: super::input_capture::Filter,
+    ) {
+        super::input_capture::setup_channel(self.regs(), channel, edge, filter);
+    }
+
+    /// Change what a compare match does to `channel`'s pin.
+    ///
+    /// The direction is read from the configured counting mode, so this cannot program the field the
+    /// counter is not using. Only the action moves — the channel stays in compare mode and keeps its
+    /// pin enable.
+    pub fn set_compare_action(&self, channel: Channel, action: super::compare::CompareAction) {
+        super::compare::set_action(self.regs(), channel, action);
+    }
+
     /// Duty value that means 100%, for a channel set up by
     /// [`setup_pwm_channel`](Self::setup_pwm_channel).
     ///
@@ -287,6 +334,33 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// override, and this is what lifts it.
     pub fn set_pwm_duty(&self, channel: Channel, ticks: u32) {
         super::simple_pwm::set_duty(self.regs(), channel, ticks);
+    }
+
+    /// Drive `channel`'s output, or hold it at its inactive level whatever the duty is.
+    ///
+    /// The hold is applied before inversion, so a channel at
+    /// [`Polarity::ActiveLow`](super::simple_pwm::Polarity::ActiveLow) goes high rather than low.
+    /// This is `ODIS`, and it is separate from the duty override — holding the output does not
+    /// change what [`pwm_duty`](Self::pwm_duty) reports.
+    pub fn set_output_enabled(&self, channel: Channel, enabled: bool) {
+        super::simple_pwm::set_output_enabled(self.regs(), channel, enabled);
+    }
+
+    /// Whether `channel`'s output is being driven rather than held.
+    pub fn is_output_enabled(&self, channel: Channel) -> bool {
+        super::simple_pwm::is_output_enabled(self.regs(), channel)
+    }
+
+    /// Which level `channel`'s active phase drives the output to.
+    pub fn polarity(&self, channel: Channel) -> super::simple_pwm::Polarity {
+        super::simple_pwm::polarity(self.regs(), channel)
+    }
+
+    /// Set which level `channel`'s active phase drives the output to.
+    ///
+    /// Inverts the pin immediately, including while the counter is stopped.
+    pub fn set_polarity(&self, channel: Channel, polarity: super::simple_pwm::Polarity) {
+        super::simple_pwm::set_polarity(self.regs(), channel, polarity);
     }
 
     /// Registers of this instance, for what this driver does not wrap.
@@ -369,17 +443,13 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// Capture/compare value of `channel`.
     #[inline]
     pub fn compare(&self, channel: Channel) -> T::Word {
-        T::Word::from_reg(T::info().regs.counterregs(0).cc(channel.index()).read())
+        T::Word::from_reg(compare(T::info().regs, channel))
     }
 
     /// Set the capture/compare value of `channel`.
     #[inline]
     pub fn set_compare(&self, channel: Channel, value: T::Word) {
-        T::info()
-            .regs
-            .counterregs(0)
-            .cc(channel.index())
-            .write_value(value.into());
+        set_compare(T::info().regs, channel, value.into());
     }
 
     /// Largest value this counter reaches.
@@ -440,6 +510,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     pub fn clear_pending(&self, event: Event) {
         clear_pending(T::info().regs, event);
     }
+
 }
 
 /// Power up an instance and apply `config`, leaving the counter stopped.
@@ -593,6 +664,17 @@ pub(crate) fn is_pending(regs: Tim, event: Event) -> bool {
 pub(crate) fn clear_pending(regs: Tim, event: Event) {
     regs.cpu_int(0).iclr().write_value(event.mask());
 }
+
+#[inline]
+pub(crate) fn compare(regs: Tim, channel: Channel) -> u32 {
+    regs.counterregs(0).cc(channel.index()).read()
+}
+
+#[inline]
+pub(crate) fn set_compare(regs: Tim, channel: Channel, value: u32) {
+    regs.counterregs(0).cc(channel.index()).write_value(value);
+}
+
 
 /// Set the period so the counter completes one period at `hz`.
 ///

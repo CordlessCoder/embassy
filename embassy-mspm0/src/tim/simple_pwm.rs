@@ -436,42 +436,29 @@ impl<'d> SimplePwmChannel<'d> {
     /// This forces the signal low *before* inversion, so under [`Polarity::ActiveLow`] the pin goes
     /// high rather than low.
     pub fn disable(&mut self) {
-        self.regs
-            .commonregs(0)
-            .odis()
-            .modify(|w| w.set_c0ccp(self.channel.index(), true));
+        set_output_enabled(self.regs, self.channel, false);
     }
 
     /// Let the signal generator drive the output again.
     pub fn enable(&mut self) {
-        self.regs
-            .commonregs(0)
-            .odis()
-            .modify(|w| w.set_c0ccp(self.channel.index(), false));
+        set_output_enabled(self.regs, self.channel, true);
     }
 
     /// Whether the output is being driven rather than held low.
     pub fn is_enabled(&self) -> bool {
-        !self.regs.commonregs(0).odis().read().c0ccp(self.channel.index())
+        is_output_enabled(self.regs, self.channel)
     }
 
     /// Which level the duty drives the output to.
     pub fn polarity(&self) -> Polarity {
-        if self.regs.counterregs(0).octl(self.channel.index()).read().ccpoinv() {
-            Polarity::ActiveLow
-        } else {
-            Polarity::ActiveHigh
-        }
+        polarity(self.regs, self.channel)
     }
 
     /// Set which level the duty drives the output to.
     ///
     /// Inverts the pin immediately, including while the counter is stopped.
     pub fn set_polarity(&mut self, polarity: Polarity) {
-        self.regs
-            .counterregs(0)
-            .octl(self.channel.index())
-            .modify(|w| w.set_ccpoinv(polarity == Polarity::ActiveLow));
+        set_polarity(self.regs, self.channel, polarity);
     }
 
     /// Set the duty as a fraction of the period, clamped to 100%.
@@ -658,6 +645,36 @@ pub(crate) fn setup_channel(r: Tim, channel: Channel, counting_mode: CountingMod
 
     // SLAU847F 28.2.5.2.1 step 8 says write 1 here; 28.3.32 and driverlib agree 1 is "forced low".
     r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, false));
+}
+
+/// Drive `channel`'s output, or hold it at its inactive level.
+///
+/// The hold is applied before inversion, so under [`Polarity::ActiveLow`] the pin goes high.
+pub(crate) fn set_output_enabled(regs: Tim, channel: Channel, enabled: bool) {
+    regs.commonregs(0)
+        .odis()
+        .modify(|w| w.set_c0ccp(channel.index(), !enabled));
+}
+
+/// Whether `channel`'s output is being driven rather than held.
+pub(crate) fn is_output_enabled(regs: Tim, channel: Channel) -> bool {
+    !regs.commonregs(0).odis().read().c0ccp(channel.index())
+}
+
+/// Which level `channel`'s active phase drives the output to.
+pub(crate) fn polarity(regs: Tim, channel: Channel) -> Polarity {
+    if regs.counterregs(0).octl(channel.index()).read().ccpoinv() {
+        Polarity::ActiveLow
+    } else {
+        Polarity::ActiveHigh
+    }
+}
+
+/// Set which level `channel`'s active phase drives the output to.
+pub(crate) fn set_polarity(regs: Tim, channel: Channel, polarity: Polarity) {
+    regs.counterregs(0)
+        .octl(channel.index())
+        .modify(|w| w.set_ccpoinv(polarity == Polarity::ActiveLow));
 }
 
 /// Duty of `channel` in ticks.

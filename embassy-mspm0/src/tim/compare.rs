@@ -237,30 +237,7 @@ impl<'d, T: Instance> Compare<'d, T> {
 
     /// Put one channel in compare mode, wiring its pin only if it was given one.
     fn setup_channel(&mut self, channel: Channel, action: Option<CompareAction>, direction: CountingDirection) {
-        let r = self.timer.regs();
-        let n = channel.index();
-
-        r.counterregs(0).ccctl(n).modify(|w| w.set_coc(Coc::Compare));
-
-        if let Some(action) = action {
-            r.commonregs(0).ccpd().modify(|w| w.set_c0ccp(n, true));
-
-            r.counterregs(0).ccact(n).write(|w| match direction {
-                CountingDirection::Up => w.set_cuact(action.to_act()),
-                CountingDirection::Down => w.set_cdact(action.to_act()),
-            });
-
-            r.counterregs(0).octl(n).write(|w| {
-                w.set_ccpo(Ccpo::Funcval);
-                w.set_ccpiv(Ccpiv::Low);
-                w.set_ccpoinv(false);
-            });
-
-            r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, false));
-        }
-
-        // Discard any match from before this driver existed.
-        self.timer.clear_pending(event(channel, direction));
+        setup_channel(self.timer.regs(), channel, action, direction);
     }
 
     /// Let the counter run.
@@ -307,6 +284,49 @@ pub struct CompareChannel<'d, W: Word> {
 }
 
 /// Which event a match raises in `mode`.
+/// Put one channel in compare mode, wiring its pin only if it was given one.
+///
+/// Takes the register block rather than `&mut Compare<T>` so that one copy serves every timer
+/// instance, the same way [`simple_pwm`](super::simple_pwm)'s does.
+pub(crate) fn setup_channel(r: Tim, channel: Channel, action: Option<CompareAction>, direction: CountingDirection) {
+    let n = channel.index();
+
+    r.counterregs(0).ccctl(n).modify(|w| w.set_coc(Coc::Compare));
+
+    if let Some(action) = action {
+        r.commonregs(0).ccpd().modify(|w| w.set_c0ccp(n, true));
+
+        r.counterregs(0).ccact(n).write(|w| match direction {
+            CountingDirection::Up => w.set_cuact(action.to_act()),
+            CountingDirection::Down => w.set_cdact(action.to_act()),
+        });
+
+        r.counterregs(0).octl(n).write(|w| {
+            w.set_ccpo(Ccpo::Funcval);
+            w.set_ccpiv(Ccpiv::Low);
+            w.set_ccpoinv(false);
+        });
+
+        r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, false));
+    }
+
+    // Discard any match from before this driver existed.
+    low_level::clear_pending(r, event(channel, direction));
+}
+
+/// Change what a compare match does to `channel`'s pin.
+///
+/// The direction comes from the configured counting mode, so the field the counter is not using is
+/// left alone rather than programmed to no effect.
+pub(crate) fn set_action(regs: Tim, channel: Channel, action: CompareAction) {
+    let direction = low_level::counting_mode(regs).direction();
+
+    regs.counterregs(0).ccact(channel.index()).modify(|w| match direction {
+        CountingDirection::Up => w.set_cuact(action.to_act()),
+        CountingDirection::Down => w.set_cdact(action.to_act()),
+    });
+}
+
 const fn event(channel: Channel, direction: CountingDirection) -> Event {
     match direction {
         CountingDirection::Up => Event::CaptureOrCompareUp(channel),
@@ -322,7 +342,7 @@ impl<W: Word> CompareChannel<'_, W> {
 
     /// Counter value this channel matches on.
     pub fn compare(&self) -> W {
-        W::from_reg(self.regs.counterregs(0).cc(self.channel.index()).read())
+        W::from_reg(low_level::compare(self.regs, self.channel))
     }
 
     /// Set the counter value to match on.
@@ -330,10 +350,7 @@ impl<W: Word> CompareChannel<'_, W> {
     /// Takes effect immediately, so a value the counter has already passed does not match until the
     /// next wrap.
     pub fn set_compare(&mut self, value: W) {
-        self.regs
-            .counterregs(0)
-            .cc(self.channel.index())
-            .write_value(value.into());
+        low_level::set_compare(self.regs, self.channel, value.into());
     }
 
     /// Wait for the counter to reach the compare value.
@@ -379,14 +396,6 @@ impl<W: Word> CompareChannel<'_, W> {
 
     /// Set what the pin does on a match, for a channel that was given one.
     pub fn set_action(&mut self, action: CompareAction) {
-        let direction = low_level::counting_mode(self.regs).direction();
-
-        self.regs
-            .counterregs(0)
-            .ccact(self.channel.index())
-            .modify(|w| match direction {
-                CountingDirection::Up => w.set_cuact(action.to_act()),
-                CountingDirection::Down => w.set_cdact(action.to_act()),
-            });
+        set_action(self.regs, self.channel, action);
     }
 }
