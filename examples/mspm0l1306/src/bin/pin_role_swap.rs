@@ -41,8 +41,10 @@ async fn main(_spawner: Spawner) -> ! {
     unwrap!(timer.set_frequency(FREQUENCY));
     timer.setup_pwm_channel(Channel::Ch0, CountingMode::EdgeAlignedUp);
 
-    let half = timer.load() / 2;
-    timer.set_compare(Channel::Ch0, half);
+    // Duty rather than a bare compare write. 0% and 100% live in a forced-output override that
+    // `set_compare` cannot lift, and the channel starts at 0%, so writing the compare alone leaves
+    // the pin dead with every other register reading correct.
+    timer.set_pwm_duty(Channel::Ch0, timer.pwm_max_duty() / 2);
     timer.start();
 
     let mut pin = Flex::new(p.PA26.reborrow());

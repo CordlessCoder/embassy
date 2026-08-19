@@ -699,9 +699,19 @@ pub(crate) fn set_duty(regs: Tim, channel: Channel, ticks: u32) {
     let period = max_duty(regs);
     let ticks = ticks.min(period);
 
-    // Neither extreme is reachable through the compare value, so both use the forced-output
-    // override. Merely disabling the event that starts the pulse does not work: with SWFRCACT
-    // clear the signal generator still drives its own compare-based waveform.
+    // Both extremes use the forced-output override, in every counting mode. Measured on silicon, and
+    // the compare value fails differently in each:
+    //
+    // - Counting up, 0% is a compare of zero, which puts the zero event and the compare match on the
+    //   same tick. That resolved cleanly six times in seven and left a narrow spike the seventh, so
+    //   it is a race rather than a wrong answer — the worst kind, since it passes a casual test.
+    // - Counting down and centred, the same collision lands at `LOAD` and leaves a spike every time.
+    // - Counting down, 100% has no compare value at all: duty is `LOAD - CC`, so a full period would
+    //   need a negative one, and the nearest reachable is one tick short.
+    //
+    // A compare above `LOAD` does give a clean 100% counting up, but `CC` is the counter's width, so
+    // at the maximum period there is no value above it. One path that always works beats four that
+    // each work sometimes.
     let force = match ticks {
         0 => Swfrcact::CcpLow,
         t if t >= period => Swfrcact::CcpHigh,
