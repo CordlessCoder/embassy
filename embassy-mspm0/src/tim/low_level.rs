@@ -572,9 +572,10 @@ pub(crate) fn configure<T: Instance>(config: &Config) {
     // Polling is not an alternative. The note covers "the rest of" the registers, so `PWREN` itself
     // stays readable and reads back true while writes behind it are still being lost.
     //
-    // The count is generous on purpose: `asm::delay` runs iterations rather than cycles, about five
-    // each here, so this is roughly 80 MCLK cycles against a requirement of 8. Do not trim it toward
-    // the TRM's figure — the units are not the same.
+    // The count is generous on purpose: `asm::delay` runs iterations rather than cycles, three each
+    // here, so this is roughly 48 MCLK cycles against a requirement of 8. Do not trim it toward the
+    // TRM's figure — the units are not the same, and the factor is a property of the flash caches
+    // rather than of the part, so it is five again on anything that boots with them off.
     cortex_m::asm::delay(16);
 
     apply_config::<T>(config);

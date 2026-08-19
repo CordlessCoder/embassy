@@ -32,7 +32,8 @@
 //! does not own: the CPU clock a spin has to be sized against, and whether you would rather spin at all
 //! than arm a timer. Wait one to two bit times at your configured baud after the flush, before you
 //! sleep. Size a [`cortex_m::asm::delay`] generously — it counts loop iterations rather than cycles,
-//! about five cycles each on this silicon, so a count derived as if it were cycles errs long.
+//! three each with the flash caches on and five with them off, so a count derived as if it were
+//! cycles errs long.
 //!
 //! Most callers can ignore all of this. It matters when the receiving end cannot detect a truncated
 //! frame, which is to say when the protocol carries no length and no checksum.
