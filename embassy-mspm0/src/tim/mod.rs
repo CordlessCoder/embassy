@@ -216,16 +216,38 @@ impl ClockSel {
     }
 }
 
+/// Which way the counter runs, and where a period starts.
+///
+/// # Porting a driverlib configuration
+///
+/// **`DL_TIMER_PWM_MODE_EDGE_ALIGN` is down-counting.** The unqualified name is
+/// `GPTIMER_CTRCTL_CM_DOWN`, and `DL_TIMER_PWM_MODE_EDGE_ALIGN_UP` is the up-counting one, so
+/// translating by name gives the opposite mode. They also program opposite output actions —
+/// `LACT`/`CDACT` against `ZACT`/`CUACT` — which puts the high time at `LOAD - CC` for one and `CC`
+/// for the other.
+///
+/// A port that carries over driverlib's compare arithmetic as well as its mode inverts twice. The
+/// duty setters here take a duty in ticks and do the per-mode conversion themselves, so
+/// [`SimplePwmChannel::set_duty`](simple_pwm::SimplePwmChannel::set_duty) and
+/// [`low_level::Timer::set_pwm_duty`] are the ones to aim a port at, not [`low_level::Timer::set_compare`].
+///
+/// **The mistake survives testing at 50%**, which is its own complement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CountingMode {
     /// The timer counts up to the reload value and then resets back at 0.
+    ///
+    /// driverlib's `DL_TIMER_PWM_MODE_EDGE_ALIGN_UP`.
     EdgeAlignedUp,
 
     /// The timer counts down to 0 and then resets back to the load value.
+    ///
+    /// driverlib's `DL_TIMER_PWM_MODE_EDGE_ALIGN`, whose name does not say so.
     EdgeAlignedDown,
 
     /// The timer counts up to the load value and then counts back to 0.
+    ///
+    /// driverlib's `DL_TIMER_PWM_MODE_CENTER_ALIGN`.
     CenterAligned,
 }
 
