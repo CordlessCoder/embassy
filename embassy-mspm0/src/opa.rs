@@ -289,6 +289,27 @@ pub enum LadderBottom {
 /// immediates, so a shared body has to carry them as arguments instead — measured on the timer, that
 /// lost at every instance count a part reaches. [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm)
 /// carries the figures and what did pay.
+///
+/// # What the driver waits for, and what it does not
+///
+/// Every constructor spins on `STAT.RDY` before handing back a handle. The TRM says only that the bit
+/// "is set when the OPA is ready for use" and refers the timing to the device datasheet, where **two
+/// different quantities are specified**:
+///
+/// - `tEN`, the enable time, with no load in its test conditions. On the L1306, typically 7.3 us and
+///   at most 12 with `GainBandwidth::Low`, and 4.4 / 6 with `High`.
+/// - `tSETTLE`, the settling time, **specified at `CL` = 40 pF** with `ENABLE` already set.
+///
+/// The second carries a stated load and the first does not, which is the whole point: settling
+/// depends on what the output drives and enabling does not. **`RDY` is the enable, so it cannot be
+/// telling you the output has settled into your load.** A conversion taken the instant this returns
+/// is a conversion taken on an amplifier that has finished starting, not necessarily one that has
+/// finished slewing.
+///
+/// Nothing here waits `tSETTLE` on the caller's behalf, for the same reason the UART does not spin out
+/// its last bit: the wait belongs to a load the driver does not know. Where it matters, take two
+/// conversions a known interval apart with the input held still and confirm they differ only by
+/// noise — a systematic gap is the stage still moving after `RDY` cleared.
 pub struct Opa<'d, T: Instance> {
     _peri: Peri<'d, T>,
     chop: vals::Chop,
@@ -403,8 +424,8 @@ impl<'d, T: Instance> Opa<'d, T> {
         cfg.set_chop(self.chop);
         r.cfg().write_value(cfg);
         r.ctl().write(|w| w.set_enable(true));
-        // Bounded by the hardware: RDY follows within the datasheet's enable time, single-digit
-        // microseconds.
+        // Bounded by the hardware, and see the note on `Opa` for what this does and does not cover:
+        // `RDY` is the enable completing, not the output settling into a load.
         while !r.stat().read().rdy() {}
 
         guard
@@ -805,7 +826,8 @@ impl<'a, Up: Instance, Down: Instance> UpstreamOnly<'a, Up, Down> {
 
         let r = Down::regs();
         r.ctl().write(|w| w.set_enable(true));
-        // Bounded by the hardware: `RDY` follows within the datasheet's enable time.
+        // Bounded by the hardware. Same caveat as `Opa::enable`: this is the enable completing, not
+        // the output settling into a load.
         while !r.stat().read().rdy() {}
 
         Cascade {
