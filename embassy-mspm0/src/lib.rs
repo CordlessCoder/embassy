@@ -113,6 +113,8 @@ pub(crate) use mspm0_metapac as pac;
 /// Without it an application has to write a shim module of its own to hold it.
 #[cfg(feature = "rt")]
 pub use pac::NVIC_PRIO_BITS;
+#[cfg(feature = "rtic-monotonic")]
+pub use {fugit, rtic_time};
 
 /// The interrupt groups' demultiplexers, called by the vector-table symbols
 /// [`bind_group_interrupts!`] emits. Public only so that macro can name them from the user's crate.
@@ -122,8 +124,6 @@ pub use crate::_generated::group_demux as _group_demux;
 pub use crate::_generated::interrupt;
 #[cfg(feature = "rtic-monotonic")]
 pub use crate::_generated::rtic_backend;
-#[cfg(feature = "rtic-monotonic")]
-pub use {fugit, rtic_time};
 /// The interrupt enum, at the path RTIC's `#[app(device = embassy_mspm0)]` expects it.
 ///
 /// Needed only by a hardware task: `#[task(binds = ...)]` names the enum from the crate root, while
@@ -550,6 +550,69 @@ pub struct Config {
     /// else would enable them. A driver with an NVIC line of its own enables it when constructed and
     /// is not affected.
     pub interrupts: InterruptPolicy,
+
+    /// How instructions and literals reach the core from flash.
+    ///
+    /// Defaults to what reset leaves, which is everything on. It is written rather than inherited on
+    /// purpose — see [`InstructionFetch`] for the state a debugger leaves behind.
+    pub instruction_fetch: InstructionFetch,
+}
+
+/// Prefetch and the two flash caches.
+///
+/// **A part flashed by a debugger does not boot in the reset state.** Programming flash needs
+/// prefetch and both caches off, so the loader clears them, and a soft reset does not put them back
+/// — a device is then two wait states slower than the same image is after a power cycle, for as long
+/// as nothing writes the register. On this part that is the difference between three cycles and five
+/// for a two-instruction loop.
+///
+/// It matters beyond speed because it is stable rather than drifting: a timing constant fitted in the
+/// ordinary edit-flash-measure loop is fitted to the debugger's state, and only fails once the
+/// product is powered from its own supply.
+///
+/// [`init`] therefore writes this field instead of leaving what it finds. The default is the reset
+/// value, so a build that says nothing behaves as it always has — but deterministically, rather than
+/// inheriting whatever last touched the part.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct InstructionFetch {
+    /// Fetch ahead of the program counter.
+    pub prefetch: bool,
+
+    /// Cache instructions read from flash.
+    pub icache: bool,
+
+    /// Cache and prefetch literals.
+    ///
+    /// A subset of the other two: literals are only cached while `icache` is on and only prefetched
+    /// while `prefetch` is, so this alone does nothing.
+    pub literals: bool,
+}
+
+impl InstructionFetch {
+    /// Everything on, which is what reset leaves.
+    pub const RESET: Self = Self {
+        prefetch: true,
+        icache: true,
+        literals: true,
+    };
+
+    /// Everything off, so an instruction fetch is a flash access every time.
+    ///
+    /// For code being timed instruction by instruction, where a cache hit is the thing making the
+    /// measurement irreproducible.
+    pub const OFF: Self = Self {
+        prefetch: false,
+        icache: false,
+        literals: false,
+    };
+}
+
+impl Default for InstructionFetch {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::RESET
+    }
 }
 
 /// Which interrupt lines [`init`] enables on the application's behalf.
@@ -602,6 +665,7 @@ impl Config {
             #[cfg(all(feature = "low-power", feature = "_time-driver"))]
             min_sleep: low_power::DEFAULT_MIN_SLEEP,
             interrupts: InterruptPolicy::Enable,
+            instruction_fetch: InstructionFetch::RESET,
         }
     }
 }
@@ -627,6 +691,11 @@ pub fn init(config: Config) -> Peripherals {
         // only failure left is an oscillator that never started, and formatting the error would pull
         // the whole `defmt` value-formatting path into every binary for a case that cannot be
         // recovered from anyway.
+        // Before everything, including the clock tree: what this leaves decides how many cycles a
+        // flash access costs, so any code that times itself against a clock rate wants it settled
+        // first.
+        prefetch::configure(config.instruction_fetch);
+
         // Before the clock tree: starting HFXT raises the pump, and a policy applied afterwards would
         // have let that first start pay the pump's startup time for nothing.
         sysctl::set_vboost(config.vboost);

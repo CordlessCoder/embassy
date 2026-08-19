@@ -4,7 +4,7 @@
 //! sleep, so [`crate::idle`] and [`crate::executor`] both need it whether or not the deep-sleep
 //! machinery is compiled in.
 
-use crate::pac;
+use crate::{InstructionFetch, pac};
 
 /// Workaround for CPU_ERR_02, CPU_ERR_03, PMCU_ERR_13 - the prefetcher has at least one errata in
 /// sleep for every currently supported MCU.
@@ -71,4 +71,30 @@ pub(crate) fn guarded_wfi() {
     cortex_m::asm::dsb();
     cortex_m::asm::wfi();
     cortex_m::asm::isb();
+}
+
+/// Program the instruction-fetch path, and make a disable take effect before returning.
+///
+/// `CPU_ERR_02`: a prefetch or cache *disable* does not take effect while a flash access is pending,
+/// so the errata sheet asks for a memory access afterwards. The completion sequence is therefore only
+/// emitted where a bit is being cleared, which for a `const` config folds it away entirely — and the
+/// default clears nothing.
+#[inline(always)]
+pub(crate) fn configure(cfg: InstructionFetch) {
+    let mut ctl = pac::cpuss::regs::Ctl(0);
+    ctl.set_prefetch(cfg.prefetch);
+    ctl.set_icache(cfg.icache);
+    ctl.set_liten(cfg.literals);
+
+    pac::CPUSS.ctl().write_value(ctl);
+
+    if !cfg.prefetch || !cfg.icache || !cfg.literals {
+        #[cfg(mspm0_shutdnstore)]
+        let _ = pac::SYSCTL.shutdnstore(0).read();
+        #[cfg(not(mspm0_shutdnstore))]
+        let _ = pac::SYSCTL.clkstatus().read();
+
+        cortex_m::asm::dsb();
+        cortex_m::asm::isb();
+    }
 }
