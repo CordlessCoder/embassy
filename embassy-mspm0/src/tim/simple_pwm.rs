@@ -235,7 +235,11 @@ pub struct SimplePwm<'d, T: Instance> {
 }
 
 impl<'d, T: General2ChannelInstance> SimplePwm<'d, T> {
-    /// Configure a two-channel timer for PWM output, leaving every channel at 0% duty and stopped.
+    /// Configure a two-channel timer for PWM output, leaving every channel at 0% duty, output
+    /// disabled, and stopped.
+    ///
+    /// [`SimplePwmChannel::enable`] is what starts a channel driving its pin, as it is on every other
+    /// embassy HAL. Setting a duty alone does not.
     ///
     /// Channels without a pin are left alone.
     pub fn new_2ch(
@@ -258,7 +262,11 @@ impl<'d, T: General2ChannelInstance> SimplePwm<'d, T> {
 }
 
 impl<'d, T: General4ChannelInstance> SimplePwm<'d, T> {
-    /// Configure a four-channel timer for PWM output, leaving every channel at 0% duty and stopped.
+    /// Configure a four-channel timer for PWM output, leaving every channel at 0% duty, output
+    /// disabled, and stopped.
+    ///
+    /// [`SimplePwmChannel::enable`] is what starts a channel driving its pin, as it is on every other
+    /// embassy HAL. Setting a duty alone does not.
     ///
     /// Channels without a pin are left alone.
     pub fn new_4ch(
@@ -643,8 +651,15 @@ pub(crate) fn setup_channel(r: Tim, channel: Channel, counting_mode: CountingMod
         w.set_ccpoinv(false);
     });
 
-    // SLAU847F 28.2.5.2.1 step 8 says write 1 here; 28.3.32 and driverlib agree 1 is "forced low".
-    r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, false));
+    // Held rather than driving, which is `ODIS`'s stated purpose — the TRM has it there so software
+    // can "hold the CCP output low during configuration or shutdown". `SimplePwmChannel::enable` and
+    // `low_level::Timer::set_output_enabled` are what release it.
+    //
+    // Two mechanisms hold this pin low and they mean different things. `ODIS` is whether the channel
+    // drives the pin at all; `SWFRCACT` above is a duty of exactly 0%, which no compare value can
+    // express. Keeping them separate is what gives a dead pin a register that reads wrong, and
+    // `is_output_enabled` a useful answer.
+    r.commonregs(0).odis().modify(|w| w.set_c0ccp(n, true));
 }
 
 /// Drive `channel`'s output, or hold it at its inactive level.

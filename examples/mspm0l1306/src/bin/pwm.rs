@@ -40,6 +40,10 @@ async fn main(_spawner: Spawner) -> ! {
         pwm.timer().tick_frequency()
     );
 
+    // Both channels start held, so this is what puts them on the pins.
+    pwm.channel(Channel::Ch0).enable();
+    pwm.channel(Channel::Ch1).enable();
+
     pwm.start();
 
     loop {

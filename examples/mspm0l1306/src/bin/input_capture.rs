@@ -41,6 +41,7 @@ async fn main(_spawner: Spawner) -> ! {
     ));
 
     pwm.channel(Channel::Ch0).set_duty_percent(50);
+    pwm.channel(Channel::Ch0).enable();
     pwm.start();
 
     let mut capture = InputCapture::new_2ch(

@@ -153,6 +153,7 @@ async fn main(_spawner: Spawner) -> ! {
         },
     ));
     pwm.channel(Channel::Ch0).set_duty_percent(50);
+    pwm.channel(Channel::Ch0).enable();
     pwm.start();
 
     let mut counter = low_level::Timer::new(

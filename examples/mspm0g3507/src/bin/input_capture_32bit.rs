@@ -44,6 +44,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let max = pwm.max_duty();
     pwm.channel(Channel::Ch1).set_duty_percent(50);
+    pwm.channel(Channel::Ch1).enable();
     pwm.start();
 
     info!("TIMG7 driving {} Hz on PA31, {} ticks per period", FREQUENCY, max);

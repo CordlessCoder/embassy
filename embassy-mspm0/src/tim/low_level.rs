@@ -257,10 +257,16 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// while the program runs, the channel is set up here and the pin is muxed separately with
     /// [`Flex::set_as_af`](crate::gpio::Flex::set_as_af).
     ///
-    /// The channel starts at 0% duty, which is a forced-output override rather than a compare
-    /// value. Use [`set_pwm_duty`](Self::set_pwm_duty) to drive it: writing
-    /// [`set_compare`](Self::set_compare) alone leaves the override in place and the output
-    /// clamped, with every other register reading correct.
+    /// **The channel starts held, and takes two calls to drive a pin.**
+    /// [`set_output_enabled`](Self::set_output_enabled) releases `ODIS`, and
+    /// [`set_pwm_duty`](Self::set_pwm_duty) sets the duty — [`set_compare`](Self::set_compare) alone
+    /// does not, because 0% and 100% are a forced-output override rather than a compare value and the
+    /// channel starts at 0%.
+    ///
+    /// Two registers hold the pin and they answer different questions. `ODIS` is whether the channel
+    /// drives the pin at all, and [`is_output_enabled`](Self::is_output_enabled) reports it. The
+    /// override is the duty. A pin that is dead despite a duty being set is the first of those, which
+    /// is why it is a register that reads wrong rather than one more that reads correct.
     pub fn setup_pwm_channel(&mut self, channel: Channel, counting_mode: CountingMode) {
         super::simple_pwm::setup_channel(self.regs(), channel, counting_mode);
     }
