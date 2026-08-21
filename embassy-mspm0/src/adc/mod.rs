@@ -346,7 +346,10 @@ pub struct Config {
 
 impl Config {
     /// Maximum number of sample clocks that may be performed when sampling.
-    pub const MAX_SAMPLE_PERIOD: NonZeroU16 = NonZeroU16::new((1 << 9) - 1).unwrap();
+    ///
+    /// `SCOMPx.VAL` is ten bits on every supported device, checked against TI's
+    /// `ADC12_SCOMP0_VAL_MASK` and the metapac's own accessor.
+    pub const MAX_SAMPLE_PERIOD: NonZeroU16 = NonZeroU16::new((1 << 10) - 1).unwrap();
 
     /// Take the sample clock from a [`SolvedSampleClock`], skipping both divider ladders.
     pub const fn with_sample_clk(mut self, solved: SolvedSampleClock) -> Self {

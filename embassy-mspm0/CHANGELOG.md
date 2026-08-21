@@ -287,3 +287,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: mspm0/opa: say what the `STAT.RDY` spin covers — it is the datasheet's enable time, specified with no load, and not the settling time, which is specified at a stated load capacitance
 - change: mspm0/tim: a PWM channel starts with its output held by `ODIS`, so `SimplePwmChannel::enable` is what puts it on the pin — matching every other embassy HAL, and giving a channel that is not driving a register that reads wrong rather than one more that reads correct
 - docs: mspm0/tim: `CountingMode` says which driverlib PWM mode each variant is — `DL_TIMER_PWM_MODE_EDGE_ALIGN` is the down-counting one and its name does not say so, so translating by name inverts the duty
+- fix: mspm0/adc: `Config::MAX_SAMPLE_PERIOD` is 1023 rather than 511 — `SCOMPx.VAL` is ten bits, so half the sample-window range was rejected by the driver's own assertion
