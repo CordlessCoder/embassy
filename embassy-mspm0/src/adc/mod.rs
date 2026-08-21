@@ -10,7 +10,7 @@ use core::num::NonZeroU16;
 use core::task::Poll;
 
 use embassy_hal_internal::PeripheralType;
-use low_level::{ADC_CLK_MAX_HZ, ADC_CLK_MIN_HZ, clock_range, sample_clock_div};
+use low_level::{ADC_CLK_MAX_HZ, ADC_CLK_MIN_HZ, TARGET_SAMPCLK_HZ, clock_range, sample_clock_div_to};
 
 use crate::interrupt::{Interrupt, InterruptExt};
 use crate::mode::{Async, Blocking, Mode};
@@ -131,10 +131,44 @@ impl SolvedSampleClock {
             return None;
         }
 
+        Self::solve_at(source, adcclk_hz, TARGET_SAMPCLK_HZ)
+    }
+
+    /// Solve for a SAMPCLK of `target_hz` rather than the driver's default.
+    ///
+    /// Picks the smallest `SCLKDIV` that brings `adcclk_hz` to `target_hz` or below, so the SAMPCLK
+    /// this produces is at most `target_hz` and never above it. [`None`] if `adcclk_hz` is outside
+    /// this device's `fADCCLK`.
+    ///
+    /// # When to reach for this
+    ///
+    /// Two things run off SAMPCLK and they want opposite ends of it. `SCOMPx` counts the sample
+    /// window in SAMPCLK cycles, so a slower SAMPCLK buys a longer reachable window — ten bits of
+    /// `SCOMPx` is [`Config::MAX_SAMPLE_PERIOD`] cycles, which is 128 µs at 8 MHz and 32 µs at 32.
+    /// The successive-approximation stage is clocked from it too, and that part is fixed latency
+    /// rather than settling, so a faster SAMPCLK shortens every conversion.
+    ///
+    /// Which matters depends on the source impedances driving the inputs, which the driver cannot
+    /// know. A high-impedance divider wants the long window; a low-impedance source would rather
+    /// have the conversions back. [`solve`](Self::solve) is the answer when nothing forces the
+    /// question.
+    ///
+    /// # The window still has a minimum, and it is per device
+    ///
+    /// The datasheets specify `tSample` as a minimum sample *window*, not a minimum clock period,
+    /// and it is **156 ns on the L-series against 62.5 ns on the G-series**, both at `RS` = 50 Ω
+    /// and `Cpext` = 10 pF. Your own source impedance moves it further, and the datasheet gives the
+    /// equation. This function does not check it: `target_hz` and [`Config::sample_period_0`]
+    /// together are what set the window, and only the caller knows what is driving the input.
+    pub const fn solve_at(source: SampleClock, adcclk_hz: u32, target_hz: u32) -> Option<Self> {
+        if adcclk_hz < ADC_CLK_MIN_HZ || adcclk_hz > ADC_CLK_MAX_HZ {
+            return None;
+        }
+
         Some(Self {
             source,
             adcclk_hz,
-            sclkdiv: sample_clock_div(adcclk_hz),
+            sclkdiv: sample_clock_div_to(adcclk_hz, target_hz),
             frange: clock_range(adcclk_hz),
         })
     }

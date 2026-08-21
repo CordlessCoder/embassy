@@ -660,24 +660,37 @@ pub(crate) const ADC_CLK_MAX_HZ: u32 = crate::_generated::ADC_CLK_MAX_HZ;
 const FRANGE_MIN_HZ: u32 = 1_000_000;
 const FRANGE_MAX_HZ: u32 = 48_000_000;
 
-/// Rate this driver aims to run SAMPCLK at.
+/// Rate this driver aims to run SAMPCLK at by default.
 ///
 /// `SCOMPx` counts the sample window in SAMPCLK cycles, so holding SAMPCLK steady is what keeps
-/// [`Config::sample_period_0`] a fixed duration across clock trees. Its 125 ns period leaves twice
-/// the 62.5 ns minimum sampling time the datasheets specify.
-const TARGET_SAMPCLK_HZ: u32 = 8_000_000;
+/// [`Config::sample_period_0`](crate::adc::Config::sample_period_0) a fixed duration across clock
+/// trees. Nothing published bounds SAMPCLK itself; `fADCCLK` bounds ADCCLK *before* `SCLKDIV`, and
+/// the datasheets' `tSample` is a minimum sample **window** rather than a minimum clock period.
+///
+/// **`tSample` is per device and this rate does not clear it on every part.** It is 62.5 ns on the
+/// G-series and **156 ns on the L-series**, both at `RS` = 50 Ω and `Cpext` = 10 pF, and a caller's
+/// own source impedance moves it further. One cycle of this clock is 125 ns, so a sample period of
+/// 1 is a window under the L-series minimum. The window is
+/// `sample_period / SAMPCLK`, so a period of 2 clears it; that is the caller's to get right, and
+/// [`SolvedSampleClock::solve_at`](crate::adc::SolvedSampleClock::solve_at) says so.
+pub(crate) const TARGET_SAMPCLK_HZ: u32 = 8_000_000;
 
 /// Largest `SCLKDIV` this picks. Beyond it the divider ladder stops being powers of two.
 const MAX_SCLKDIV_INDEX: u8 = vals::Sclkdiv::DivBy8.to_bits();
 
 /// Smallest `CTL0.SCLKDIV` that brings `adcclk_hz` down to [`TARGET_SAMPCLK_HZ`] or below.
+pub(crate) const fn sample_clock_div(adcclk_hz: u32) -> vals::Sclkdiv {
+    sample_clock_div_to(adcclk_hz, TARGET_SAMPCLK_HZ)
+}
+
+/// Smallest `CTL0.SCLKDIV` that brings `adcclk_hz` down to `target_hz` or below.
 ///
 /// A shift rather than a chain of comparisons: the first four `SCLKDIV` encodings are the powers of
 /// two in order, so the encoding is the shift that reaches the target.
-pub(crate) const fn sample_clock_div(adcclk_hz: u32) -> vals::Sclkdiv {
+pub(crate) const fn sample_clock_div_to(adcclk_hz: u32, target_hz: u32) -> vals::Sclkdiv {
     let mut i = 0;
 
-    while i < MAX_SCLKDIV_INDEX && adcclk_hz > TARGET_SAMPCLK_HZ << i {
+    while i < MAX_SCLKDIV_INDEX && adcclk_hz > target_hz << i {
         i += 1;
     }
 
