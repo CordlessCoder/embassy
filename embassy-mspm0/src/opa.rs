@@ -96,6 +96,16 @@ pub enum Chopping {
 #[derive(Clone, Copy)]
 pub struct Config {
     /// Gain-bandwidth selection. Defaults to [`GainBandwidth::High`].
+    ///
+    /// The default is deliberate and it is not the reset value. `CFGBASE.GBW` resets to the low
+    /// setting and TI's `DL_OPA_init` leaves it there, but **every `tSample_PGA` figure the
+    /// datasheets publish is measured at the high setting**, across all sixteen of them. Defaulting
+    /// high is what makes those figures apply to an amplifier this driver configured.
+    ///
+    /// Choosing [`GainBandwidth::Low`] moves the amplifier outside the published sampling figures,
+    /// and no datasheet gives a row for it. Reading such a stage through the ADC means measuring the
+    /// window rather than looking it up — the low setting is the slower one, so the published figure
+    /// becomes an underestimate rather than a bound.
     pub gain_bandwidth: GainBandwidth,
     /// Rail-to-rail input. Defaults to `true`.
     ///
