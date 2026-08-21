@@ -880,6 +880,23 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
     let memctl = first.memctl;
     let (min, max) = peripheral_clock_range("adc").expect("chip's ADC has no fADCCLK range");
 
+    // `None` here means the extraction is missing, never "this device has no minimum" — every
+    // datasheet states one and the metapac's own `verify.rs` refuses to generate an ADC without it.
+    // Kept as an `Option` rather than unwrapped so a future family whose datasheet changes shape
+    // arrives as something a caller can refuse instead of as a plausible number.
+    let sample_min_ns = option_u32(first.sample_min_ns);
+
+    // Empty is a real answer meaning the chip has no amplifier, not that nobody extracted it. A
+    // chip that has one and an empty table fails generation upstream, so it cannot reach here.
+    let pga: Vec<TokenStream> = first
+        .pga_sample_ns
+        .iter()
+        .map(|entry| {
+            let (gain, ns) = (entry.gain, entry.ns);
+            quote!((#gain, #ns))
+        })
+        .collect();
+
     quote! {
         pub const ADC_VRSEL: u8 = #vrsel;
         pub const ADC_MEMCTL: u8 = #memctl;
@@ -887,6 +904,9 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
         /// `fADCCLK`, the range the clock selected by `CLKCFG.SAMPCLK` must stay within.
         pub const ADC_CLK_MIN_HZ: u32 = #min;
         pub const ADC_CLK_MAX_HZ: u32 = #max;
+
+        pub const ADC_SAMPLE_MIN_NS: Option<u32> = #sample_min_ns;
+        pub const ADC_PGA_SAMPLE_NS: &[(u8, u32)] = &[#(#pga),*];
     }
 }
 

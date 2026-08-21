@@ -289,3 +289,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: mspm0/tim: `CountingMode` says which driverlib PWM mode each variant is — `DL_TIMER_PWM_MODE_EDGE_ALIGN` is the down-counting one and its name does not say so, so translating by name inverts the duty
 - fix: mspm0/adc: `Config::MAX_SAMPLE_PERIOD` is 1023 rather than 511 — `SCOMPx.VAL` is ten bits, so half the sample-window range was rejected by the driver's own assertion
 - feat: mspm0/adc: `SolvedSampleClock::solve_at` picks the SAMPCLK rate, where `solve` always chose 8 MHz — a slower clock buys a longer reachable window and a faster one shortens every conversion, and only the application knows its source impedances
+- feat: mspm0/adc: `Config::SAMPLE_MIN_NS` and `Config::pga_sample_min_ns` give the device's own shortest sample window, from the metapac rather than from a doc comment — the figures do not follow the family, and the table they replace stated two of them wrong

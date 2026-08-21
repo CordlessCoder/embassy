@@ -156,10 +156,10 @@ impl SolvedSampleClock {
     /// # The window still has a minimum, and it is per device
     ///
     /// The datasheets specify `tSample` as a minimum sample *window*, not a minimum clock period,
-    /// and it is **156 ns on the L-series against 62.5 ns on the G-series**, both at `RS` = 50 Ω
-    /// and `Cpext` = 10 pF. Your own source impedance moves it further, and the datasheet gives the
-    /// equation. This function does not check it: `target_hz` and [`Config::sample_period_0`]
-    /// together are what set the window, and only the caller knows what is driving the input.
+    /// and it is per device — [`Config::SAMPLE_MIN_NS`] carries this one's. Your own source
+    /// impedance moves it further, and the datasheet gives the equation. This function does not
+    /// check it: `target_hz` and [`Config::sample_period_0`] together are what set the window, and
+    /// only the caller knows what is driving the input.
     pub const fn solve_at(source: SampleClock, adcclk_hz: u32, target_hz: u32) -> Option<Self> {
         if adcclk_hz < ADC_CLK_MIN_HZ || adcclk_hz > ADC_CLK_MAX_HZ {
             return None;
@@ -343,14 +343,22 @@ pub struct Config {
     /// how long it needs is a property of what is being measured rather than of the ADC. In 12-bit
     /// mode the datasheet asks for:
     ///
-    /// | source | `tSample` |
+    /// | source | minimum window |
     /// |---|---|
-    /// | a pin, 50 ohm source | 156 ns |
-    /// | through an OPA, gain x1 | 0.31 us |
-    /// | through an OPA, gain x32 | 1.5 us |
+    /// | a pin, 50 ohm source | [`Config::SAMPLE_MIN_NS`] — this device's own figure |
+    /// | through an OPA | [`Config::pga_sample_min_ns`], which takes the gain |
     /// | through the general-purpose amplifier | 2.5 us |
     /// | the supply monitor | 3 us |
-    /// | the temperature sensor, to settle | 10 us on the L-series, 12.5 us on the G-series |
+    /// | the temperature sensor | do not read it from here — [`TempSensor::RECOMMENDED_SAMPLE_NS`] carries this device's figure |
+    ///
+    /// **None of these follows the family**, which is why they are looked up rather than written
+    /// down: the bare-pin minimum is 62.5 ns on most of the G-series and 156 on most of the
+    /// L-series, but the G5187 and L2117 are 188 and sit inside those families. Reading a figure
+    /// from a sibling part is how this driver had two of them wrong. The amplifier row is the one most likely to catch you: it scales
+    /// with gain, and at the top of the range it is an order of magnitude above the bare-pin
+    /// figure, so a sequence that reads an OPA output at high gain with the pin's window is short
+    /// by roughly ten times. The driver cannot check them for you either: the metapac does not carry these
+    /// figures yet, which is request R20.
     ///
     /// The driver holds SAMPCLK at or just under 8 MHz, so the default of fifty cycles is about
     /// 6.25 us. That covers every source in the table except the temperature sensor, which is the
@@ -379,6 +387,46 @@ pub struct Config {
 }
 
 impl Config {
+    /// The shortest sample window this device supports, in nanoseconds.
+    ///
+    /// `tSample` at the datasheet's reference conditions — 12-bit, `RS` = 50 ohm, `Cpext` = 10 pF.
+    /// A higher source impedance needs more, and the datasheet gives the equation to rescale it.
+    ///
+    /// Whole nanoseconds rounded **up**, so the G-series' 62.5 reads as 63. Rounding a lower bound
+    /// down would offer a window the datasheet does not support.
+    ///
+    /// [`None`] means the metadata is missing the figure, never that the device has no minimum.
+    /// Every datasheet states one. Treat it as a reason to stop rather than as "no constraint".
+    pub const SAMPLE_MIN_NS: Option<u32> = crate::_generated::ADC_SAMPLE_MIN_NS;
+
+    /// The shortest window for reading an OPA output at `gain`, in nanoseconds.
+    ///
+    /// An order of magnitude above [`SAMPLE_MIN_NS`](Self::SAMPLE_MIN_NS) at the top of the range,
+    /// so a sequence that reads an amplifier with the bare pin's window is short by roughly ten
+    /// times.
+    ///
+    /// [`None`] for a gain the datasheet does not publish, and **that is not interpolatable**. The
+    /// L-series publishes only x1 and x32, and the two series' curves cross — L is slower at x1 and
+    /// faster at x32 — so there is no shared shape to interpolate along. `None` on a chip with no
+    /// amplifier at all, which is why an empty table is a real answer rather than a gap.
+    ///
+    /// Every published figure is measured with `CFGBASE.GBW` at its high setting, which is what
+    /// [`opa::Config`](crate::opa::Config) defaults to. Selecting the low setting puts the
+    /// amplifier outside all of them.
+    pub const fn pga_sample_min_ns(gain: u8) -> Option<u32> {
+        let table = crate::_generated::ADC_PGA_SAMPLE_NS;
+        let mut i = 0;
+
+        while i < table.len() {
+            if table[i].0 == gain {
+                return Some(table[i].1);
+            }
+            i += 1;
+        }
+
+        None
+    }
+
     /// Maximum number of sample clocks that may be performed when sampling.
     ///
     /// `SCOMPx.VAL` is ten bits on every supported device, checked against TI's
