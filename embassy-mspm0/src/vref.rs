@@ -294,6 +294,37 @@ impl<'d, T: Instance> Vref<'d, T> {
         // by the hardware: the reference either comes up or the device has no usable reference at all.
         while !T::regs().ctl1().read().ready(BUFFER) {}
     }
+
+    /// The reference itself, as an ADC channel.
+    ///
+    /// Several families route the internal reference back to a fixed ADC channel, which is how an
+    /// application measures its own supply: convert this against [`Vrsel::VddaVssa`] and the code
+    /// says what fraction of `VDDA` the reference is, and the reference's voltage is known.
+    ///
+    /// That is the only reading worth taking. Converting it against the reference itself returns
+    /// full scale whatever the supply, the same shape as the supply monitor's ratiometric trap.
+    ///
+    /// The borrow is what says the reference was powered for the conversion. `tSample_VREF` is 4 us
+    /// on some families and **10 us on others**, above [`Config::sample_period_0`]'s default -- so
+    /// unlike the other internal channels this one is not covered by leaving the window alone, and
+    /// the figure is not in the metadata yet for this crate to state. Every published figure is
+    /// measured with `VDD` as the reference, which is the reading above, so a conversion against the
+    /// reference itself is outside them as well as meaningless.
+    ///
+    /// [`Vrsel::VddaVssa`]: crate::adc::Vrsel::VddaVssa
+    /// [`Config::sample_period_0`]: crate::adc::Config::sample_period_0
+    #[cfg(adc_internal_vref)]
+    pub fn channel(&self) -> VrefOutput<'_, T> {
+        VrefOutput { _phantom: PhantomData }
+    }
+}
+
+/// A powered internal reference, as an ADC channel.
+///
+/// Sample it by passing a mutable reference to this handle to the ADC. See [`Vref::channel`].
+#[cfg(adc_internal_vref)]
+pub struct VrefOutput<'a, T: Instance> {
+    _phantom: PhantomData<&'a T>,
 }
 
 impl<'d, T: Instance> Drop for Vref<'d, T> {
@@ -427,6 +458,35 @@ pub trait Instance: SealedInstance + PeripheralType + LowPowerInstance {}
 
 pub(crate) trait SealedInstance {
     fn regs() -> Regs;
+}
+
+#[cfg(adc_internal_vref)]
+macro_rules! impl_adc_internal_vref {
+    ($adc: ident, $ch: expr) => {
+        impl<'a, T: crate::vref::Instance> crate::adc::AdcChannel<crate::peripherals::$adc>
+            for crate::vref::VrefOutput<'a, T>
+        {
+        }
+        impl<'a, T: crate::vref::Instance> crate::adc::SealedAdcChannel<crate::peripherals::$adc>
+            for crate::vref::VrefOutput<'a, T>
+        {
+            fn channel(&self) -> u8 {
+                $ch
+            }
+        }
+
+        // The handle is issued in this file and the impl is generated from the metadata, so nothing
+        // in either half would notice the two drifting apart -- a `channel` method that stopped
+        // returning something the ADC accepts would still compile. This is the reach an external
+        // caller has, checked per generated route.
+        const _: () = {
+            fn takes_the_channel(_: impl crate::adc::AdcChannel<crate::peripherals::$adc>) {}
+
+            fn reaches_the_adc<T: crate::vref::Instance>(vref: &crate::vref::Vref<'_, T>) {
+                takes_the_channel(vref.channel());
+            }
+        };
+    };
 }
 
 macro_rules! impl_vref_instance {

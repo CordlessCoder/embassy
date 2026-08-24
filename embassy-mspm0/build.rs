@@ -2070,6 +2070,26 @@ fn generate_adc_internal_channels(cfgs: &mut CfgSet) -> TokenStream {
         }));
     }
 
+    // The internal reference reads as a channel only while the VREF module is powering it, so its
+    // route lands on the `vref` driver's handle rather than on a marker anything can name. Every
+    // device carrying the channel has a VREF instance, checked over the whole portfolio.
+    cfgs.declare("adc_internal_vref");
+    let vref = adc_internal_routes(AdcInternalSource::Vref);
+    if !vref.is_empty() {
+        assert!(
+            METADATA.peripherals.iter().any(|p| p.kind == "vref"),
+            "{} routes the internal reference to an ADC but has no VREF instance to power it",
+            METADATA.name,
+        );
+
+        cfgs.enable("adc_internal_vref");
+
+        g.extend(vref.iter().map(|(adc, channel)| {
+            let adc = format_ident!("{}", adc);
+            quote! { impl_adc_internal_vref!(#adc, #channel); }
+        }));
+    }
+
     g
 }
 
