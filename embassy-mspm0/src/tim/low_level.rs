@@ -323,6 +323,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     ///
     /// One pin then reaches two channels, so an instance can capture a rising and a falling edge of
     /// the same signal into separate registers and a subtraction gives the interval between them.
+    /// [`PulseWidth`](super::pulse_width::PulseWidth) is that arrangement ready-made.
     pub fn setup_paired_capture_channel(
         &mut self,
         channel: Channel,

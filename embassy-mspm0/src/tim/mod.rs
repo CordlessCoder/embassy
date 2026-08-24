@@ -11,6 +11,7 @@ pub mod low_level;
 #[cfg(any(feature = "_time-driver", feature = "rtic-monotonic"))]
 #[doc(hidden)]
 pub mod period;
+pub mod pulse_width;
 pub mod simple_pwm;
 
 use embassy_hal_internal::PeripheralType;
@@ -318,6 +319,13 @@ pub(crate) trait SealedInstance {
     /// varies per implementor without `generic_const_exprs`. Monomorphised per instance the pointer and
     /// the length are both constants, so it costs nothing to hand out.
     fn cc_wakers() -> &'static [IrqWaker];
+
+    /// Where [`pulse_width`] leaves the pulse its handler measured.
+    ///
+    /// Its own accessor rather than a field of [`State`], so the bytes exist only on an instance that
+    /// builds a [`PulseWidth`](pulse_width::PulseWidth): nothing else calls this, and a static no
+    /// call reaches is collected.
+    fn pulse_snapshot() -> &'static pulse_width::Snapshot;
 }
 
 /// Peripheral state, sized by how many capture/compare channels the instance has.
@@ -396,6 +404,13 @@ macro_rules! impl_tim_instance {
                 static STATE: crate::tim::State<{ $channels as usize }> = crate::tim::State::new();
 
                 &STATE.cc
+            }
+
+            #[inline]
+            fn pulse_snapshot() -> &'static crate::tim::pulse_width::Snapshot {
+                static SNAPSHOT: crate::tim::pulse_width::Snapshot = crate::tim::pulse_width::Snapshot::new();
+
+                &SNAPSHOT
             }
         }
 
