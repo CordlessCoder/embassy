@@ -9,7 +9,7 @@ use core::task::Poll;
 use crate::gpio::{AnyPin, MaybeAnyPin, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::Tim;
-use crate::pac::tim::vals::{Ccond, Coc, Cpv, Fp, Isel};
+use crate::pac::tim::vals::{Acond, Ccond, Coc, Cpv, Fp, Isel, Lzcond};
 use crate::sync::irq_waker::IrqWaker;
 use crate::tim::low_level::{self, Config as TimerConfig, Event, Events, Timer};
 use crate::tim::{
@@ -31,6 +31,22 @@ pub enum CaptureEdge {
 
     /// Capture on both edges.
     Both,
+}
+
+/// Where a capture channel takes the signal it captures on.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CaptureInput {
+    /// The channel's own CCP pin.
+    #[default]
+    OwnPin,
+
+    /// The other pin of the channel's input pair: CCP1 for channel 0 and CCP0 for channel 1, and the
+    /// same swap between channels 2 and 3.
+    ///
+    /// One pin then reaches two channels, so an instance can capture a rising and a falling edge of
+    /// the same signal into separate registers. The channel claims no pin of its own.
+    PairedPin,
 }
 
 /// Glitch filter on a capture input.
@@ -307,7 +323,7 @@ impl<'d, T: Instance> InputCapture<'d, T> {
 
     /// Program one channel's compare block for capture, following SLAU847F 28.2.3.1.2.1.
     fn setup_channel(&mut self, channel: Channel, edge: CaptureEdge, filter: Filter) {
-        setup_channel(self.timer.regs(), channel, edge, filter);
+        setup_channel(self.timer.regs(), channel, CaptureInput::OwnPin, edge, filter);
     }
 
     /// Borrow one channel to await its captures.
@@ -373,7 +389,7 @@ pub struct CaptureChannel<'d, W: Word> {
 ///
 /// Takes the register block rather than `&mut InputCapture<T>` so that one copy serves every timer
 /// instance, the same way [`simple_pwm`](super::simple_pwm)'s does.
-pub(crate) fn setup_channel(r: Tim, channel: Channel, edge: CaptureEdge, filter: Filter) {
+pub(crate) fn setup_channel(r: Tim, channel: Channel, input: CaptureInput, edge: CaptureEdge, filter: Filter) {
     let n = channel.index();
 
     r.counterregs(0).ccctl(n).modify(|w| {
@@ -383,12 +399,26 @@ pub(crate) fn setup_channel(r: Tim, channel: Channel, edge: CaptureEdge, filter:
             CaptureEdge::Falling => Ccond::CcTrigFall,
             CaptureEdge::Both => Ccond::CcTrigEdge,
         });
+
+        // The counter has to advance on its own clock and ignore the input, or a captured value is
+        // not a timestamp on a common scale. These are the reset values, written rather than assumed
+        // because a channel reused after driving the counter would otherwise keep steering it.
+        w.set_acond(Acond::Timclk);
+        w.set_zcond(Lzcond::CcTrigNoEffect);
+        w.set_lcond(Lzcond::CcTrigNoEffect);
     });
 
-    r.commonregs(0).ccpd().modify(|w| w.set_c0ccp(n, false));
+    // Only the channel reading its own pin owns one. A paired channel reads the partner's, and the
+    // partner's own setup is what puts that pin in input mode.
+    if input == CaptureInput::OwnPin {
+        r.commonregs(0).ccpd().modify(|w| w.set_c0ccp(n, false));
+    }
 
     r.counterregs(0).ifctl(n).write(|w| {
-        w.set_isel(Isel::CcpxInput);
+        w.set_isel(match input {
+            CaptureInput::OwnPin => Isel::CcpxInput,
+            CaptureInput::PairedPin => Isel::CcpxInputPair,
+        });
         w.set_inv(false);
         w.set_cpv(Cpv::ConsecPer);
         w.set_fe(filter != Filter::None);

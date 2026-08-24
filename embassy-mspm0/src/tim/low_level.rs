@@ -306,7 +306,36 @@ impl<'d, T: Instance> Timer<'d, T> {
         edge: super::input_capture::CaptureEdge,
         filter: super::input_capture::Filter,
     ) {
-        super::input_capture::setup_channel(self.regs(), channel, edge, filter);
+        super::input_capture::setup_channel(
+            self.regs(),
+            channel,
+            super::input_capture::CaptureInput::OwnPin,
+            edge,
+            filter,
+        );
+    }
+
+    /// Configure `channel` to capture the counter on an edge of its *pair's* pin.
+    ///
+    /// The pairs are channels 0 and 1, and channels 2 and 3. This claims no pin at all: the signal
+    /// comes from the partner channel, whose own setup is what puts the pin in input mode. Set the
+    /// partner up first.
+    ///
+    /// One pin then reaches two channels, so an instance can capture a rising and a falling edge of
+    /// the same signal into separate registers and a subtraction gives the interval between them.
+    pub fn setup_paired_capture_channel(
+        &mut self,
+        channel: Channel,
+        edge: super::input_capture::CaptureEdge,
+        filter: super::input_capture::Filter,
+    ) {
+        super::input_capture::setup_channel(
+            self.regs(),
+            channel,
+            super::input_capture::CaptureInput::PairedPin,
+            edge,
+            filter,
+        );
     }
 
     /// Change what a compare match does to `channel`'s pin.
