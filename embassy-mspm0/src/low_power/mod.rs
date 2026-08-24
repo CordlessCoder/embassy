@@ -38,6 +38,24 @@ pub use inner::{SleepMode, enter_sleep};
 
 pub use crate::sysctl::SleepLevel;
 
+/// `WakeGuard`s held at each [`SleepLevel`], one byte per level in `SleepLevel::LEVELS` order.
+///
+/// # Exported so a debugger can read it while the part runs
+///
+/// Sleep depth is the one thing an instrument cannot observe from outside, because attaching holds
+/// the part awake -- so a current measurement taken with a probe on the pins says nothing about what
+/// the firmware intended. These counts are the intent, and reading them is the difference between
+/// "the board draws more than expected" and "something holds a guard at `Standby1`".
+///
+/// The name is fixed rather than mangled so that address is findable across builds. No `volatile` is
+/// needed and no halt: these are already atomics, so the operations on them cannot be folded away
+/// the way a plain `static`'s can, and a byte cannot tear, so all five read consistently from a
+/// running core.
+///
+/// **Two copies of this crate in one image now fail to link rather than each keeping their own
+/// counts.** That is the better failure -- the same duplication already produces a `__pender`
+/// clash, and a silent second set of guard counts would be worse than a link error.
+#[unsafe(export_name = "embassy_mspm0_sleep_blocks")]
 static SLEEP_BLOCKS: [AtomicU8; 5] = [const { AtomicU8::new(0) }; 5];
 
 /// Longest wake-up latency this device's datasheet publishes for a deep-sleep mode, in nanoseconds.
@@ -64,7 +82,12 @@ const fn ns_to_ticks(ns: u64) -> u64 {
 ///
 /// A `u32` reaches 36 hours at 32.768 kHz, and reading it needs no critical section on a target
 /// without 64-bit atomics.
+///
+/// Exported under a fixed name for the same reason as [`SLEEP_BLOCKS`]: with the guard counts it
+/// answers why a part is not sleeping as deeply as expected, and this is the half that says the next
+/// wake is simply too soon to be worth it.
 #[cfg(feature = "_time-driver")]
+#[unsafe(export_name = "embassy_mspm0_min_sleep_ticks")]
 static MIN_SLEEP_TICKS: AtomicU32 = AtomicU32::new(DEFAULT_MIN_SLEEP.as_ticks() as u32);
 
 /// Apply [`Config::min_sleep`](crate::Config::min_sleep).

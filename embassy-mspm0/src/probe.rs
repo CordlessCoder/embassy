@@ -118,6 +118,10 @@ pub enum Marker {
 /// read on every instrumented path: a byte index needs no scaling, so the load is one `ldrb` rather than
 /// a shift and an `ldr`. That matters more than the RAM — `_probe` distorting what it measures is a
 /// mistake this branch has already made once.
+///
+/// Exported under a fixed name so a debugger can arm a marker, or read which are armed, without the
+/// binary having to call [`arm`] itself.
+#[unsafe(export_name = "embassy_mspm0_probe_markers")]
 static MARKERS: [AtomicU8; 17] = [const { AtomicU8::new(0) }; 17];
 
 /// Drive `pin` on `port` across `marker`.
