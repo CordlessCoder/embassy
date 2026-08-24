@@ -51,21 +51,32 @@ pub enum CaptureInput {
 
 /// Glitch filter on a capture input.
 ///
+/// **A tick here is a timer clock, not a fixed time.** What the filter rejects therefore moves with
+/// [`Config::divider`] and [`Config::prescaler`], which are normally chosen for counter range rather
+/// than for edge quality — so pick those first and size the filter against the rate they leave.
+///
+/// A filter wide enough to swallow the *gap* between two pulses stops a driver rather than degrading
+/// it: the edge that would end a pulse never reaches the capture block, so nothing captures and a
+/// wait never resolves. When a capture-shaped wait hangs, check the shorter of the pulse and the gap
+/// against the filter period — only one of them is usually the one in mind.
+///
 /// The voting variant, which tolerates one opposite sample instead, is reachable via [`Timer::regs`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Filter {
     /// No filtering: every edge the synchroniser sees captures.
+    ///
+    /// The only setting whose behaviour does not move with the timer's clock.
     #[default]
     None,
 
-    /// Require the level to hold for 3 ticks.
+    /// Require the level to hold for 3 timer clocks.
     Ticks3,
 
-    /// Require the level to hold for 5 ticks.
+    /// Require the level to hold for 5 timer clocks.
     Ticks5,
 
-    /// Require the level to hold for 8 ticks.
+    /// Require the level to hold for 8 timer clocks.
     Ticks8,
 }
 
