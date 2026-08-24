@@ -929,6 +929,15 @@ impl SupplyMonitor {
     /// What the channel divides `VDD` by before the ADC sees it.
     pub const DIVIDER: u32 = RAIL_MONITOR_DIVIDER;
 
+    /// The shortest sample window this device supports on this channel, in nanoseconds.
+    ///
+    /// The datasheet's `tSample_SupplyMon`, which is stated separately from
+    /// [`Config::SAMPLE_MIN_NS`] and is microseconds rather than nanoseconds -- 3000 or 5000, and it
+    /// splits the C series between its own two members. Inside
+    /// [`Config::sample_period_0`]'s default either way, so this is for a caller who has shortened
+    /// the window for a pin and would otherwise take that window here too.
+    pub const SAMPLE_MIN_NS: Option<u32> = crate::_generated::ADC_SUPPLY_MONITOR_SAMPLE_NS;
+
     /// Convert a reading of this channel to millivolts of `VDD`.
     ///
     /// `reference_mv` is the reference the conversion ran against. Pass the supply here and the
@@ -971,6 +980,9 @@ impl VbatMonitor {
     /// What the channel divides `VBAT` by before the ADC sees it.
     pub const DIVIDER: u32 = RAIL_MONITOR_DIVIDER;
 
+    /// The shortest sample window this device supports on this channel, in nanoseconds.
+    pub const SAMPLE_MIN_NS: Option<u32> = crate::_generated::ADC_VBAT_MONITOR_SAMPLE_NS;
+
     /// Convert a reading of this channel to millivolts of `VBAT`.
     pub const fn millivolts(code: u16, resolution: Resolution, reference_mv: u32) -> u32 {
         rail_millivolts(code, resolution, reference_mv)
@@ -989,6 +1001,9 @@ pub struct VusbMonitor;
 impl VusbMonitor {
     /// What the channel divides `VUSB33` by before the ADC sees it.
     pub const DIVIDER: u32 = RAIL_MONITOR_DIVIDER;
+
+    /// The shortest sample window this device supports on this channel, in nanoseconds.
+    pub const SAMPLE_MIN_NS: Option<u32> = crate::_generated::ADC_VUSB_MONITOR_SAMPLE_NS;
 
     /// Convert a reading of this channel to millivolts of `VUSB33`.
     pub const fn millivolts(code: u16, resolution: Resolution, reference_mv: u32) -> u32 {
@@ -1009,10 +1024,19 @@ impl VusbMonitor {
 /// channel number written by hand is wrong on the next part. When a driver arrives this is replaced
 /// by a handle the driver hands out, the way [`opa::OpaOutput`](crate::opa::OpaOutput) already works.
 ///
-/// `tSample_GPAMP` is 2.5 us on the L families and 3 us on the G families, both inside
-/// [`Config::sample_period_0`]'s default.
+/// [`SAMPLE_MIN_NS`](Self::SAMPLE_MIN_NS) is this channel's own sample window, and it is wider than a
+/// pin's.
 #[cfg(adc_gpamp)]
 pub struct GpampOutput;
+
+#[cfg(adc_gpamp)]
+impl GpampOutput {
+    /// The shortest sample window this device supports on this channel, in nanoseconds.
+    ///
+    /// The datasheet's `tSample_GPAMP`: 2500 on the L families and 3000 on the G families, against a
+    /// bare pin's [`Config::SAMPLE_MIN_NS`] of a few hundred.
+    pub const SAMPLE_MIN_NS: Option<u32> = crate::_generated::ADC_GPAMP_SAMPLE_NS;
+}
 
 /// `DAC0`'s output, as an ADC channel.
 ///
@@ -1027,9 +1051,17 @@ pub struct GpampOutput;
 /// running. Both reach the ADC at the same channel number and the ADC cannot tell them apart -- which
 /// one it converts is decided by whether the DAC is enabled, not by which type was passed.
 ///
-/// `tSample_DAC` is 0.5 us, the shortest of the internal channels.
 #[cfg(adc_dac)]
 pub struct Dac0Output;
+
+#[cfg(adc_dac)]
+impl Dac0Output {
+    /// The shortest sample window this device supports on this channel, in nanoseconds.
+    ///
+    /// The datasheet's `tSample_DAC`, 500 everywhere it is published -- the shortest of the internal
+    /// channels, and the only one of them close to a bare pin's.
+    pub const SAMPLE_MIN_NS: Option<u32> = crate::_generated::ADC_DAC_SAMPLE_NS;
+}
 
 // Impl details
 

@@ -304,10 +304,9 @@ impl<'d, T: Instance> Vref<'d, T> {
     /// That is the only reading worth taking. Converting it against the reference itself returns
     /// full scale whatever the supply, the same shape as the supply monitor's ratiometric trap.
     ///
-    /// The borrow is what says the reference was powered for the conversion. `tSample_VREF` is 4 us
-    /// on some families and **10 us on others**, above [`Config::sample_period_0`]'s default -- so
-    /// unlike the other internal channels this one is not covered by leaving the window alone, and
-    /// the figure is not in the metadata yet for this crate to state. Every published figure is
+    /// The borrow is what says the reference was powered for the conversion.
+    /// [`CHANNEL_SAMPLE_MIN_NS`] is the window this device needs here, and **it is the one internal
+    /// channel the driver's default does not cover** on some families. Every published figure is
     /// measured with `VDD` as the reference, which is the reading above, so a conversion against the
     /// reference itself is outside them as well as meaningless.
     ///
@@ -318,6 +317,20 @@ impl<'d, T: Instance> Vref<'d, T> {
         VrefOutput { _phantom: PhantomData }
     }
 }
+
+/// The shortest sample window this device supports on the reference's own ADC channel, in
+/// nanoseconds.
+///
+/// The datasheet's `tSample_VREF`, and **the one internal channel where the ADC driver's default
+/// window is short**: 4000 on some families and 10000 on others, against a default of around 6250.
+/// Sampling this channel without widening [`Config::sample_period_0`] converts a reference that has
+/// not finished charging the sampling capacitor, and nothing reports it.
+///
+/// `None` where the device routes the reference to an ADC and its datasheet publishes no figure.
+///
+/// [`Config::sample_period_0`]: crate::adc::Config::sample_period_0
+#[cfg(adc_internal_vref)]
+pub const CHANNEL_SAMPLE_MIN_NS: Option<u32> = crate::_generated::VREF_CHANNEL_SAMPLE_NS;
 
 /// A powered internal reference, as an ADC channel.
 ///

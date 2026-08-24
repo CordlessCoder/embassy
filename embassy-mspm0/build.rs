@@ -7,8 +7,8 @@ use std::{env, fs};
 
 use common::CfgSet;
 use mspm0_metapac::metadata::{
-    AdcInternalSource, CalibrationReference, IoStructure, METADATA, MemoryKind, OpaInput, Peripheral, PowerDomain,
-    PowerMode,
+    AdcInternalChannel, AdcInternalSource, CalibrationReference, IoStructure, METADATA, MemoryKind, OpaInput,
+    Peripheral, PowerDomain, PowerMode,
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
@@ -2047,12 +2047,32 @@ fn generate_adc_temp_sensor(cfgs: &mut CfgSet) -> TokenStream {
 fn generate_adc_internal_channels(cfgs: &mut CfgSet) -> TokenStream {
     let mut g = TokenStream::new();
 
-    for (source, cfg, ty) in [
-        (AdcInternalSource::SupplyMonitor, "adc_supply_monitor", "SupplyMonitor"),
-        (AdcInternalSource::VbatMonitor, "adc_vbat_monitor", "VbatMonitor"),
-        (AdcInternalSource::VusbMonitor, "adc_vusb_monitor", "VusbMonitor"),
-        (AdcInternalSource::Gpamp, "adc_gpamp", "GpampOutput"),
-        (AdcInternalSource::Dac0, "adc_dac", "Dac0Output"),
+    for (source, cfg, ty, sample_const) in [
+        (
+            AdcInternalSource::SupplyMonitor,
+            "adc_supply_monitor",
+            "SupplyMonitor",
+            "ADC_SUPPLY_MONITOR_SAMPLE_NS",
+        ),
+        (
+            AdcInternalSource::VbatMonitor,
+            "adc_vbat_monitor",
+            "VbatMonitor",
+            "ADC_VBAT_MONITOR_SAMPLE_NS",
+        ),
+        (
+            AdcInternalSource::VusbMonitor,
+            "adc_vusb_monitor",
+            "VusbMonitor",
+            "ADC_VUSB_MONITOR_SAMPLE_NS",
+        ),
+        (
+            AdcInternalSource::Gpamp,
+            "adc_gpamp",
+            "GpampOutput",
+            "ADC_GPAMP_SAMPLE_NS",
+        ),
+        (AdcInternalSource::Dac0, "adc_dac", "Dac0Output", "ADC_DAC_SAMPLE_NS"),
     ] {
         cfgs.declare(cfg);
 
@@ -2064,10 +2084,15 @@ fn generate_adc_internal_channels(cfgs: &mut CfgSet) -> TokenStream {
         cfgs.enable(cfg);
 
         let ty = format_ident!("{}", ty);
-        g.extend(routes.iter().map(|(adc, channel)| {
+        g.extend(routes.iter().map(|(adc, internal)| {
             let adc = format_ident!("{}", adc);
+            let channel = internal.channel;
             quote! { impl_adc_internal_channel!(#adc, #ty, #channel); }
         }));
+
+        let sample_const = format_ident!("{}", sample_const);
+        let sample_min_ns = option_u32(shared_sample_min_ns(&routes, source));
+        g.extend(quote! { pub const #sample_const: Option<u32> = #sample_min_ns; });
     }
 
     // The internal reference reads as a channel only while the VREF module is powering it, so its
@@ -2084,17 +2109,43 @@ fn generate_adc_internal_channels(cfgs: &mut CfgSet) -> TokenStream {
 
         cfgs.enable("adc_internal_vref");
 
-        g.extend(vref.iter().map(|(adc, channel)| {
+        g.extend(vref.iter().map(|(adc, internal)| {
             let adc = format_ident!("{}", adc);
+            let channel = internal.channel;
             quote! { impl_adc_internal_vref!(#adc, #channel); }
         }));
+
+        let sample_min_ns = option_u32(shared_sample_min_ns(&vref, AdcInternalSource::Vref));
+        g.extend(quote! { pub const VREF_CHANNEL_SAMPLE_NS: Option<u32> = #sample_min_ns; });
     }
 
     g
 }
 
-/// Every `(ADC instance, channel)` one internal signal is reachable at.
-fn adc_internal_routes(source: AdcInternalSource) -> Vec<(&'static str, u8)> {
+/// The sample window every route of one internal signal agrees on.
+///
+/// The datasheets state the figure once per signal and it is copied onto each route, so a two-ADC
+/// part reaching one signal from both carries it twice. A device where the two disagreed would be
+/// either a metadata defect or a signal whose window is per ADC, and neither can be served by the
+/// single constant the driver hands out -- so it fails the build rather than picking the first.
+fn shared_sample_min_ns(
+    routes: &[(&'static str, &'static AdcInternalChannel)],
+    source: AdcInternalSource,
+) -> Option<u32> {
+    let (first_name, first) = routes[0];
+
+    for (name, internal) in &routes[1..] {
+        assert_eq!(
+            internal.sample_min_ns, first.sample_min_ns,
+            "{name} and {first_name} disagree about the sample window {source:?} needs",
+        );
+    }
+
+    first.sample_min_ns
+}
+
+/// Every ADC instance one internal signal is reachable from, with the route it is reachable by.
+fn adc_internal_routes(source: AdcInternalSource) -> Vec<(&'static str, &'static AdcInternalChannel)> {
     METADATA
         .peripherals
         .iter()
@@ -2103,7 +2154,7 @@ fn adc_internal_routes(source: AdcInternalSource) -> Vec<(&'static str, u8)> {
             adc.internal_channels
                 .iter()
                 .filter(move |internal| internal.source == source)
-                .map(move |internal| (adc_name, internal.channel))
+                .map(move |internal| (adc_name, internal))
         })
         .collect()
 }
