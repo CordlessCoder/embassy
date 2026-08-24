@@ -38,6 +38,15 @@ pub trait General2ChannelInstance: Instance {}
 /// A timer instance with 4 compare and capture channels.
 pub trait General4ChannelInstance: General2ChannelInstance {}
 
+/// A timer instance whose `LOAD` writes can be held until the counter next reaches zero.
+pub trait ShadowLoadInstance: Instance {}
+
+/// A timer instance whose compare writes can be held until a chosen event.
+///
+/// Not implied by [`ShadowLoadInstance`] and does not imply it: the G-series `TIMG12` has this and
+/// not that.
+pub trait ShadowCompareInstance: Instance {}
+
 /// A timer instance with a 32-bit counter.
 pub trait General32BitInstance: Instance {}
 
@@ -372,12 +381,69 @@ pub(crate) fn disconnect_pins(pins: &[crate::gpio::MaybeAnyPin<'_>; 4]) {
     }
 }
 
+/// Event at which a buffered write reaches the register it was written to.
+///
+/// Selects `CCCTL_xy.CCUPD` and `CCCTL_xy.CCACTUPD`. [`Immediately`](Self::Immediately) is the reset
+/// value and the behaviour of an instance with no shadow compare at all.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CompareUpdate {
+    /// The write lands in the register, racing whatever the counter is doing.
+    #[default]
+    Immediately,
+
+    /// The clock after the counter reaches zero.
+    AtZero,
+
+    /// The clock after the counter matches the compare value, counting down.
+    AtCompareDown,
+
+    /// The clock after the counter matches the compare value, counting up.
+    AtCompareUp,
+
+    /// The clock after the counter reaches zero or the load value.
+    ///
+    /// Defined for center-aligned counting only; the TRM does not say what it does elsewhere.
+    AtZeroOrLoad,
+
+    /// The clock after the counter reaches zero with the repeat count already zero.
+    ///
+    /// Needs an instance with the repeat counter.
+    AtZeroAfterRepeats,
+
+    /// The clock after a trigger pulse.
+    OnTrigger,
+}
+
+impl From<CompareUpdate> for mspm0_metapac::tim::vals::Upd {
+    fn from(update: CompareUpdate) -> Self {
+        use mspm0_metapac::tim::vals::Upd;
+
+        match update {
+            CompareUpdate::Immediately => Upd::Immediately,
+            CompareUpdate::AtZero => Upd::ZeroEvt,
+            CompareUpdate::AtCompareDown => Upd::CompareDownEvt,
+            CompareUpdate::AtCompareUp => Upd::CompareUpEvt,
+            CompareUpdate::AtZeroOrLoad => Upd::ZeroLoadEvt,
+            CompareUpdate::AtZeroAfterRepeats => Upd::ZeroRcZeroEvt,
+            CompareUpdate::OnTrigger => Upd::Trig,
+        }
+    }
+}
+
 pub(crate) struct Info {
     pub(crate) regs: Tim,
     /// Whether this instance has the 8-bit prescaler in `CPS`.
     pub(crate) prescaler: bool,
     /// Capture/compare channels brought out to pins.
     pub(crate) channels: u8,
+    /// Whether `LOAD` writes can be held until a zero event, through `GCTL.SHDWLDEN`.
+    pub(crate) shadow_load: bool,
+    /// Whether `CC` writes can be held until an event, through `CCCTL_xy.CCUPD`.
+    ///
+    /// Separate from [`Self::shadow_load`] because they do not come together: the G-series `TIMG12`
+    /// buffers compare writes and not load writes.
+    pub(crate) shadow_ccs: bool,
 }
 
 macro_rules! impl_tim_instance {
@@ -385,7 +451,9 @@ macro_rules! impl_tim_instance {
         $instance: ident,
         prescaler: $prescaler: expr,
         word: $word: ty,
-        channels: $channels: expr
+        channels: $channels: expr,
+        shadow_load: $shadow_load: expr,
+        shadow_ccs: $shadow_ccs: expr
     ) => {
         impl crate::tim::SealedInstance for crate::peripherals::$instance {
             #[inline]
@@ -394,6 +462,8 @@ macro_rules! impl_tim_instance {
                     regs: crate::pac::$instance,
                     prescaler: $prescaler,
                     channels: $channels,
+                    shadow_load: $shadow_load,
+                    shadow_ccs: $shadow_ccs,
                 };
 
                 &INFO
@@ -418,6 +488,18 @@ macro_rules! impl_tim_instance {
             type Interrupt = crate::interrupt::typelevel::$instance;
             type Word = $word;
         }
+    };
+}
+
+macro_rules! impl_tim_instance_shadow_load {
+    ($instance: ident) => {
+        impl crate::tim::ShadowLoadInstance for crate::peripherals::$instance {}
+    };
+}
+
+macro_rules! impl_tim_instance_shadow_compare {
+    ($instance: ident) => {
+        impl crate::tim::ShadowCompareInstance for crate::peripherals::$instance {}
     };
 }
 

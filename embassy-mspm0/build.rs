@@ -1517,15 +1517,31 @@ fn generate_timers() -> TokenStream {
             let mut impls = Vec::new();
             let prescaler = timer.prescaler;
             let channels = timer.ccp_channels;
+            let shadow_load = timer.shadow_load;
+            let shadow_ccs = timer.shadow_ccs;
 
             impls.push(quote! {
                 impl_tim_instance!(
                     #name,
                     prescaler: #prescaler,
                     word: #word,
-                    channels: #channels
+                    channels: #channels,
+                    shadow_load: #shadow_load,
+                    shadow_ccs: #shadow_ccs
                 );
             });
+
+            if timer.shadow_load {
+                impls.push(quote! {
+                    impl_tim_instance_shadow_load!(#name);
+                });
+            }
+
+            if timer.shadow_ccs {
+                impls.push(quote! {
+                    impl_tim_instance_shadow_compare!(#name);
+                });
+            }
 
             if timer.bits == 32 {
                 impls.push(quote! {

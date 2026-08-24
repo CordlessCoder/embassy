@@ -339,6 +339,82 @@ impl<'d, T: Instance> Timer<'d, T> {
         );
     }
 
+    /// Whether this instance can hold a `LOAD` write until the counter next reaches zero.
+    ///
+    /// A per-instance fact from the device metadata, so this folds to a constant.
+    pub fn has_shadow_load(&self) -> bool {
+        T::info().shadow_load
+    }
+
+    /// Whether this instance can hold a compare write until a chosen event.
+    ///
+    /// Not implied by [`has_shadow_load`](Self::has_shadow_load) — the G-series `TIMG12` buffers
+    /// compare writes and not load writes.
+    pub fn has_shadow_compare(&self) -> bool {
+        T::info().shadow_ccs
+    }
+
+    /// Hold `LOAD` writes until the counter next reaches zero, instead of applying them at once.
+    ///
+    /// A period changed part way through one then takes effect at the boundary rather than
+    /// truncating or extending the period in flight.
+    ///
+    /// Set this **before** writing the load value it is meant to govern; a value written while this
+    /// is off went to the register rather than to the shadow, and turning it on afterwards leaves the
+    /// shadow holding its reset value to be transferred at the next zero event. The TRM also asks for
+    /// the counter to be running when this changes.
+    ///
+    /// Panics on an instance without the capability rather than accepting a write that does nothing.
+    pub fn set_shadow_load(&mut self, enabled: bool) {
+        assert!(
+            self.has_shadow_load(),
+            "this timer instance has no shadow load register"
+        );
+
+        self.regs().commonregs(0).gctl().modify(|w| w.set_shdwlden(enabled));
+    }
+
+    /// Choose when a write to `channel`'s compare register reaches it.
+    ///
+    /// [`CompareUpdate::Immediately`] is the reset behaviour and races the counter: a duty written
+    /// after the counter has passed the old compare value loses that edge, so the period in flight
+    /// comes out the wrong width. Any other setting buffers the write and applies it at the event
+    /// named, which gives the caller a whole period instead of a deadline.
+    ///
+    /// Set this **before** writing the compare value it is meant to govern. Written the other way
+    /// round the value reaches the register rather than the shadow, and the shadow's reset value is
+    /// what the update event then transfers — an output that is wrong and reports nothing.
+    ///
+    /// Panics on an instance without shadow compare rather than accepting a write that does nothing.
+    pub fn set_compare_update(&mut self, channel: Channel, update: super::CompareUpdate) {
+        assert!(
+            self.has_shadow_compare(),
+            "this timer instance has no shadow compare register"
+        );
+
+        self.regs()
+            .counterregs(0)
+            .ccctl(channel.index())
+            .modify(|w| w.set_ccupd(update.into()));
+    }
+
+    /// Choose when a write to `channel`'s action register reaches it.
+    ///
+    /// The same buffering as [`set_compare_update`](Self::set_compare_update), applied to what a
+    /// match does to the pin rather than to the value matched against. Carries the same ordering
+    /// requirement.
+    pub fn set_action_update(&mut self, channel: Channel, update: super::CompareUpdate) {
+        assert!(
+            self.has_shadow_compare(),
+            "this timer instance has no shadow compare register"
+        );
+
+        self.regs()
+            .counterregs(0)
+            .ccctl(channel.index())
+            .modify(|w| w.set_ccactupd(update.into()));
+    }
+
     /// Change what a compare match does to `channel`'s pin.
     ///
     /// The direction is read from the configured counting mode, so this cannot program the field the
