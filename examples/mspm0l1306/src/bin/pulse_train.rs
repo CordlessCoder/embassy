@@ -53,13 +53,10 @@ const CANCEL: [Pulse; 5] = [Pulse { high: 100, low: 100 }; 5];
 async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
-    let mut buffer = [Pulse { high: 1, low: 1 }; CANCEL.len()];
-
     let mut train = PulseTrain::new(
         p.TIMG4,
         p.PA10,
         Pull::None,
-        &mut buffer,
         Irqs,
         TrainConfig {
             // 32 MHz / 8 / 4, so one tick is one microsecond.
@@ -80,6 +77,16 @@ async fn main(_spawner: Spawner) -> ! {
 
             Timer::after(Duration::from_millis(2)).await;
         }
+
+        // Started here and collected below. The counter is already running when `emit` returns, so
+        // the caller's own work overlaps the train instead of following it.
+        let running = train.emit(&PAIR);
+        let overlapped = !running.is_done();
+        running.await;
+
+        info!("pair ran alongside the caller: {}", overlapped);
+
+        Timer::after(Duration::from_millis(2)).await;
 
         // A train dropped part way through. Five 200 us elements is 1 ms of work, abandoned after
         // 300 us, so the pin is cut mid-element rather than at a boundary — the case where a driver

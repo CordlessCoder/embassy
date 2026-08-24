@@ -13,9 +13,10 @@
 //! [`PulseTrain::new`] enforces — [`ShadowLoadInstance`] and [`ShadowCompareInstance`] come from the
 //! device metadata, and they are not the same set.
 
-use core::future::poll_fn;
+use core::future::Future;
+use core::pin::Pin;
 use core::sync::atomic::Ordering;
-use core::task::Poll;
+use core::task::{Context, Poll};
 
 use portable_atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize};
 
@@ -56,7 +57,7 @@ impl Pulse {
 /// Written only with the instance's interrupt masked, or from the handler itself, so plain loads and
 /// stores are enough and none of it is a read-modify-write.
 pub struct TrainState {
-    /// The elements being emitted, borrowed from the driver for its whole life.
+    /// The elements being emitted, borrowed by the [`ActiveTrain`] running them.
     pulses: AtomicPtr<Pulse>,
 
     /// How many of them there are.
@@ -176,8 +177,9 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         let next = state.next.load(Ordering::Relaxed);
 
         if next < len {
-            // SAFETY: the driver holds the slice borrowed for its own lifetime and clears `len`
-            // before releasing it, and `next < len` was checked above.
+            // SAFETY: the running train borrows the slice, and every path that ends that borrow
+            // masks this event first — the completion arm above, and `halt` under
+            // `ActiveTrain`'s `Drop`. `next < len` was checked above.
             let pulse = unsafe { &*state.pulses.load(Ordering::Relaxed).add(next) };
 
             write_element(r, channel, pulse);
@@ -249,21 +251,18 @@ pub struct PulseTrain<'d, T: Instance> {
     timer: Timer<'d, T>,
     pin: Peri<'d, AnyPin>,
     channel: Channel,
-    pulses: &'d mut [Pulse],
     idle: Level,
 }
 
 impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
-    /// Claim `pin` and its instance to emit trains of up to `pulses.len()` elements.
+    /// Claim `pin` and its instance to emit trains on.
     ///
-    /// `pulses` is where [`emit`](Self::emit) copies its argument, and the handler reads it while a
-    /// train is running. It is borrowed for the driver's whole life rather than for the length of a
-    /// train, which is what makes the handler's read of it sound.
+    /// The elements themselves are handed to [`emit`](Self::emit), which is where the length of a
+    /// train is decided.
     pub fn new<C: TimerChannel>(
         timer: Peri<'d, T>,
         pin: Peri<'d, impl TimerPin<T, C>>,
         pull: Pull,
-        pulses: &'d mut [Pulse],
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
@@ -297,7 +296,6 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
             timer,
             pin: pin.into(),
             channel: C::CHANNEL,
-            pulses,
             idle: config.idle,
         };
 
@@ -308,20 +306,20 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         this
     }
 
-    /// Emit `pulses` once, and resolve when the last one has finished.
+    /// Start emitting `pulses`, and hand back the train that is running them.
     ///
-    /// Every element has to fit `pulses.len()` given to [`new`](Self::new), have a non-zero high and
-    /// low time, and have a period the counter can reach. All three are checked here rather than
-    /// producing a waveform that is quietly not the one asked for.
+    /// The counter is going by the time this returns, so a caller can leave and await the returned
+    /// [`ActiveTrain`] later. Awaiting it resolves when the last element has finished. Dropping it,
+    /// or calling [`stop`](ActiveTrain::stop), halts the train and parks the output where an
+    /// untouched one would be rather than part way through an element.
     ///
-    /// Dropping the returned future stops the train at once and parks the output, so a cancelled
-    /// train leaves the pin where an untouched one would be rather than part way through an element.
-    pub async fn emit(&mut self, pulses: &[Pulse]) {
+    /// The handler reads `pulses` as the train runs, which is why it is borrowed until the returned
+    /// value goes away rather than for the length of this call.
+    ///
+    /// Every element needs a non-zero high and low time and a period the counter can reach. Both are
+    /// checked here rather than emitting a waveform that is quietly not the one asked for.
+    pub fn emit<'a>(&'a mut self, pulses: &'a [Pulse]) -> ActiveTrain<'a, 'd, T> {
         assert!(!pulses.is_empty(), "a train needs at least one pulse");
-        assert!(
-            pulses.len() <= self.pulses.len(),
-            "the train is longer than the buffer given to `PulseTrain::new`"
-        );
 
         let max_period = <T::Word as Word>::MAX.into() + 1;
 
@@ -333,24 +331,9 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
             );
         }
 
-        self.pulses[..pulses.len()].copy_from_slice(pulses);
+        self.arm(pulses);
 
-        self.arm(pulses.len());
-
-        let _guard = TrainGuard { train: self };
-
-        poll_fn(|cx| {
-            let state = T::train_state();
-
-            T::cc_wakers()[_guard.train.channel.index()].register(cx.waker());
-
-            if state.done.load(Ordering::Acquire) {
-                return Poll::Ready(());
-            }
-
-            Poll::Pending
-        })
-        .await;
+        ActiveTrain { train: self }
     }
 
     /// The underlying counter.
@@ -380,7 +363,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
     /// moment the counter starts. Shadowing then goes on before the second element is written, which
     /// is what the TRM asks for: a value written first and shadowed afterwards leaves the shadow
     /// holding its reset value, to be transferred at the next event.
-    fn arm(&mut self, len: usize) {
+    fn arm(&mut self, pulses: &[Pulse]) {
         let state = T::train_state();
         let r = self.timer.regs();
         let channel = self.channel;
@@ -393,7 +376,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         self.timer.set_shadow_load(false);
         self.timer.set_compare_update(channel, CompareUpdate::Immediately);
 
-        write_element(r, channel, &self.pulses[0]);
+        write_element(r, channel, &pulses[0]);
 
         // The driving action, and the override released, into the register itself — the update is
         // still immediate here. Both have to be live before the counter starts: a write made after
@@ -420,14 +403,15 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         // The same element again, into the shadow this time. Starting the counter transfers it
         // straight back over the live copy, so what would otherwise be the shadow's reset value
         // landing on the first period is a write of the values already there.
-        write_element(r, channel, &self.pulses[0]);
+        write_element(r, channel, &pulses[0]);
 
         // The second element is left for the handler, which the enable-time zero event calls before
         // the first element has finished. Writing it here instead would race that transfer.
         let next = 1;
 
-        state.pulses.store(self.pulses.as_mut_ptr(), Ordering::Relaxed);
-        state.len.store(len, Ordering::Relaxed);
+        // Read through, never written — `AtomicPtr` is the only pointer atomic there is.
+        state.pulses.store(pulses.as_ptr().cast_mut(), Ordering::Relaxed);
+        state.len.store(pulses.len(), Ordering::Relaxed);
         state.next.store(next, Ordering::Relaxed);
         state.seen.store(0, Ordering::Relaxed);
         state.channel.store(channel.index() as u8, Ordering::Relaxed);
@@ -559,12 +543,44 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
     }
 }
 
-/// Stops a train whose future is dropped before the last element finished.
-struct TrainGuard<'a, 'd, T: ShadowLoadInstance + ShadowCompareInstance> {
+/// A train that is running.
+///
+/// Awaiting it resolves when the last element has finished. Dropping it, including by losing a
+/// `select!`, stops the train and parks the output, so the pin never rests part way through an
+/// element. The elements stay borrowed for as long as this value lives, because the handler is
+/// reading them.
+#[must_use = "dropping this stops the train at once; await it, or hold it while the train runs"]
+pub struct ActiveTrain<'a, 'd, T: ShadowLoadInstance + ShadowCompareInstance> {
     train: &'a mut PulseTrain<'d, T>,
 }
 
-impl<T: ShadowLoadInstance + ShadowCompareInstance> Drop for TrainGuard<'_, '_, T> {
+impl<T: ShadowLoadInstance + ShadowCompareInstance> ActiveTrain<'_, '_, T> {
+    /// Whether the last element has finished.
+    pub fn is_done(&self) -> bool {
+        T::train_state().done.load(Ordering::Acquire)
+    }
+
+    /// Stop the train and park the output.
+    ///
+    /// What dropping this does, named so that a caller cancelling on purpose says so.
+    pub fn stop(self) {}
+}
+
+impl<T: ShadowLoadInstance + ShadowCompareInstance> Future for ActiveTrain<'_, '_, T> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        T::cc_wakers()[self.train.channel.index()].register(cx.waker());
+
+        if T::train_state().done.load(Ordering::Acquire) {
+            return Poll::Ready(());
+        }
+
+        Poll::Pending
+    }
+}
+
+impl<T: ShadowLoadInstance + ShadowCompareInstance> Drop for ActiveTrain<'_, '_, T> {
     fn drop(&mut self) {
         self.train.halt();
     }
