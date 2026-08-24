@@ -939,9 +939,18 @@ impl SupplyMonitor {
 
     /// The code a conversion against [`Vrsel::VddaVssa`] produces, at any supply.
     ///
-    /// A reading at or near this is the one that carries no information. It is full scale over
+    /// A reading near this is the one that carries no information. It is full scale over
     /// [`DIVIDER`](Self::DIVIDER) and so differs per resolution, which is why it is a function rather
     /// than the 1365 the 12-bit case suggests.
+    ///
+    /// **Compare with a margin rather than for equality.** This is where the reading sits with an
+    /// exact divider, and the divider's own accuracy is specified at plus or minus 1.5% -- so a part
+    /// working correctly returns a code a few either side, and an equality check would report it as
+    /// broken. The datasheet row is `VSupplyMon`.
+    ///
+    /// Exact at every resolution this driver offers, because `2^n - 1` divides by three whenever `n`
+    /// is even and 12, 10 and 8 all are. An odd resolution would truncate, which is what the
+    /// assertion below refuses.
     pub const fn ratiometric_code(resolution: Resolution) -> u16 {
         (resolution.max_count() / Self::DIVIDER) as u16
     }
@@ -1165,6 +1174,28 @@ macro_rules! impl_adc_pin {
 fn _assert_new_blocking_infers<'d, T: Instance>(peri: Peri<'d, T>) -> Adc<'d, T, Blocking> {
     Adc::new_blocking(peri, Config::default())
 }
+
+/// [`SupplyMonitor::ratiometric_code`] divides full scale by three, and that is only exact where the
+/// resolution has an even number of bits.
+///
+/// Every MSPM0 resolution is even, so the helper is exact today. One with an odd bit count would
+/// truncate and start returning a code no conversion produces -- silently, on the one diagnostic
+/// whose whole job is catching a plausible wrong answer.
+#[cfg(adc_supply_monitor)]
+const _: () = {
+    const fn exact(resolution: Resolution) -> bool {
+        // Exhaustive on purpose: a new variant fails to compile here rather than silently truncating.
+        match resolution {
+            Resolution::Bits12 | Resolution::Bits10 | Resolution::Bits8 => {}
+        }
+
+        SupplyMonitor::ratiometric_code(resolution) as u32 * SupplyMonitor::DIVIDER == resolution.max_count()
+    }
+
+    core::assert!(exact(Resolution::Bits12));
+    core::assert!(exact(Resolution::Bits10));
+    core::assert!(exact(Resolution::Bits8));
+};
 
 #[cfg(all(test, adc_supply_monitor))]
 mod rail_monitor_tests {
