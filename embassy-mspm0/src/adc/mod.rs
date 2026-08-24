@@ -818,7 +818,7 @@ impl TempSensor {
 ///
 /// Twice the highest reference any MSPM0 has, and set by where the arithmetic below stops fitting in
 /// 32 bits rather than by anything electrical.
-#[cfg(adc_temp_sensor)]
+#[cfg(any(adc_temp_sensor, adc_supply_monitor, adc_vbat_monitor, adc_vusb_monitor))]
 const MAX_REFERENCE_MV: u32 = 8000;
 
 /// An ADC code as microvolts, given the reference it was taken against.
@@ -870,6 +870,157 @@ pub fn temp_calibration_code() -> u16 {
 
     code as u16
 }
+
+/// The divider every on-die rail monitor sits behind.
+///
+/// Three on every device in the portfolio. Each monitor presents its own rail divided by three and
+/// the datasheet names the row for that rail -- `VDD/3` for the supply monitor, `VBAT/3` and
+/// `VUSB33/3` for the other two. Read off all eighteen datasheets rather than generalised from one.
+///
+/// The MSPM0L2228 datasheet is the one to be careful with: its footnote says both of its monitors
+/// divide `VDD`, and its specification table says the VBAT monitor divides `VBAT`. The table is
+/// right -- a monitor that divided a rail other than its own would report nothing about that rail.
+#[cfg(any(adc_supply_monitor, adc_vbat_monitor, adc_vusb_monitor))]
+const RAIL_MONITOR_DIVIDER: u32 = 3;
+
+/// A divided rail's reading as millivolts of the rail itself.
+///
+/// Ordered so that nothing divides: a constant divisor still links a division routine on this core,
+/// and folding the reference's `/4096` together with the divider's `*3` leaves one shift.
+#[cfg(any(adc_supply_monitor, adc_vbat_monitor, adc_vusb_monitor))]
+const fn rail_millivolts(code: u16, resolution: Resolution, reference_mv: u32) -> u32 {
+    // `core::` rather than the crate's shim, which routes to `defmt` and is not const.
+    core::assert!(reference_mv <= MAX_REFERENCE_MV);
+
+    let code = (code as u32) << (12 - resolution.bits());
+
+    (code * reference_mv * RAIL_MONITOR_DIVIDER) >> 12
+}
+
+/// The supply monitor, as an ADC channel.
+///
+/// `VDD` through a divider, on a fixed channel of every ADC that reaches it. Nothing switches it on
+/// and it needs no pin, so selecting the channel is the whole of using it.
+///
+/// # It only says anything against a reference that is not the supply
+///
+/// The divider is `VDD/3` and the ADC's default reference is `VDD`, so a conversion left at the
+/// default reads one third of full scale at **every** supply -- 1365 of 4095 at 12 bits, 341 of 1023
+/// at 10, 85 of 255 at 8. That is a plausible number rather than an error, and it is the same number
+/// on a board at 1.8 V and a board at 3.6 V. [`ratiometric_code`](Self::ratiometric_code) returns it,
+/// so a caller can say so out loud.
+///
+/// Select [`Vrsel::IntrefVssa`] or [`Vrsel::ExtrefVrefm`] instead, and for the internal reference
+/// hold a [`Vref`](crate::vref::Vref) across the conversion.
+///
+/// # It needs a longer sample window than a pin
+///
+/// The datasheets state `tSample_SupplyMon` separately from [`Config::SAMPLE_MIN_NS`] and it is
+/// microseconds rather than nanoseconds -- 3 us on some families and 5 us on others.
+/// [`Config::sample_period_0`]'s default is around 6.25 us and covers both, so a caller who has not
+/// shortened the window is inside the requirement. One who has shortened it for a pin is not, and
+/// nothing reports the difference. The figure is not in the metadata yet, so this crate cannot state
+/// this device's own.
+#[cfg(adc_supply_monitor)]
+pub struct SupplyMonitor;
+
+#[cfg(adc_supply_monitor)]
+impl SupplyMonitor {
+    /// What the channel divides `VDD` by before the ADC sees it.
+    pub const DIVIDER: u32 = RAIL_MONITOR_DIVIDER;
+
+    /// Convert a reading of this channel to millivolts of `VDD`.
+    ///
+    /// `reference_mv` is the reference the conversion ran against. Pass the supply here and the
+    /// answer is the supply back again whatever it really is -- see the type's own documentation.
+    pub const fn millivolts(code: u16, resolution: Resolution, reference_mv: u32) -> u32 {
+        rail_millivolts(code, resolution, reference_mv)
+    }
+
+    /// The code a conversion against [`Vrsel::VddaVssa`] produces, at any supply.
+    ///
+    /// A reading at or near this is the one that carries no information. It is full scale over
+    /// [`DIVIDER`](Self::DIVIDER) and so differs per resolution, which is why it is a function rather
+    /// than the 1365 the 12-bit case suggests.
+    pub const fn ratiometric_code(resolution: Resolution) -> u16 {
+        (resolution.max_count() / Self::DIVIDER) as u16
+    }
+}
+
+/// The backup-supply monitor, as an ADC channel.
+///
+/// `VBAT` through a divider of [`DIVIDER`](Self::DIVIDER), on a fixed channel. Four families carry
+/// it, all of them ones with an `LFSS` backup domain.
+///
+/// The ADC's reference is not `VBAT`, so this does not have the supply monitor's ratiometric trap.
+/// It does need `tSample_SupplyMon`'s longer window, 5 us on every device that has it.
+#[cfg(adc_vbat_monitor)]
+pub struct VbatMonitor;
+
+#[cfg(adc_vbat_monitor)]
+impl VbatMonitor {
+    /// What the channel divides `VBAT` by before the ADC sees it.
+    pub const DIVIDER: u32 = RAIL_MONITOR_DIVIDER;
+
+    /// Convert a reading of this channel to millivolts of `VBAT`.
+    pub const fn millivolts(code: u16, resolution: Resolution, reference_mv: u32) -> u32 {
+        rail_millivolts(code, resolution, reference_mv)
+    }
+}
+
+/// The USB supply monitor, as an ADC channel.
+///
+/// `VUSB33` through a divider of [`DIVIDER`](Self::DIVIDER), on a fixed channel. One family carries
+/// it. `VUSB33` is a package pin the datasheet calls the USB power supply, so this reports the rail
+/// the board feeds the USB block, not anything the driver controls.
+#[cfg(adc_vusb_monitor)]
+pub struct VusbMonitor;
+
+#[cfg(adc_vusb_monitor)]
+impl VusbMonitor {
+    /// What the channel divides `VUSB33` by before the ADC sees it.
+    pub const DIVIDER: u32 = RAIL_MONITOR_DIVIDER;
+
+    /// Convert a reading of this channel to millivolts of `VUSB33`.
+    pub const fn millivolts(code: u16, resolution: Resolution, reference_mv: u32) -> u32 {
+        rail_millivolts(code, resolution, reference_mv)
+    }
+}
+
+/// The general-purpose amplifier's output, as an ADC channel.
+///
+/// # This crate does not drive the GPAMP
+///
+/// There is no `gpamp` driver here yet, so nothing this type is passed to powers the amplifier,
+/// configures its inputs or waits for it to settle. Sampling it with the block off returns whatever
+/// the unpowered output sits at, which is a plausible code and not an error. Reaching the GPAMP means
+/// the `unstable-pac` feature and driving `GPAMP` yourself.
+///
+/// It is a marker for the same reason [`TempSensor`] is: the route is per device and per ADC, and a
+/// channel number written by hand is wrong on the next part. When a driver arrives this is replaced
+/// by a handle the driver hands out, the way [`opa::OpaOutput`](crate::opa::OpaOutput) already works.
+///
+/// `tSample_GPAMP` is 2.5 us on the L families and 3 us on the G families, both inside
+/// [`Config::sample_period_0`]'s default.
+#[cfg(adc_gpamp)]
+pub struct GpampOutput;
+
+/// `DAC0`'s output, as an ADC channel.
+///
+/// # This crate does not drive the DAC
+///
+/// The same caveat as [`GpampOutput`]: no `dac` driver exists here, so nothing powers the converter
+/// or loads a code into it, and sampling it with the block off reads a plausible number.
+///
+/// # The channel is shared with a package pin
+///
+/// The DAC drives its output pin, so that pin cannot sample an external signal while the DAC is
+/// running. Both reach the ADC at the same channel number and the ADC cannot tell them apart -- which
+/// one it converts is decided by whether the DAC is enabled, not by which type was passed.
+///
+/// `tSample_DAC` is 0.5 us, the shortest of the internal channels.
+#[cfg(adc_dac)]
+pub struct Dac0Output;
 
 // Impl details
 
@@ -978,6 +1129,18 @@ macro_rules! impl_adc_temp_sensor {
     };
 }
 
+#[cfg(any(adc_supply_monitor, adc_vbat_monitor, adc_vusb_monitor, adc_gpamp, adc_dac))]
+macro_rules! impl_adc_internal_channel {
+    ($inst: ident, $ty: ident, $ch: expr) => {
+        impl crate::adc::AdcChannel<peripherals::$inst> for crate::adc::$ty {}
+        impl crate::adc::SealedAdcChannel<peripherals::$inst> for crate::adc::$ty {
+            fn channel(&self) -> u8 {
+                $ch
+            }
+        }
+    };
+}
+
 macro_rules! impl_adc_pin {
     ($inst: ident, $pin: ident, $ch: expr) => {
         impl crate::adc::AdcChannel<peripherals::$inst> for crate::Peri<'_, crate::peripherals::$pin> {}
@@ -1001,6 +1164,83 @@ macro_rules! impl_adc_pin {
 #[allow(dead_code)]
 fn _assert_new_blocking_infers<'d, T: Instance>(peri: Peri<'d, T>) -> Adc<'d, T, Blocking> {
     Adc::new_blocking(peri, Config::default())
+}
+
+#[cfg(all(test, adc_supply_monitor))]
+mod rail_monitor_tests {
+    use super::*;
+
+    /// The reading that means the conversion ran against the supply itself, per resolution.
+    ///
+    /// The 12-bit figure is the one everybody quotes, and keying a check on it alone would stop
+    /// firing at the other two -- which is the failure a check here exists to catch.
+    #[test]
+    fn ratiometric_code_follows_the_resolution() {
+        for (resolution, expected) in [
+            (Resolution::Bits12, 1365),
+            (Resolution::Bits10, 341),
+            (Resolution::Bits8, 85),
+        ] {
+            assert_eq!(SupplyMonitor::ratiometric_code(resolution), expected);
+        }
+    }
+
+    /// Converting the ratiometric reading hands the reference straight back, whatever it was.
+    #[test]
+    fn the_ratiometric_reading_carries_no_information() {
+        for reference_mv in [1400, 2500, 3300, 5000] {
+            for resolution in [Resolution::Bits12, Resolution::Bits10, Resolution::Bits8] {
+                let code = SupplyMonitor::ratiometric_code(resolution);
+                let mv = SupplyMonitor::millivolts(code, resolution, reference_mv);
+
+                // Within one code of the reference, which is the truncation and not a mistake.
+                let step = 3 * reference_mv / resolution.max_count();
+                assert!(
+                    reference_mv - mv <= step,
+                    "{resolution:?} against {reference_mv} mV read {mv} mV",
+                );
+            }
+        }
+    }
+
+    /// A real supply, measured against a reference that is not it.
+    #[test]
+    fn a_fixed_reference_recovers_the_supply() {
+        for supply_mv in [1800u32, 2500, 3300, 3600] {
+            for reference_mv in [1400u32, 2500] {
+                let divided = supply_mv / SupplyMonitor::DIVIDER;
+                if divided >= reference_mv {
+                    // Over range: the divided rail is above the reference and the ADC clips.
+                    continue;
+                }
+
+                let code = (divided * 4096 / reference_mv) as u16;
+                let mv = SupplyMonitor::millivolts(code, Resolution::Bits12, reference_mv);
+
+                assert!(
+                    supply_mv.abs_diff(mv) <= 4,
+                    "{supply_mv} mV against {reference_mv} mV read back as {mv} mV",
+                );
+            }
+        }
+    }
+
+    /// The same physical voltage reads the same however many bits the conversion kept.
+    #[test]
+    fn resolution_only_costs_precision() {
+        let reference_mv = 2500;
+        let twelve = SupplyMonitor::millivolts(1800, Resolution::Bits12, reference_mv);
+
+        for (resolution, code) in [(Resolution::Bits10, 450u16), (Resolution::Bits8, 112)] {
+            let mv = SupplyMonitor::millivolts(code, resolution, reference_mv);
+            let step = 3 * reference_mv / resolution.max_count();
+
+            assert!(
+                twelve.abs_diff(mv) <= step,
+                "{resolution:?} read {mv} mV against 12-bit's {twelve} mV",
+            );
+        }
+    }
 }
 
 #[cfg(test)]

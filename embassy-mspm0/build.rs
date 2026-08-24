@@ -86,6 +86,7 @@ fn generate_code(cfgs: &mut CfgSet) {
     g.extend(generate_adc_constants(cfgs));
     g.extend(generate_opa_adc_channels());
     g.extend(generate_adc_temp_sensor(cfgs));
+    g.extend(generate_adc_internal_channels(cfgs));
     g.extend(generate_trng_constants());
     g.extend(generate_vref_constants());
     g.extend(generate_flash_geometry());
@@ -589,7 +590,10 @@ fn generate_groups() -> TokenStream {
             "Give `$name` a way to run `{}`'s demultiplexer, if anything binds a source on it.",
             group.name
         );
-        let summary = format!("Dispatch whatever fired on `{}` to the handlers bound here.", group.name);
+        let summary = format!(
+            "Dispatch whatever fired on `{}` to the handlers bound here.",
+            group.name
+        );
         let safety = format!(
             "Call this only from `{}`'s own interrupt handler, and from exactly one place in the \
              binary. Pins and peripherals serviced by hand must have their own status bits cleared \
@@ -644,10 +648,7 @@ fn generate_groups() -> TokenStream {
     let acks = METADATA.interrupt_groups.iter().map(|group| {
         let name = Ident::new(&group.name.to_lowercase(), Span::call_site());
         let number = Literal::u32_unsuffixed(group.number);
-        let doc = format!(
-            "Clear one of `{}`'s latched sources, and say which it was.",
-            group.name
-        );
+        let doc = format!("Clear one of `{}`'s latched sources, and say which it was.", group.name);
         let sources = group
             .interrupts
             .iter()
@@ -2033,6 +2034,58 @@ fn generate_adc_temp_sensor(cfgs: &mut CfgSet) -> TokenStream {
         #(#impls)*
         #constants
     }
+}
+
+/// The ADC channels each remaining internal signal is routed to.
+///
+/// Same walk as the temperature sensor above, once per source. Each emits one impl per route, so a
+/// signal a dual-ADC part reaches from both is one type with two channel numbers, and enables a
+/// `cfg` a device without the signal does not get.
+///
+/// The OPA outputs are not here: they hang off the amplifier's own handle rather than a marker type,
+/// so they need the instance as well and have their own walk.
+fn generate_adc_internal_channels(cfgs: &mut CfgSet) -> TokenStream {
+    let mut g = TokenStream::new();
+
+    for (source, cfg, ty) in [
+        (AdcInternalSource::SupplyMonitor, "adc_supply_monitor", "SupplyMonitor"),
+        (AdcInternalSource::VbatMonitor, "adc_vbat_monitor", "VbatMonitor"),
+        (AdcInternalSource::VusbMonitor, "adc_vusb_monitor", "VusbMonitor"),
+        (AdcInternalSource::Gpamp, "adc_gpamp", "GpampOutput"),
+        (AdcInternalSource::Dac0, "adc_dac", "Dac0Output"),
+    ] {
+        cfgs.declare(cfg);
+
+        let routes = adc_internal_routes(source);
+        if routes.is_empty() {
+            continue;
+        }
+
+        cfgs.enable(cfg);
+
+        let ty = format_ident!("{}", ty);
+        g.extend(routes.iter().map(|(adc, channel)| {
+            let adc = format_ident!("{}", adc);
+            quote! { impl_adc_internal_channel!(#adc, #ty, #channel); }
+        }));
+    }
+
+    g
+}
+
+/// Every `(ADC instance, channel)` one internal signal is reachable at.
+fn adc_internal_routes(source: AdcInternalSource) -> Vec<(&'static str, u8)> {
+    METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.adc.map(|adc| (peripheral.name, adc)))
+        .flat_map(move |(adc_name, adc)| {
+            adc.internal_channels
+                .iter()
+                .filter(move |internal| internal.source == source)
+                .map(move |internal| (adc_name, internal.channel))
+        })
+        .collect()
 }
 
 /// The five per-device figures that turn a temperature sensor reading into a temperature.
