@@ -110,17 +110,45 @@ fn min_sleep_met(_cs: CriticalSection) -> bool {
 
 /// Block sleep at `level` and every deeper mode. Paired with [`unblock`] by
 /// [`WakeGuard`](crate::sysctl::WakeGuard).
+#[inline]
 pub(crate) fn block(level: SleepLevel) {
-    trace!("Blocking sleep at level {:?}", level);
-    if SLEEP_BLOCKS[level as usize].fetch_add(1, Ordering::Relaxed) == (u8::MAX - 1) {
-        panic!("Blocking at SleepLevel {:?} would overflow", level)
-    };
+    apply(level, 1);
 }
 
 /// Remove a block previously added at `level`.
+#[inline]
 pub(crate) fn unblock(level: SleepLevel) {
-    trace!("Unblocking sleep at level {:?}", level);
-    SLEEP_BLOCKS[level as usize].fetch_sub(1, Ordering::Relaxed);
+    apply(level, -1);
+}
+
+/// Move [`SLEEP_BLOCKS`] at `level` by `delta`, which is `1` to take a guard and `-1` to release one.
+///
+/// # One address, both directions, deliberately
+///
+/// The counts say a floor is held; this says by whom. Out of line so there is a single instruction to
+/// break on, and *shared* so that one breakpoint covers every acquisition and release in the image
+/// rather than one per call site -- which matters when the core has four of them and a session wants
+/// one for something else. AAPCS puts the level in `r0` and the delta in `r1`, so a halt here reads
+/// both which level moved and which way straight out of the registers, and the call leaves a frame to
+/// unwind through to the driver that took the guard. An inlined read-modify-write leaves neither.
+///
+/// Armed from reset this produces a ledger of every guard operation, and whatever has a `+1` with no
+/// matching `-1` is what holds the floor. That costs a reset and a halt per operation, so it is the
+/// escalation rather than the first thing to reach for: poll the counts, and come here once they say
+/// something is stuck.
+#[inline(never)]
+fn apply(level: SleepLevel, delta: i8) {
+    trace!("Sleep block at level {:?}: {}", level, delta);
+
+    let blocks = &SLEEP_BLOCKS[level as usize];
+
+    if delta > 0 {
+        if blocks.fetch_add(1, Ordering::Relaxed) == (u8::MAX - 1) {
+            panic!("Blocking at SleepLevel {:?} would overflow", level)
+        }
+    } else {
+        blocks.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Deepest mode currently permitted, or `None` if all deep sleep is blocked.
