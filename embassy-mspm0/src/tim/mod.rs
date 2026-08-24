@@ -11,6 +11,7 @@ pub mod low_level;
 #[cfg(any(feature = "_time-driver", feature = "rtic-monotonic"))]
 #[doc(hidden)]
 pub mod period;
+pub mod pulse_train;
 pub mod pulse_width;
 pub mod simple_pwm;
 
@@ -335,6 +336,12 @@ pub(crate) trait SealedInstance {
     /// builds a [`PulseWidth`](pulse_width::PulseWidth): nothing else calls this, and a static no
     /// call reaches is collected.
     fn pulse_snapshot() -> &'static pulse_width::Snapshot;
+
+    /// Where [`pulse_train`]'s handler keeps its place in the sequence.
+    ///
+    /// Its own accessor for the same reason as [`Self::pulse_snapshot`]: an instance that emits no
+    /// train keeps none of the bytes.
+    fn train_state() -> &'static pulse_train::TrainState;
 }
 
 /// Peripheral state, sized by how many capture/compare channels the instance has.
@@ -481,6 +488,13 @@ macro_rules! impl_tim_instance {
                 static SNAPSHOT: crate::tim::pulse_width::Snapshot = crate::tim::pulse_width::Snapshot::new();
 
                 &SNAPSHOT
+            }
+
+            #[inline]
+            fn train_state() -> &'static crate::tim::pulse_train::TrainState {
+                static STATE: crate::tim::pulse_train::TrainState = crate::tim::pulse_train::TrainState::new();
+
+                &STATE
             }
         }
 
