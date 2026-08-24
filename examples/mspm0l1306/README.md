@@ -39,6 +39,10 @@ Embassy Chat: https://matrix.to/#/#embassy-rs:matrix.org
 `i2c_rejects` checks the addresses and configurations the I2C driver refuses, all of which are settled
 before the peripheral touches the bus, so it needs no wiring and no target.
 
+`supply_monitor` reads VDD through the ADC's internal divider and needs no wiring either. It converts
+the same channel against the internal reference and against the supply, one after the other, to show
+what the second one is worth: a third of full scale at every supply, whatever the board is running at.
+
 ## Measurement examples
 
 Two binaries measure the HAL rather than demonstrate it, and they are behind a `bench` feature because
