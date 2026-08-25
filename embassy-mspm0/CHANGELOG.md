@@ -336,3 +336,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: mspm0: every intra-doc link resolves on every feature set, including the ones without `rt`
 - breaking: mspm0/tim: `pulse_train::Config::idle` takes an `Idle` rather than a `Level`, whose third variant leaves the pin undriven between trains
 - feat: mspm0/tim: `pulse_train::Config::polarity` inverts the whole waveform, so a train can begin with a low period and end with a high one
+- feat: mspm0/tim: `pulse_train::Config::end` can stop a train at its last element's compare match, so a train of `n` elements emits `n` active phases and `n - 1` trailing ones

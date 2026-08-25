@@ -78,6 +78,9 @@ pub struct TrainState {
 
     /// Whether the output rests high between trains.
     idle_high: AtomicBool,
+
+    /// Whether the train stops at the final element's compare match rather than its boundary.
+    at_final_compare: AtomicBool,
 }
 
 impl TrainState {
@@ -111,6 +114,7 @@ impl TrainState {
             channel: AtomicU8::new(0),
             done: AtomicBool::new(false),
             idle_high: AtomicBool::new(false),
+            at_final_compare: AtomicBool::new(false),
         }
     }
 }
@@ -124,15 +128,40 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     unsafe fn on_interrupt() {
         let r = T::info().regs;
 
+        let state = T::train_state();
+        let channel = Channel::ALL[state.channel.load(Ordering::Relaxed) as usize];
+        let active = low_level::active(r);
+
+        // The compare arm exists only for `End::AtFinalCompare`, and only for the last element: the
+        // event is armed one boundary ahead and masked again here. Taken first because both events
+        // can be latched at once on a one-element train, and this is the one that ends it.
+        if active.contains(Event::CaptureOrCompareUp(channel)) {
+            low_level::clear_pending(r, Event::CaptureOrCompareUp(channel));
+            low_level::enable_interrupt(r, Event::CaptureOrCompareUp(channel), false);
+            low_level::enable_interrupt(r, Event::Zero, false);
+
+            // The compare has already driven the pin to the resting level in hardware, because the
+            // final element's compare action was rewritten to it. Stopping here is what drops the
+            // trailing phase; the override then holds the pin once the counter is dead.
+            r.counterregs(0).ctrctl().modify(|w| w.set_en(false));
+
+            r.counterregs(0)
+                .ccact(channel.index())
+                .modify(|w| w.set_swfrcact(state.idle_force()));
+
+            state.done.store(true, Ordering::Release);
+            T::cc_wakers()[channel.index()].wake();
+
+            return;
+        }
+
         // Other events the caller enabled through `Timer` are not ours to acknowledge.
-        if !low_level::active(r).contains(Event::Zero) {
+        if !active.contains(Event::Zero) {
             return;
         }
 
         low_level::clear_pending(r, Event::Zero);
 
-        let state = T::train_state();
-        let channel = Channel::ALL[state.channel.load(Ordering::Relaxed) as usize];
         let len = state.len.load(Ordering::Relaxed);
         let seen = state.seen.load(Ordering::Relaxed) + 1;
 
@@ -170,10 +199,26 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         // compare register, is given a closing action instead. It transfers the cycle after this
         // event, which puts it in force at exactly the boundary that ends the train.
         if finished == len - 1 {
-            r.counterregs(0).ccact(channel.index()).modify(|w| {
-                w.set_zact(state.idle_act());
-                w.set_cuact(state.idle_act());
-            });
+            if state.at_final_compare.load(Ordering::Relaxed) {
+                // This zero started the last element, so its compare has not fired yet and the write
+                // has to reach the live register rather than the shadow — there is no later boundary
+                // to transfer one. `CCACTUPD` goes back to immediate for exactly this write.
+                r.counterregs(0)
+                    .ccctl(channel.index())
+                    .modify(|w| w.set_ccactupd(CompareUpdate::Immediately.into()));
+
+                r.counterregs(0)
+                    .ccact(channel.index())
+                    .modify(|w| w.set_cuact(state.idle_act()));
+
+                low_level::clear_pending(r, Event::CaptureOrCompareUp(channel));
+                low_level::enable_interrupt(r, Event::CaptureOrCompareUp(channel), true);
+            } else {
+                r.counterregs(0).ccact(channel.index()).modify(|w| {
+                    w.set_zact(state.idle_act());
+                    w.set_cuact(state.idle_act());
+                });
+            }
         }
 
         let next = state.next.load(Ordering::Relaxed);
@@ -237,12 +282,37 @@ pub struct Config {
     /// What the pin does between trains.
     pub idle: Idle,
 
+    /// Where the train stops.
+    pub end: End,
+
     /// Which level a pulse's `high` time drives the pin to.
     ///
     /// [`Polarity::ActiveLow`] inverts the whole waveform, so a train begins with a low period and
     /// ends with a high one. That is how a sequence starting on a falling edge is expressed — there
     /// is no per-element polarity, and there does not need to be.
     pub polarity: Polarity,
+}
+
+/// Where a train stops.
+///
+/// Every element is one counter period, so a train of `n` elements emits `n` active phases and `n`
+/// trailing ones. This is what makes an odd sequence reachable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum End {
+    /// Run every element in full. The train ends at the last one's period boundary.
+    #[default]
+    Complete,
+
+    /// Stop at the last element's compare match, so its trailing time is never emitted.
+    ///
+    /// A train of `n` elements then has `n` active phases and `n - 1` trailing ones — the odd
+    /// sequence a whole number of periods cannot express. Combined with
+    /// [`Polarity::ActiveLow`](Polarity) it drops a trailing *high* instead.
+    ///
+    /// The counter stops the moment the compare fires rather than running out the rest of the
+    /// period, so the train is shorter as well as shaped differently.
+    AtFinalCompare,
 }
 
 /// What a [`PulseTrain`] does with its pin between trains.
@@ -278,6 +348,7 @@ impl Config {
             prescaler: 1,
             free_run_in_debug: false,
             idle: Idle::Low,
+            end: End::Complete,
             polarity: Polarity::ActiveHigh,
         }
     }
@@ -317,6 +388,13 @@ impl Config {
         self
     }
 
+    /// Set [`end`](Self::end).
+    #[must_use]
+    pub const fn with_end(mut self, end: End) -> Self {
+        self.end = end;
+        self
+    }
+
     /// Set [`polarity`](Self::polarity).
     #[must_use]
     pub const fn with_polarity(mut self, polarity: Polarity) -> Self {
@@ -349,6 +427,8 @@ pub struct PulseTrain<'d, T: Instance> {
     idle: Level,
     /// Whether the pin is disconnected between trains rather than driven.
     release: bool,
+    /// Whether a train stops at its final element's compare match.
+    at_final_compare: bool,
     /// What to mux the pin back to when a train starts, for [`Idle::HighImpedance`].
     pf: u8,
     pull: Pull,
@@ -413,6 +493,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
             channel: C::CHANNEL,
             idle,
             release: matches!(config.idle, Idle::HighImpedance),
+            at_final_compare: matches!(config.end, End::AtFinalCompare),
             pf,
             pull,
             tick_divisor: config.divider as u32 * config.prescaler as u32,
@@ -506,6 +587,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         }
 
         low_level::enable_interrupt(r, Event::Zero, false);
+        low_level::enable_interrupt(r, Event::CaptureOrCompareUp(channel), false);
 
         // Shadowing off first. It is left on by the previous train, so without this the write below
         // lands in the shadow instead of the registers and the first element arrives a boundary late
@@ -555,6 +637,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         state
             .idle_high
             .store(matches!(self.idle, Level::High), Ordering::Relaxed);
+        state.at_final_compare.store(self.at_final_compare, Ordering::Relaxed);
         state.done.store(false, Ordering::Release);
 
         low_level::clear_pending(r, Event::Zero);
@@ -570,6 +653,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         let channel = self.channel;
 
         low_level::enable_interrupt(r, Event::Zero, false);
+        low_level::enable_interrupt(r, Event::CaptureOrCompareUp(channel), false);
         self.timer.stop();
 
         // A completed train stops on a boundary, with the counter already at zero. A cancelled one
@@ -733,6 +817,7 @@ impl<T: Instance> Drop for PulseTrain<'_, T> {
         let r = self.timer.regs();
 
         low_level::enable_interrupt(r, Event::Zero, false);
+        low_level::enable_interrupt(r, Event::CaptureOrCompareUp(self.channel), false);
         self.timer.stop();
 
         T::train_state().len.store(0, Ordering::Relaxed);
