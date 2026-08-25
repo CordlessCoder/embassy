@@ -720,16 +720,26 @@ impl<'d> I2c<'d> {
             return Err(Error::Bus);
         };
 
-        // Read back rather than remembered: the pin is type-erased by the time it is stored here, so its
-        // peripheral function number is not otherwise recoverable.
-        let scl_pf = pac::IOMUX.pincm(scl._pin_cm() as usize).read().pf();
-        let sda_pf = pac::IOMUX.pincm(sda._pin_cm() as usize).read().pf();
+        // The whole word rather than the function number: the pin is type-erased by the time it is
+        // stored here, and `set_pf` rewrites the pulls and the inversion from the `PfType` it is given.
+        // Synthesising one from `Pull::None` switches off an internal pull-up, and an open-drain line
+        // whose pull-up is the internal one then has nothing to raise it — nine clocks with no rising
+        // edge, reported as a target that will not let go.
+        let scl_pincm = pac::IOMUX.pincm(scl._pin_cm() as usize).read();
+        let sda_pincm = pac::IOMUX.pincm(sda._pin_cm() as usize).read();
 
         // `hiz1` is already set on both from `new_inner` and nothing here clears it, so a GPIO output is
         // open-drain: low is driven, high is released for the pull-up to take.
-        let released = PfType::input(Pull::None, false);
-        for pin in [scl, sda] {
-            pin.set_as_pf(crate::gpio::GPIO_PF, released);
+        for (pin, pincm) in [(scl, scl_pincm), (sda, sda_pincm)] {
+            let pull = if pincm.pipu() {
+                Pull::Up
+            } else if pincm.pipd() {
+                Pull::Down
+            } else {
+                Pull::None
+            };
+
+            pin.set_as_pf(crate::gpio::GPIO_PF, PfType::input(pull, pincm.inv()));
             pin.block().doutset31_0().write(|w| w.set_dio(pin.bit_index(), true));
             pin.block().doeset31_0().write(|w| w.set_dio(pin.bit_index(), true));
         }
@@ -756,8 +766,8 @@ impl<'d> I2c<'d> {
         sda.block().doutset31_0().write(|w| w.set_dio(sda.bit_index(), true));
         cortex_m::asm::delay(half);
 
-        scl.set_as_pf(scl_pf, released);
-        sda.set_as_pf(sda_pf, released);
+        pac::IOMUX.pincm(scl._pin_cm() as usize).write_value(scl_pincm);
+        pac::IOMUX.pincm(sda._pin_cm() as usize).write_value(sda_pincm);
 
         // The controller watched none of that, so its idea of the bus is stale.
         self.reset_peripheral();

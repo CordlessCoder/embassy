@@ -307,3 +307,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - breaking: mspm0/uart: `send_break` becomes `set_break` and `clear_break` — `LCRH.BRK` is a level and nothing could lift it, so one call ended the UART for the life of the program
 - fix: mspm0/uart: a rejected baud rate or config no longer leaves the peripheral disabled and its interrupt masked behind an `Err`
 - breaking: mspm0/i2c: `low_level::start_write` and `start_read` return `Result` and reject a length past the new `low_level::MAX_BURST_LEN`, where a longer one silently truncated into a twelve-bit field
+- fix: mspm0/i2c: bus recovery keeps each pin's pull and inversion, where clearing them left an internally pulled-up bus with nothing to raise SCL
