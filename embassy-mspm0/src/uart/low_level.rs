@@ -1235,9 +1235,18 @@ pub(crate) fn configure(
 }
 
 pub(crate) fn reconfigure(info: &Info, state: &State, config: &Config) -> Result<(), ConfigError> {
+    let was_enabled = info.interrupt.is_enabled();
     info.interrupt.disable();
+
     let r = info.regs;
     let ctl0 = r.ctl0().read();
+
+    // SLAU846 24.2.3: a control register is only to be programmed with `ENABLE` clear, and `configure`
+    // rewrites `CTL0`, `LCRH`, `IFLS` and `CLKSEL`. Drain first — disabling completes the character in
+    // the shift register and abandons whatever is still in the FIFO.
+    while busy(r) {}
+
+    critical_section::with(|_cs| r.ctl0().modify(|w| w.set_enable(false)));
 
     // A rejected config must leave the instance as it was found. `configure` returns before it
     // re-enables, so an early `?` here would hand back an `Err` that reads recoverable over a
@@ -1248,8 +1257,12 @@ pub(crate) fn reconfigure(info: &Info, state: &State, config: &Config) -> Result
         r.ctl0().write_value(ctl0);
     }
 
-    info.interrupt.unpend();
-    unsafe { info.interrupt.enable() };
+    // Only if it was. Unmasking a line the caller had left masked strands it in whatever the
+    // application's `DefaultHandler` does, and `i2c::low_level::set_config` already conditions this.
+    if was_enabled {
+        info.interrupt.unpend();
+        unsafe { info.interrupt.enable() };
+    }
 
     configured
 }
@@ -1260,6 +1273,7 @@ pub(crate) fn reconfigure(info: &Info, state: &State, config: &Config) -> Result
 pub(crate) fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(), ConfigError> {
     let r = info.regs;
 
+    let was_enabled = info.interrupt.is_enabled();
     info.interrupt.disable();
 
     // Wait for end of transmission per suggestion in SLAU 845 section 18.3.28. It has to happen while
@@ -1268,7 +1282,9 @@ pub(crate) fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(),
     // never finishes.
     while busy(r) {}
 
-    // Programming baud rate requires that the peripheral is disabled
+    // Not for the divisor registers — SLAU846 24.2.3 says `IBRD` and `FBRD` can be written on a live
+    // UART. It is for `CTL0.HSE`, the oversampling select, which `apply_baud` also writes and which is
+    // a control register like any other.
     critical_section::with(|_cs| {
         r.ctl0().modify(|w| {
             w.set_enable(false);
@@ -1286,8 +1302,10 @@ pub(crate) fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(),
         });
     });
 
-    info.interrupt.unpend();
-    unsafe { info.interrupt.enable() };
+    if was_enabled {
+        info.interrupt.unpend();
+        unsafe { info.interrupt.enable() };
+    }
 
     programmed
 }
