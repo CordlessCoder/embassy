@@ -1011,26 +1011,31 @@ impl<'d> Input<'d, Blocking> {
 
     /// Latch this pin's edges and let them reach the CPU. See [`Flex::enable_interrupt`], which this
     /// forwards to — including what it says about servicing a pin alongside the async waits.
+    #[inline]
     pub fn enable_interrupt(&mut self, edge: Edge) {
         self.pin.enable_interrupt(edge);
     }
 
     /// Stop this pin's edges reaching the CPU. See [`Flex::disable_interrupt`].
+    #[inline]
     pub fn disable_interrupt(&mut self) {
         self.pin.disable_interrupt();
     }
 
     /// Whether an edge is latched for this pin. See [`Flex::is_pending`].
+    #[inline]
     pub fn is_pending(&self) -> bool {
         self.pin.is_pending()
     }
 
     /// Drop a latched edge without acting on it. See [`Flex::clear_pending`].
+    #[inline]
     pub fn clear_pending(&mut self) {
         self.pin.clear_pending();
     }
 
     /// Whether an edge is latched, clearing it. See [`Flex::take_pending`].
+    #[inline]
     pub fn take_pending(&mut self) -> bool {
         self.pin.take_pending()
     }
@@ -1233,26 +1238,31 @@ impl<'d> OutputOpenDrain<'d, Blocking> {
 
     /// Latch this pin's edges and let them reach the CPU. See [`Flex::enable_interrupt`], which this
     /// forwards to — including what it says about servicing a pin alongside the async waits.
+    #[inline]
     pub fn enable_interrupt(&mut self, edge: Edge) {
         self.pin.enable_interrupt(edge);
     }
 
     /// Stop this pin's edges reaching the CPU. See [`Flex::disable_interrupt`].
+    #[inline]
     pub fn disable_interrupt(&mut self) {
         self.pin.disable_interrupt();
     }
 
     /// Whether an edge is latched for this pin. See [`Flex::is_pending`].
+    #[inline]
     pub fn is_pending(&self) -> bool {
         self.pin.is_pending()
     }
 
     /// Drop a latched edge without acting on it. See [`Flex::clear_pending`].
+    #[inline]
     pub fn clear_pending(&mut self) {
         self.pin.clear_pending();
     }
 
     /// Whether an edge is latched, clearing it. See [`Flex::take_pending`].
+    #[inline]
     pub fn take_pending(&mut self) -> bool {
         self.pin.take_pending()
     }

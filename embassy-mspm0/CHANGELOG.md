@@ -322,3 +322,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - breaking: mspm0/dma: a transfer of zero elements is rejected with the new `Error::NoTransfers`, and `Error` is `#[non_exhaustive]`
 - fix: mspm0/mathacl: dropping the driver powers the accelerator down, as every other whole-peripheral driver does
 - feat: mspm0/comp: `new_async_sharing_positive` builds an awaitable comparator whose positive pin can still be lent to another driver, which had no `Async` route
+- docs: mspm0/gpio: the ten pin pending and edge forwarders carry `#[inline]`, like every other forwarder on the same types

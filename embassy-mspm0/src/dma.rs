@@ -541,7 +541,6 @@ impl<'a> Transfer<'a> {
     }
 }
 
-impl<'a> Unpin for Transfer<'a> {}
 impl<'a> Future for Transfer<'a> {
     type Output = ();
 
