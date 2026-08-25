@@ -214,10 +214,16 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
                 low_level::clear_pending(r, Event::CaptureOrCompareUp(channel));
                 low_level::enable_interrupt(r, Event::CaptureOrCompareUp(channel), true);
             } else {
-                r.counterregs(0).ccact(channel.index()).modify(|w| {
-                    w.set_zact(state.idle_act());
-                    w.set_cuact(state.idle_act());
-                });
+                // Only the zero action. `CUACT` has to keep driving the pin low, because the final
+                // element still has its own falling edge to make — and this write has been measured
+                // taking effect *during* that element rather than at the boundary after it, so a
+                // closing `CUACT` eats that edge and the last pulse merges into the resting level.
+                //
+                // Invisible whenever the resting level is low, since the closing action is then the
+                // value `CUACT` already held. It is what C39 could not see and C40 does.
+                r.counterregs(0)
+                    .ccact(channel.index())
+                    .modify(|w| w.set_zact(state.idle_act()));
             }
         }
 
@@ -470,22 +476,29 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         timer.set_polarity(C::CHANNEL, config.polarity);
 
         // Inverting the whole waveform is what makes a train that starts low and ends high, so there
-        // is no per-element polarity. It also inverts the resting level, which is why the generator
-        // side of it is worked out once here rather than at each write.
+        // is no per-element polarity.
+        //
+        // **`CCPIV` is not routed through `CCPOINV` and the compare actions are.** The TRM calls
+        // `CCPIV` the value put on the signal generator state, which reads as though the inverter is
+        // downstream of it; on silicon the resting level comes out as written while the train comes
+        // out inverted. So the level the caller asked for goes to `CCPIV` unchanged, and only the
+        // actions and the forced output are complemented.
         let invert = matches!(config.polarity, Polarity::ActiveLow);
-        let idle = match config.idle {
-            // Wherever the last pulse left the generator, so releasing adds no edge of its own.
-            Idle::HighImpedance => Level::Low,
-            Idle::Low if invert => Level::High,
-            Idle::Low => Level::Low,
-            Idle::High if invert => Level::Low,
+        let pin_idle = match config.idle {
+            // Wherever the last pulse left the pin, so releasing adds no edge of its own.
+            Idle::HighImpedance | Idle::Low => Level::Low,
             Idle::High => Level::High,
+        };
+        let idle = match (pin_idle, invert) {
+            (Level::Low, true) => Level::High,
+            (Level::High, true) => Level::Low,
+            (level, false) => level,
         };
 
         // `CCPIV` is where the pin sits when the signal generator is not driving it, which is every
         // moment the counter is stopped. The forced-output override cannot do this job: it is an
         // action the counter evaluates, so it holds nothing once the counter halts.
-        timer.set_idle_level(C::CHANNEL, idle);
+        timer.set_idle_level(C::CHANNEL, pin_idle);
 
         let mut this = Self {
             timer,

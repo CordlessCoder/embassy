@@ -7,22 +7,28 @@
 //! is what decides whether an arbitrary sequence is reachable. TIMG4 again, ticking at 1 MHz, so
 //! every width below is in microseconds.
 //!
-//! Four phases repeat, each separated by a long idle gap. Every one emits the same three elements,
-//! so what changes between them is only the shape:
+//! Every phase emits the same three elements — 10, 20 and 30 us high with a 20 us gap — so the only
+//! thing that changes is the shape of the ends.
 //!
-//! - **plain** — active high, ends after the last element's low. Three highs, three lows.
-//! - **stop at the compare** — active high, ends at the last element's compare match. Three highs
-//!   and **two** lows, and the train is shorter by the final low. This is the odd sequence a whole
-//!   number of periods cannot express.
-//! - **inverted** — the same three elements with the polarity flipped, so the train begins with a
-//!   low period and ends with a high one, and the pin rests high.
-//! - **released** — active high, and the pin is left undriven between trains. On an analyser with no
-//!   pull that reads as an indeterminate level rather than a clean one; with the internal pull-up on
-//!   it settles high. **The pin is still driven for the handler's own latency** after the closing
-//!   boundary, before the release lands.
+//! **The first two phases rest high on purpose, and that is what makes them tell apart.** With a low
+//! resting level a dropped trailing low is invisible: the train ends low and stays low either way,
+//! and the only difference is 20 us of a gap that also contains the driver being rebuilt. Resting
+//! high turns the same 20 us into a notch between the last pulse and the resting level, which is
+//! either present or absent.
 //!
-//! A pass is: the counts above, every high 10, 20 and 30 us in order, every low 20 us, and the
-//! inverted phase's first edge falling rather than rising.
+//! - **complete, resting high** — `H10 L20 H20 L20 H30` then a **20 us low**, then rests high.
+//! - **at the final compare, resting high** — `H10 L20 H20 L20 H30` then rests high **with no notch**.
+//!   Three highs and two lows: the odd sequence a whole number of periods cannot express.
+//! - **inverted** — the same elements with the polarity flipped: `L10 H20 L20 H20 L30 H20`, so the
+//!   train begins with a low period and ends with a high one, and it rests low.
+//! - **released** — the pin is left undriven between trains. With no pull that reads as an
+//!   indeterminate level rather than a clean one; with the internal pull-up it settles high. **The
+//!   pin is still driven for the handler's own latency** after the closing boundary, before the
+//!   release lands.
+//!
+//! Each driver is held alive across its own gap. Dropping it disconnects the pin, so a driver
+//! released early would make every resting level read as a floating one — which is what the first
+//! version of this example did, and it could not have failed.
 
 #![no_std]
 #![no_main]
@@ -64,14 +70,14 @@ async fn main(_spawner: Spawner) -> ! {
 
     loop {
         for (name, config) in [
-            ("plain", base().with_idle(Idle::Low)),
+            ("complete, resting high", base().with_idle(Idle::High)),
             (
-                "stop at the compare",
-                base().with_idle(Idle::Low).with_end(End::AtFinalCompare),
+                "at the final compare, resting high",
+                base().with_idle(Idle::High).with_end(End::AtFinalCompare),
             ),
             (
                 "inverted",
-                base().with_idle(Idle::High).with_polarity(Polarity::ActiveLow),
+                base().with_idle(Idle::Low).with_polarity(Polarity::ActiveLow),
             ),
             ("released", base().with_idle(Idle::HighImpedance)),
         ] {
@@ -82,10 +88,8 @@ async fn main(_spawner: Spawner) -> ! {
 
             info!("{} done", name);
 
-            // Dropped here rather than released: `release` hands back an erased pin, and the next
-            // phase wants the concrete one to name its channel again.
-            drop(train);
-
+            // Held alive across the gap: dropping it disconnects the pin, and the resting level is
+            // half of what each phase is here to show.
             Timer::after(Duration::from_millis(5)).await;
         }
 
