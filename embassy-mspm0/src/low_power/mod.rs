@@ -251,8 +251,9 @@ pub fn shutdown(_cs: CriticalSection) -> ! {
 ///
 /// Costs nothing unless it is doing something. A caller that never raised the threshold, which is
 /// every application until one asks for a warning level, takes one register read and no delay. Where
-/// it does act it spends the change time twice, about 30 us against a wake path measured in tens —
-/// that is the price of the feature, paid only by the applications that want it.
+/// it does act it spends the change time twice, about 90 us — `bor_change_cycles` returns a delay
+/// count and `asm::delay` runs three cycles an iteration. That is the price of the feature, paid only
+/// by the applications that want it.
 #[cfg(mspm0_bor_sleep_guard)]
 struct BorSuspend(Option<crate::sysctl::BorThreshold>);
 

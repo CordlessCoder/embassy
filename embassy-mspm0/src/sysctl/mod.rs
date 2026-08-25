@@ -585,7 +585,12 @@ pub(crate) fn bor_settle() {
     cortex_m::asm::delay(with_clocks(|clocks| bor_change_cycles(clocks.mclk)));
 }
 
-/// Cycles covering the threshold change at `mclk`.
+/// Delay count covering the threshold change at `mclk`.
+///
+/// A count, not a cycle figure: `asm::delay` runs three cycles an iteration here, so this spends about
+/// three times 15 us. Do not trim it toward the TRM's figure without deciding that deliberately — the
+/// factor is a property of the flash caches rather than of the part, and it is five again on anything
+/// that boots with them off.
 #[cfg(feature = "bor-warning")]
 const fn bor_change_cycles(mclk: u32) -> u32 {
     // 15 us, from SLAU847 §2.2.3.2, as `mclk / (1e9 / 15_000)`. Kept in `u32`: the obvious

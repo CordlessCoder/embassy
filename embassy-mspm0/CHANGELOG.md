@@ -312,3 +312,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/tim: a cancelled pulse train's output repair waits a tick rather than a fixed number of loops, so it no longer expires early on a slow clock tree
 - fix: mspm0/tim: a pulse's length is checked against the counter's load value, where the old bound overflowed on a 32-bit counter and would have rejected every pulse
 - fix: mspm0: each interrupt group's documentation names its sources' own `IIDX` indices, where counting them positionally was wrong on any device with a gap
+- docs: mspm0/sysctl: the brown-out settle says what it actually spends — `asm::delay` counts iterations, so the wait is about three times the figure it was quoting
