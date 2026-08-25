@@ -734,6 +734,28 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
         }
     }
 
+    /// Run `A` alone, driving its output pin, with `B` left off.
+    ///
+    /// [`only_a`](Self::only_a) with the pin, for a stage whose result something outside the device
+    /// reads. Dropping the handle disables `A`.
+    pub fn only_a_ext<'x>(
+        &'x mut self,
+        input: impl Into<NonInvertingInput<'x, A>>,
+        output: Peri<'x, impl OutputPin<A>>,
+        stage: Stage,
+    ) -> OpaOutput<'x, A> {
+        self.disable();
+        SealedOutputPin::setup(&*output);
+
+        let mut cfg = Opa::<A>::stage_cfg(input.into(), stage);
+        cfg.set_outpin(true);
+
+        OpaOutput {
+            _guard: self.a.enable(cfg),
+            _phantom: PhantomData,
+        }
+    }
+
     /// Run `B` alone, with `A` left off.
     ///
     /// The handle is an ADC channel, and dropping it disables `B`.
@@ -750,6 +772,28 @@ impl<'d, A: Instance, B: Instance> OpaPair<'d, A, B> {
 
         OpaInternalOutput {
             _guard: self.b.enable(Opa::<B>::stage_cfg(input.into(), stage)),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Run `B` alone, driving its output pin, with `A` left off.
+    ///
+    /// [`only_b`](Self::only_b) with the pin, for a stage whose result something outside the device
+    /// reads. Dropping the handle disables `B`.
+    pub fn only_b_ext<'x>(
+        &'x mut self,
+        input: impl Into<NonInvertingInput<'x, B>>,
+        output: Peri<'x, impl OutputPin<B>>,
+        stage: Stage,
+    ) -> OpaOutput<'x, B> {
+        self.disable();
+        SealedOutputPin::setup(&*output);
+
+        let mut cfg = Opa::<B>::stage_cfg(input.into(), stage);
+        cfg.set_outpin(true);
+
+        OpaOutput {
+            _guard: self.b.enable(cfg),
             _phantom: PhantomData,
         }
     }
@@ -867,6 +911,12 @@ impl<'d, T: Instance> Drop for Opa<'d, T> {
     }
 }
 
+/// Re-range a running amplifier. One body, three handles.
+#[inline]
+fn set_gain<T: Instance>(gain: Gain) {
+    T::regs().cfg().modify(|w| w.set_gain(gain as u8));
+}
+
 impl<'a, T: Instance> OpaOutput<'a, T> {
     /// Change the PGA gain while the amplifier is running.
     ///
@@ -874,7 +924,7 @@ impl<'a, T: Instance> OpaOutput<'a, T> {
     /// for auto-ranging. The output settles within the datasheet's `tSETTLE`, single-digit
     /// microseconds; a sample taken sooner is unreliable.
     pub fn set_gain(&mut self, gain: Gain) {
-        T::regs().cfg().modify(|w| w.set_gain(gain as u8));
+        set_gain::<T>(gain);
     }
 }
 
@@ -885,7 +935,19 @@ impl<'a, T: Instance> OpaInternalOutput<'a, T> {
     /// for auto-ranging. The output settles within the datasheet's `tSETTLE`, single-digit
     /// microseconds; a sample taken sooner is unreliable.
     pub fn set_gain(&mut self, gain: Gain) {
-        T::regs().cfg().modify(|w| w.set_gain(gain as u8));
+        set_gain::<T>(gain);
+    }
+}
+
+impl<'a, T: Instance> OpaTap<'a, T> {
+    /// Change this stage's PGA gain while the chain is running.
+    ///
+    /// This is the upstream stage of a [`Cascade`], so its output is the downstream stage's input:
+    /// re-ranging here moves both readings, and the downstream stage's by the product of the two
+    /// gains. Without it a standing chain cannot be re-ranged at all, which is what the chain exists
+    /// to avoid.
+    pub fn set_gain(&mut self, gain: Gain) {
+        set_gain::<T>(gain);
     }
 }
 
