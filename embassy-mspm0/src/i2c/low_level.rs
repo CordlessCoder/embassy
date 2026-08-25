@@ -212,6 +212,12 @@ pub struct I2c<'d> {
     pub(crate) resolved: Resolved,
 }
 
+/// The most bytes one burst can move: `CCTR.CBLEN` is twelve bits wide.
+///
+/// A length past this truncates rather than saturating, and a `CBLEN` of zero with START and STOP is
+/// an address-only transaction — a transfer that reports success without moving the caller's bytes.
+pub const MAX_BURST_LEN: usize = 0xFFF;
+
 impl<'d> I2c<'d> {
     /// Power up an instance, claim the pins and apply `config`, leaving the bus idle.
     ///
@@ -794,7 +800,18 @@ impl<'d> I2c<'d> {
     }
 
     #[inline]
-    pub fn start_read(&mut self, address: Address, length: usize, restart: bool, send_ack_nack: bool, send_stop: bool) {
+    pub fn start_read(
+        &mut self,
+        address: Address,
+        length: usize,
+        restart: bool,
+        send_ack_nack: bool,
+        send_stop: bool,
+    ) -> Result<(), Error> {
+        if length > MAX_BURST_LEN {
+            return Err(Error::TransferLengthIsOverLimit);
+        }
+
         if restart {
             // not the first transaction, delay 1000 cycles
             cortex_m::asm::delay(1000);
@@ -814,10 +831,16 @@ impl<'d> I2c<'d> {
             w.set_start(true);
             w.set_stop(send_stop);
         });
+
+        Ok(())
     }
 
     #[inline]
-    pub fn start_write(&mut self, address: Address, length: usize, send_stop: bool) {
+    pub fn start_write(&mut self, address: Address, length: usize, send_stop: bool) -> Result<(), Error> {
+        if length > MAX_BURST_LEN {
+            return Err(Error::TransferLengthIsOverLimit);
+        }
+
         self.info.regs.controller(0).csa().modify(|w| {
             w.set_taddr(address.addr());
             w.set_cmode(address.mode());
@@ -829,6 +852,8 @@ impl<'d> I2c<'d> {
             w.set_start(true);
             w.set_stop(send_stop);
         });
+
+        Ok(())
     }
 
     /// Wait out `I2C_ERR_13` before reading `CSR` after starting a transfer.

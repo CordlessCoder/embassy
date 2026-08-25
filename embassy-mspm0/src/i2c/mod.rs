@@ -611,7 +611,7 @@ pub(crate) const IDLE_HALF_PERIODS: u32 = 4;
 ///
 /// Nothing to do with the FIFO, which is a buffer the transfer is fed through rather than the unit it
 /// moves in.
-const MAX_TRANSFER_LEN: usize = 0xFFF;
+const MAX_TRANSFER_LEN: usize = low_level::MAX_BURST_LEN;
 
 /// Where a run of same-direction operations has got to.
 ///
@@ -953,7 +953,7 @@ impl<'d> I2c<'d, Blocking> {
 
         // The burst covers the whole transfer, so its last byte is the transfer's last byte and must be
         // NACKed to release the target.
-        self.inner.start_read(address, length, restart, false, send_stop);
+        self.inner.start_read(address, length, restart, false, send_stop)?;
 
         self.inner.settle_after_start();
 
@@ -978,7 +978,7 @@ impl<'d> I2c<'d, Blocking> {
             while !self.inner.is_idle() && !self.inner.timed_out() {}
         }
 
-        self.inner.start_write(address, length, send_stop);
+        self.inner.start_write(address, length, send_stop)?;
 
         self.inner.settle_after_start();
 
@@ -1158,7 +1158,7 @@ impl<'d> I2c<'d, Async> {
         // Nothing to top up when the whole transfer already fits.
         low_level::unmask(self.inner.regs(), low_level::write_sources(sent < write.len()));
 
-        self.inner.start_write(addr, write.len(), end_w_stop);
+        self.inner.start_write(addr, write.len(), end_w_stop)?;
 
         let res = self
             .run_burst(|this, stat| match stat {
@@ -1212,7 +1212,7 @@ impl<'d> I2c<'d, Async> {
         // One burst for the whole transfer, so its last byte is the transfer's last byte and is NACKed
         // to release the target. The FIFO is drained as it fills; the controller stretches SCL while it
         // is full (SLAU846 25.2.3.8), so a late drain costs bus time rather than bytes.
-        self.inner.start_read(addr, read.len(), restart, false, end_w_stop);
+        self.inner.start_read(addr, read.len(), restart, false, end_w_stop)?;
 
         let mut got = 0;
         let res = self
@@ -1676,7 +1676,7 @@ impl<'d> I2c<'d, Async> {
 
         low_level::unmask(self.inner.regs(), low_level::write_sources(sent < group.total));
 
-        self.inner.start_write(addr, group.total, send_stop);
+        self.inner.start_write(addr, group.total, send_stop)?;
 
         let res = self
             .run_burst(|this, stat| match stat {
@@ -1714,7 +1714,7 @@ impl<'d> I2c<'d, Async> {
 
         low_level::unmask(self.inner.regs(), low_level::read_sources());
 
-        self.inner.start_read(addr, group.total, restart, false, send_stop);
+        self.inner.start_read(addr, group.total, restart, false, send_stop)?;
 
         let mut cur = GroupCursor {
             op: group.start,
