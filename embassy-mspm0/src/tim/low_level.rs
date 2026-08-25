@@ -3,11 +3,13 @@
 use core::mem::ManuallyDrop;
 
 use crate::Peri;
-use crate::pac::tim::vals::{Cm, Cvae, CxC, PwrenKey, Repeat, ResetKey};
+use crate::gpio::Level;
+use crate::pac::tim::vals::{Ccpiv, Ccpo, Cm, Cvae, CxC, PwrenKey, Repeat, ResetKey, Swfrcact};
 use crate::pac::tim::{Tim, regs};
 use crate::sysctl::MaybeWakeGuard;
 #[cfg(any(feature = "low-power", feature = "_time-driver", feature = "rtic-monotonic"))]
 use crate::sysctl::SleepLevel;
+use crate::tim::compare::CompareAction;
 use crate::tim::{Channel, ClockSel, CountingMode, Instance, Word};
 
 /// Why a frequency cannot be programmed.
@@ -183,6 +185,84 @@ const _: () = {
 /// immediates, so a shared body has to carry them as arguments instead — measured on the timer, that
 /// lost at every instance count a part reaches. [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm)
 /// carries the figures and what did pay.
+/// What each of a channel's four counter events does to its output.
+///
+/// The output is whatever the last event to fire left behind, so these are read and written together.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct OutputActions {
+    /// On the counter reaching zero.
+    pub zero: CompareAction,
+
+    /// On the counter reloading from `LOAD`.
+    pub load: CompareAction,
+
+    /// On a compare match while counting up.
+    pub compare_up: CompareAction,
+
+    /// On a compare match while counting down.
+    pub compare_down: CompareAction,
+}
+
+/// What drives a channel's pin.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum OutputSource {
+    /// The signal generator, which is what the compare actions feed. Every mode driver here uses this.
+    #[default]
+    Generator,
+
+    /// The load event, routed straight out.
+    LoadEvent,
+
+    /// The compare-up or compare-down event, routed straight out.
+    CompareEvent,
+
+    /// The zero event, routed straight out.
+    ZeroEvent,
+
+    /// The capture condition, routed straight out.
+    CaptureEvent,
+
+    /// The fault condition, routed straight out.
+    FaultEvent,
+
+    /// This instance's first capture-compare pin, mirrored onto every other block.
+    MirrorChannel0,
+
+    /// This instance's second capture-compare pin, mirrored onto every other block.
+    MirrorChannel1,
+}
+
+impl OutputSource {
+    const fn to_ccpo(self) -> Ccpo {
+        match self {
+            Self::Generator => Ccpo::Funcval,
+            Self::LoadEvent => Ccpo::Load,
+            Self::CompareEvent => Ccpo::Cmpval,
+            Self::ZeroEvent => Ccpo::Zero,
+            Self::CaptureEvent => Ccpo::Capcond,
+            Self::FaultEvent => Ccpo::Faultcond,
+            Self::MirrorChannel0 => Ccpo::Cc0MirrorAll,
+            Self::MirrorChannel1 => Ccpo::Cc1MirrorAll,
+        }
+    }
+
+    /// Reserved encodings read back as [`Generator`](Self::Generator); nothing writes one.
+    const fn from_ccpo(ccpo: Ccpo) -> Self {
+        match ccpo {
+            Ccpo::Load => Self::LoadEvent,
+            Ccpo::Cmpval => Self::CompareEvent,
+            Ccpo::Zero => Self::ZeroEvent,
+            Ccpo::Capcond => Self::CaptureEvent,
+            Ccpo::Faultcond => Self::FaultEvent,
+            Ccpo::Cc0MirrorAll => Self::MirrorChannel0,
+            Ccpo::Cc1MirrorAll => Self::MirrorChannel1,
+            _ => Self::Generator,
+        }
+    }
+}
+
 pub struct Timer<'d, T: Instance> {
     _timer: Peri<'d, T>,
 
@@ -473,6 +553,96 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// Inverts the pin immediately, including while the counter is stopped.
     pub fn set_polarity(&mut self, channel: Channel, polarity: super::simple_pwm::Polarity) {
         super::simple_pwm::set_polarity(self.regs(), channel, polarity);
+    }
+
+    /// What each counter event does to `channel`'s output.
+    pub fn output_actions(&self, channel: Channel) -> OutputActions {
+        let r = self.regs().counterregs(0).ccact(channel.index()).read();
+
+        OutputActions {
+            zero: CompareAction::from_act(r.zact()),
+            load: CompareAction::from_act(r.lact()),
+            compare_up: CompareAction::from_act(r.cuact()),
+            compare_down: CompareAction::from_act(r.cdact()),
+        }
+    }
+
+    /// Set what each counter event does to `channel`'s output.
+    ///
+    /// All four at once, because the output is whatever the last event to fire left behind and setting
+    /// them one at a time means passing through combinations nobody asked for. The forced-output
+    /// override is untouched, and it wins over every one of these while it is set.
+    ///
+    /// A channel whose compare or action register is shadowed takes these at the next update event
+    /// rather than now — see [`set_action_update`](Self::set_action_update).
+    pub fn set_output_actions(&mut self, channel: Channel, actions: OutputActions) {
+        self.regs().counterregs(0).ccact(channel.index()).modify(|w| {
+            w.set_zact(actions.zero.to_act());
+            w.set_lact(actions.load.to_act());
+            w.set_cuact(actions.compare_up.to_act());
+            w.set_cdact(actions.compare_down.to_act());
+        });
+    }
+
+    /// Level `channel`'s pin sits at while the counter is stopped.
+    pub fn idle_level(&self, channel: Channel) -> Level {
+        match self.regs().counterregs(0).octl(channel.index()).read().ccpiv() {
+            Ccpiv::Low => Level::Low,
+            Ccpiv::High => Level::High,
+        }
+    }
+
+    /// Set the level `channel`'s pin sits at while the counter is stopped.
+    ///
+    /// This is what holds a stopped channel, not the forced-output override: a forced action is
+    /// evaluated at a period boundary, and a stopped counter never reaches one.
+    pub fn set_idle_level(&mut self, channel: Channel, level: Level) {
+        self.regs().counterregs(0).octl(channel.index()).modify(|w| {
+            w.set_ccpiv(match level {
+                Level::Low => Ccpiv::Low,
+                Level::High => Ccpiv::High,
+            })
+        });
+    }
+
+    /// Level the forced-output override is holding `channel` at, or [`None`] if it is not set.
+    pub fn forced_output(&self, channel: Channel) -> Option<Level> {
+        match self.regs().counterregs(0).ccact(channel.index()).read().swfrcact() {
+            Swfrcact::CcpHigh => Some(Level::High),
+            Swfrcact::CcpLow => Some(Level::Low),
+            _ => None,
+        }
+    }
+
+    /// Hold `channel`'s output at a level whatever its compare actions say, or release it.
+    ///
+    /// This wins over every compare action, which is how a duty of exactly 0% or 100% is expressed —
+    /// no compare value reaches either. It is evaluated at a period boundary, so a stopped counter
+    /// never applies it: use [`set_idle_level`](Self::set_idle_level) to hold a stopped channel.
+    pub fn set_forced_output(&mut self, channel: Channel, level: Option<Level>) {
+        self.regs().counterregs(0).ccact(channel.index()).modify(|w| {
+            w.set_swfrcact(match level {
+                Some(Level::High) => Swfrcact::CcpHigh,
+                Some(Level::Low) => Swfrcact::CcpLow,
+                None => Swfrcact::Disabled,
+            })
+        });
+    }
+
+    /// What drives `channel`'s pin.
+    pub fn output_source(&self, channel: Channel) -> OutputSource {
+        OutputSource::from_ccpo(self.regs().counterregs(0).octl(channel.index()).read().ccpo())
+    }
+
+    /// Set what drives `channel`'s pin.
+    ///
+    /// [`OutputSource::Generator`] is what every mode driver here configures. The rest route a raw
+    /// event or another channel's pin out instead, and none of them is used by anything in this crate.
+    pub fn set_output_source(&mut self, channel: Channel, source: OutputSource) {
+        self.regs()
+            .counterregs(0)
+            .octl(channel.index())
+            .modify(|w| w.set_ccpo(source.to_ccpo()));
     }
 
     /// Registers of this instance, for what this driver does not wrap.

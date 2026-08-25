@@ -22,7 +22,7 @@ use portable_atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize};
 
 use crate::gpio::{AnyPin, Level, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Interrupt as _;
-use crate::pac::tim::vals::{Act, Ccpiv, Swfrcact};
+use crate::pac::tim::vals::{Act, Swfrcact};
 use crate::tim::low_level::{self, Config as TimerConfig, Event, Timer};
 use crate::tim::{
     Channel, ClockSel, CompareUpdate, CountingMode, Instance, ShadowCompareInstance, ShadowLoadInstance, TimerChannel,
@@ -290,12 +290,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         // `CCPIV` is where the pin sits when the signal generator is not driving it, which is every
         // moment the counter is stopped. The forced-output override cannot do this job: it is an
         // action the counter evaluates, so it holds nothing once the counter halts.
-        timer.regs().counterregs(0).octl(C::CHANNEL.index()).modify(|w| {
-            w.set_ccpiv(match config.idle {
-                Level::Low => Ccpiv::Low,
-                Level::High => Ccpiv::High,
-            })
-        });
+        timer.set_idle_level(C::CHANNEL, config.idle);
 
         let mut this = Self {
             timer,
@@ -550,17 +545,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
     /// The override is what expresses a level no compare value can, and it is the only thing holding
     /// the pin between trains — the counter is stopped, so the compare actions never fire.
     fn park(&mut self) {
-        let force = match self.idle {
-            Level::Low => Swfrcact::CcpLow,
-            Level::High => Swfrcact::CcpHigh,
-        };
-
-        self.timer
-            .regs()
-            .counterregs(0)
-            .ccact(self.channel.index())
-            .modify(|w| w.set_swfrcact(force));
-
+        self.timer.set_forced_output(self.channel, Some(self.idle));
         self.timer.set_output_enabled(self.channel, true);
     }
 }

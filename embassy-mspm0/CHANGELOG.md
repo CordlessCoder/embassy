@@ -314,3 +314,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0: each interrupt group's documentation names its sources' own `IIDX` indices, where counting them positionally was wrong on any device with a gap
 - docs: mspm0/sysctl: the brown-out settle says what it actually spends — `asm::delay` counts iterations, so the wait is about three times the figure it was quoting
 - breaking: mspm0/tim: `low_level::Timer`'s register mutators take `&mut self`, and each mode driver's `timer()` is a read-only view with `timer_mut()` beside it for deliberate reprogramming
+- feat: mspm0/tim: `low_level` reaches a channel's whole output surface — all four compare actions, the idle level a stopped channel rests at, the forced-output override and what drives the pin

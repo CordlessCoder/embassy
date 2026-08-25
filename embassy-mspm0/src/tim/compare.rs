@@ -39,7 +39,16 @@ pub enum CompareAction {
 }
 
 impl CompareAction {
-    const fn to_act(self) -> Act {
+    pub(crate) const fn from_act(act: Act) -> Self {
+        match act {
+            Act::Disabled => Self::None,
+            Act::CcpHigh => Self::SetHigh,
+            Act::CcpLow => Self::SetLow,
+            Act::CcpToggle => Self::Toggle,
+        }
+    }
+
+    pub(crate) const fn to_act(self) -> Act {
         match self {
             CompareAction::None => Act::Disabled,
             CompareAction::SetHigh => Act::CcpHigh,
