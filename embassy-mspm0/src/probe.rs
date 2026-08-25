@@ -52,6 +52,7 @@ pub enum Marker {
     UartHandler = 3,
 
     /// A pulse where that handler masks its own RX interrupt, on a full ring buffer or a receive error.
+    ///
     /// Pairs with [`UartHandler`](Marker::UartHandler) to say whether the driver ever turns itself back on.
     UartRxMask = 4,
 

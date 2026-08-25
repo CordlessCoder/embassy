@@ -324,14 +324,14 @@ const _: () = {
     core::assert!(interval(ClosedWindowPercentage::EightySeven) == 937_500);
 };
 
+/// Watchdog configuration.
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-/// Watchdog Config
 pub struct Config {
-    /// Watchdog timeout
+    /// How long the watchdog runs before it resets the device.
     pub timeout: Timeout,
 
-    /// closed window percentage
+    /// Fraction of the timeout at the start of which a pet is itself a violation.
     pub closed_window: ClosedWindowPercentage,
 
     /// Stop counting while the CPU is asleep, resuming from the same count on wake.

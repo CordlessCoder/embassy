@@ -54,6 +54,7 @@ impl SecurityMarker for Fast {
 }
 
 /// The decimation rate settings for the TRNG.
+///
 /// Higher decimation rates improve the quality of the random numbers at the cost of speed.
 ///
 /// L-series TRM 13.2.2: It is required to use a decimation rate of at least 4 for cryptographic applications.
@@ -62,6 +63,7 @@ impl SecurityMarker for Fast {
 pub trait DecimRate: sealed::Sealed + Into<vals::DecimRate> + Copy {}
 
 /// Fast decimation rates for non-cryptographic applications.
+///
 /// See [`DecimRate`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -87,6 +89,7 @@ impl From<FastDecimRate> for vals::DecimRate {
 impl DecimRate for FastDecimRate {}
 
 /// Cryptographic decimation rates for cryptographic applications.
+///
 /// See [`DecimRate`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

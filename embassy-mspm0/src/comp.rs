@@ -35,14 +35,14 @@
 //! which is a different function and up to two counts out at the top of scale — the datasheet's
 //! `Vdac-code` row and the `CTL3` field description agree against it.
 //!
-//! # Errata this driver acts on
-//!
 //! # Two waits with nothing to wait on
 //!
 //! Neither the comparator's enable time nor the reference DAC's settling has a status bit behind it,
 //! so both are blocking delays taken from the device's own datasheet figures. That makes
 //! [`Comp::new_blocking`] and [`Comp::set_dac_code`] slower than the register writes they perform, and it is
 //! why a threshold is trustworthy the moment either returns.
+//!
+//! # Errata this driver acts on
 //!
 //! - **`COMP_ERR_05`** — enabling the comparator raises both edge interrupts, so the first
 //!   [`Comp::wait_for_edge`] would return without an edge. The flags are cleared after enabling.

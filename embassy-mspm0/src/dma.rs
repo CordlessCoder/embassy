@@ -358,8 +358,8 @@ impl Word for u128 {
 pub enum Error {
     /// The DMA transfer is too large.
     ///
-    /// The hardware limits the DMA to 16384 transfers per channel at a time. This means that transferring
-    /// 16384 `u8` and 16384 `u64` are equivalent, since the DMA must copy 16384 values.
+    /// `SZ.SIZE` is sixteen bits, so a channel moves at most 65535 elements in one transfer. The
+    /// width does not enter into it: 65535 `u8` and 65535 `u64` are both 65535 values to move.
     TooManyTransfers,
 
     /// The transfer would move nothing.
@@ -516,6 +516,7 @@ impl<'a> Transfer<'a> {
     }
 
     /// Request the transfer to pause, keeping the existing configuration for this channel.
+    ///
     /// To restart the transfer, call [`resume`](Self::resume).
     ///
     /// This doesn't immediately stop the transfer, you have to wait until [`is_running`](Self::is_running) returns false.

@@ -238,7 +238,7 @@ pub struct Crc<'d, T: Instance> {
 impl<'d, T: Instance> Crc<'d, T> {
     /// Reset the peripheral, power it up and apply `config`.
     ///
-    /// The checksum is undefined until [`Crc::reset`] seeds it.
+    /// The checksum is whatever the last one left, until [`Crc::reset`] seeds it.
     pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
         let r = T::regs();
 

@@ -107,11 +107,13 @@ pub enum Error {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Command {
     /// General Call Write: Controller sent the General Call address (0x00) followed by data.
+    ///
     /// Contains the number of bytes written by the controller.
     GeneralCall(usize),
     /// Read: Controller wants to read data from the target.
     Read,
     /// Write: Controller sent the target's address followed by data.
+    ///
     /// Contains the number of bytes written by the controller.
     Write(usize),
     /// Write followed by Read (Repeated Start): Controller wrote data, then issued a repeated
@@ -449,6 +451,7 @@ impl<'d> I2cTarget<'d> {
         self.flush_fifos(true, false);
     }
     /// Wait asynchronously for commands from an I2C controller.
+    ///
     /// `buffer` is provided in case controller does a 'write', 'write read', or 'general call' and is unused for 'read'.
     ///
     /// The receive FIFO trigger level is programmed when this is called rather than when the future

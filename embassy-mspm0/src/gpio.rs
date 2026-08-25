@@ -172,7 +172,8 @@ pub struct Flex<'d, M: Mode = Blocking> {
 impl<'d> Flex<'d, Blocking> {
     /// Wrap the pin in a `Flex`.
     ///
-    /// The pin remains disconnected. The initial output level is unspecified, but can be changed
+    /// The pin remains disconnected. The output level starts at whatever the pin's output latch
+    /// already held, and can be changed
     /// before the pin is put into output mode.
     #[inline]
     pub fn new_blocking(pin: Peri<'d, impl Pin>) -> Self {
@@ -191,6 +192,13 @@ impl<'d> Flex<'d, Blocking> {
     /// [`Config::interrupts`](crate::Config::interrupts) says who.
     ///
     /// [`Flex<Async>`](Flex) is the other way to use these edges, and the two do not mix on one pin.
+    ///
+    /// **They do not mix on one port either, unless the application owns that port's vector.** This
+    /// crate's own handler reads `CPU_INT.IIDX`, which consumes the status bit of whatever it reports,
+    /// finds no waiter for a manually armed pin, and masks it. The pin then goes dead with no build
+    /// error and no fault — the same silent shape as a wrong pin number. Where the application owns the
+    /// vector it can service its own pins first and forward what is left, which is what the section
+    /// below shows.
     ///
     /// # Servicing it alongside the async waits
     ///
@@ -282,7 +290,8 @@ impl<'d> Flex<'d, Blocking> {
 impl<'d> Flex<'d, Async> {
     /// Wrap the pin in a `Flex` that can wait for an edge.
     ///
-    /// The pin remains disconnected. The initial output level is unspecified, but can be changed
+    /// The pin remains disconnected. The output level starts at whatever the pin's output latch
+    /// already held, and can be changed
     /// before the pin is put into output mode.
     #[inline]
     pub fn new_async(pin: Peri<'d, impl Pin>, _irqs: impl PortInterrupts + 'd) -> Self {

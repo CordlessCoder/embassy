@@ -211,6 +211,7 @@ pub struct PwmPins<'d, T: Instance> {
 }
 
 /// PWM driver.
+///
 /// Aligned to two bytes so that moving one does not call `memcpy`.
 ///
 /// With `low-power` on, `Timer` carries a one-byte `MaybeWakeGuard` and this becomes **9 bytes at

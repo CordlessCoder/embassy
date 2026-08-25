@@ -1476,6 +1476,7 @@ impl<'d, M: Mode> embedded_hal::i2c::ErrorType for I2c<'d, M> {
 
 impl<'d> I2c<'d, Blocking> {
     /// Body of [`embedded_hal::i2c::I2c::transaction`], shared by the impl per addressing mode.
+    ///
     /// Run a transaction the way `embedded-hal` defines one.
     ///
     /// Consecutive operations of the same type merge into one stretch of bus traffic — one address
@@ -1631,6 +1632,7 @@ impl<'d> embedded_hal::i2c::I2c<embedded_hal::i2c::TenBitAddress> for I2c<'d, Bl
 
 impl<'d> I2c<'d, Async> {
     /// Body of [`embedded_hal_async::i2c::I2c::transaction`], shared by the impl per addressing mode.
+    ///
     /// Run a transaction the way `embedded-hal` defines one. See the blocking twin for the shape.
     async fn eh_transaction(
         &mut self,

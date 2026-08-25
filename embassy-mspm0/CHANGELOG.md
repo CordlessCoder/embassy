@@ -334,3 +334,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/tim: the shadow-register setters are bounded by the capability traits, so an instance that cannot buffer a write is a compile error rather than a panic
 - feat: mspm0/i2c: `low_level::I2c::settle_after_start` is public, which the module documentation already told callers to rely on while it was private
 - docs: mspm0: every intra-doc link resolves on every feature set, including the ones without `rt`
+- docs: mspm0: the ADC's sample-window table names the per-channel constants rather than two hardcoded figures that were wrong on the G series, and the comparator's errata sit under their own heading

@@ -347,8 +347,14 @@ pub struct Config {
     /// |---|---|
     /// | a pin, 50 ohm source | [`Config::SAMPLE_MIN_NS`] — this device's own figure |
     /// | through an OPA | [`Config::pga_sample_min_ns`], which takes the gain |
-    /// | through the general-purpose amplifier | 2.5 us |
-    /// | the supply monitor | 3 us |
+    /// | through the general-purpose amplifier | `GpampOutput::SAMPLE_MIN_NS` |
+    /// | the supply monitor | `SupplyMonitor::SAMPLE_MIN_NS` |
+    /// | the internal reference | `vref::CHANNEL_SAMPLE_MIN_NS` |
+    /// | the DAC output | `Dac0Output::SAMPLE_MIN_NS` |
+    /// | the battery and USB monitors | `VbatMonitor::SAMPLE_MIN_NS` and `VusbMonitor::SAMPLE_MIN_NS` |
+    ///
+    /// Those five are named rather than linked because each exists only where the device has the
+    /// signal, so a link would dangle on the parts that do not.
     /// | the temperature sensor | do not read it from here — [`TempSensor::RECOMMENDED_SAMPLE_NS`] carries this device's figure |
     ///
     /// **None of these follows the family**, which is why they are looked up rather than written
@@ -357,13 +363,14 @@ pub struct Config {
     /// from a sibling part is how this driver had two of them wrong. The amplifier row is the one most likely to catch you: it scales
     /// with gain, and at the top of the range it is an order of magnitude above the bare-pin
     /// figure, so a sequence that reads an OPA output at high gain with the pin's window is short
-    /// by roughly ten times. The driver cannot check them for you either: the metapac does not carry these
-    /// figures yet, which is request R20.
+    /// by roughly ten times. The driver does not check any of them for you — every row above is a
+    /// constant to compare against, not a bound this type enforces.
     ///
     /// The driver holds SAMPCLK at or just under 8 MHz, so the default of fifty cycles is about
-    /// 6.25 us. That covers every source in the table except the temperature sensor, which is the
-    /// one that needs [`Config::sample_period_1`] or a raised default. A higher source impedance
-    /// wants more as well: 50 ohms is lower than most sensors.
+    /// 6.25 us. **Two rows are not covered by it**: the temperature sensor, and the internal
+    /// reference on the families whose figure is 10 us. Either wants
+    /// [`Config::sample_period_1`] or a raised default. A higher source impedance wants more as
+    /// well: 50 ohms is lower than most sensors.
     ///
     /// Two comparators exist so a sequence can mix them, taking the short window for the pins and the
     /// long one for whatever needs it, rather than paying the longest for every conversion.
@@ -451,14 +458,15 @@ impl Config {
             resolution: Resolution::Bits12,
             sample_clk: SampleClockSel::Source(SampleClock::Sysosc),
             // Fifty sample clocks, which is 6.25 us at the 8 MHz SAMPCLK the divider aims for. The
-            // datasheet's `tSample` for 12-bit mode is 156 ns at a 50 ohm source, so this is forty
-            // times the minimum -- margin worth having, because that figure assumes a source
-            // impedance almost nothing real has, and the window has to charge the sampling capacitor
-            // through whatever the input actually is.
+            // datasheet's `tSample` for 12-bit mode at a 50 ohm source is `Config::SAMPLE_MIN_NS`,
+            // which is 62.5 ns on most of the G-series and 156 on most of the L-series, so this is
+            // between forty and a hundred times the minimum -- margin worth having, because that
+            // figure assumes a source impedance almost nothing real has, and the window has to charge
+            // the sampling capacitor through whatever the input actually is.
             //
-            // It covers the internal sources too, bar one: 2.5 us through the general-purpose
-            // amplifier and 3 us for the supply monitor both fit, and the temperature sensor's 10 to
-            // 12.5 us does not. See [`Config::sample_period_0`].
+            // It covers most of the internal sources. The two it does not are the temperature sensor
+            // and, on the families whose figure is 10 us, the internal reference. Every figure is a
+            // constant now rather than a number written here -- see `Config::sample_period_0`.
             sample_period_0: NonZeroU16::new(50).unwrap(),
             sample_period_1: NonZeroU16::new(50).unwrap(),
             averaging: None,
@@ -926,8 +934,7 @@ const fn rail_millivolts(code: u16, resolution: Resolution, reference_mv: u32) -
 /// microseconds rather than nanoseconds -- 3 us on some families and 5 us on others.
 /// [`Config::sample_period_0`]'s default is around 6.25 us and covers both, so a caller who has not
 /// shortened the window is inside the requirement. One who has shortened it for a pin is not, and
-/// nothing reports the difference. The figure is not in the metadata yet, so this crate cannot state
-/// this device's own.
+/// nothing reports the difference. [`Self::SAMPLE_MIN_NS`] is this device's own figure.
 #[cfg(adc_supply_monitor)]
 pub struct SupplyMonitor;
 
