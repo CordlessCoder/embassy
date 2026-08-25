@@ -308,3 +308,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: a rejected baud rate or config no longer leaves the peripheral disabled and its interrupt masked behind an `Err`
 - breaking: mspm0/i2c: `low_level::start_write` and `start_read` return `Result` and reject a length past the new `low_level::MAX_BURST_LEN`, where a longer one silently truncated into a twelve-bit field
 - fix: mspm0/i2c: bus recovery keeps each pin's pull and inversion, where clearing them left an internally pulled-up bus with nothing to raise SCL
+- fix: mspm0/adc: dropping the driver powers the instance down, where the analog block stayed biased after the peripheral was handed back

@@ -136,6 +136,22 @@ pub struct Adc<'d, T: Instance> {
     _phantom: PhantomData<T>,
 }
 
+impl<T: Instance> Drop for Adc<'_, T> {
+    fn drop(&mut self) {
+        let r = T::info().regs;
+
+        r.cpu_int(0).imask().write_value(regs::CpuInt(0));
+        r.ctl0().modify(|w| w.set_enc(false));
+
+        // `PWRDN` is `Manual`, so the analog block stays biased until the instance loses power. Every
+        // other driver in the crate powers its instance down here.
+        r.gprcm(0).pwren().write(|w| {
+            w.set_enable(false);
+            w.set_key(vals::PwrenKey::Key);
+        });
+    }
+}
+
 impl<'d, T: Instance> Adc<'d, T> {
     /// Power up an instance and apply `config`, leaving it converting nothing.
     pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
