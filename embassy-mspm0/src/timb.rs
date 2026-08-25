@@ -192,6 +192,10 @@ impl<'d, T: Instance> BasicTimer<'d, T> {
             w.set_key(PwrenKey::Key);
         });
 
+        // The registers behind `PWREN` stay isolated for a few ULPCLK cycles and a write that lands in
+        // that window is dropped. `tim::low_level::enable` carries the account.
+        cortex_m::asm::delay(16);
+
         Self {
             _timer: timer,
             _wake_guard: MaybeWakeGuard::new(sleep_floor::<T>()),

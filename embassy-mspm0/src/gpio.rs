@@ -2001,6 +2001,10 @@ pub(crate) fn init(gpio: gpio::Gpio) {
         w.set_key(PwrenKey::Key);
     });
 
+    // The registers behind `PWREN` stay isolated for a few ULPCLK cycles and a write that lands in
+    // that window is dropped. `tim::low_level::enable` carries the account.
+    cortex_m::asm::delay(16);
+
     // `EVT_MODE.INT0_CFG` is not writable. All four TRMs type it `R` with a reset of `1h`, software
     // mode, which is what the CPU interrupt line needs and what it already holds — G TRM table 9-31,
     // L TRM the same register. Driverlib never writes it either. The read-modify-write this replaces

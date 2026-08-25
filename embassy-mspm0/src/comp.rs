@@ -1085,6 +1085,10 @@ impl<'d, T: Instance, M: DriverMode> Comp<'d, T, M> {
             w.set_key(vals::PwrenKey::Key);
         });
 
+        // The registers behind `PWREN` stay isolated for a few ULPCLK cycles and a write that lands in
+        // that window is dropped. `tim::low_level::enable` carries the account.
+        cortex_m::asm::delay(16);
+
         let positive_channel = positive.as_ref().map(|(_, channel)| *channel);
         let negative_channel = negative.as_ref().map(|(_, channel)| *channel);
 

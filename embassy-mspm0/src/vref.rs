@@ -230,6 +230,10 @@ impl<'d, T: Instance> Vref<'d, T> {
             w.set_key(PwrenKey::Key);
         });
 
+        // The registers behind `PWREN` stay isolated for a few ULPCLK cycles and a write that lands in
+        // that window is dropped. `tim::low_level::enable` carries the account.
+        cortex_m::asm::delay(16);
+
         // Without a clock the reference never regulates: `CTL1.READY` stays clear for ever and
         // nothing that selects the reference reads anything. Measured — selecting a source flips
         // `READY` at once, on two parts. Driverlib's own init picks a source before enabling, which

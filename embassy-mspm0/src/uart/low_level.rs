@@ -1059,6 +1059,10 @@ pub(crate) fn enable(regs: Regs) {
         w.set_enable(true);
         w.set_key(vals::PwrenKey::Key);
     });
+
+    // The registers behind `PWREN` stay isolated for a few ULPCLK cycles and a write that lands in
+    // that window is dropped. `tim::low_level::enable` carries the account.
+    cortex_m::asm::delay(16);
 }
 
 #[inline(always)]

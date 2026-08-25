@@ -213,6 +213,10 @@ impl<'d, T: Instance> Unicomm<'d, T> {
             w.set_key(PwrenKey::Key);
         });
 
+        // The registers behind `PWREN` stay isolated for a few ULPCLK cycles and a write that lands in
+        // that window is dropped. `tim::low_level::enable` carries the account.
+        cortex_m::asm::delay(16);
+
         // An instance with one mode has nothing to select and ignores this register; writing it
         // anyway keeps the sequence the same for every instance.
         r.ipmode().write(|w| w.set_select(mode.select()));

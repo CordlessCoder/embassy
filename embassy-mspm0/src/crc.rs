@@ -253,6 +253,10 @@ impl<'d, T: Instance> Crc<'d, T> {
             w.set_key(vals::PwrenKey::Key);
         });
 
+        // The registers behind `PWREN` stay isolated for a few ULPCLK cycles and a write that lands in
+        // that window is dropped. `tim::low_level::enable` carries the account.
+        cortex_m::asm::delay(16);
+
         #[cfg(crc_p)]
         r.poly().write_value(config.polynomial.value());
 
