@@ -327,12 +327,14 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
     pub fn emit<'a>(&'a mut self, pulses: &'a [Pulse]) -> ActiveTrain<'a, 'd, T> {
         assert!(!pulses.is_empty(), "a train needs at least one pulse");
 
-        let max_period = <T::Word as Word>::MAX.into() + 1;
+        // The load value, not the period: a 32-bit counter would make `MAX + 1` overflow, and the
+        // bound only holds because a period of at least two is asserted on the line above.
+        let max_load = <T::Word as Word>::MAX.into();
 
         for pulse in pulses {
             assert!(pulse.high > 0 && pulse.low > 0, "a pulse needs a high and a low time");
             assert!(
-                pulse.period() <= max_period,
+                pulse.period() - 1 <= max_load,
                 "a pulse is longer than the counter can count"
             );
         }
