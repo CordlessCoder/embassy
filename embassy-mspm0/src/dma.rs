@@ -1,4 +1,11 @@
 //! Direct Memory Access (DMA)
+//!
+//! # Cancelling a transfer
+//!
+//! **Dropping a [`Transfer`] waits.** It requests a pause and then spins until the channel has
+//! actually stopped, because the hardware writes the destination behind the compiler's back and the
+//! borrow ends when the drop returns. So a `select!` that loses a DMA race blocks for the rest of the
+//! burst rather than returning at once, and a cancelled transfer is not free.
 
 #![macro_use]
 

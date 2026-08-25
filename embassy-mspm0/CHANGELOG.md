@@ -330,3 +330,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - breaking: mspm0/gpio: `Input::new_async` and `OutputOpenDrain::new_async` take the interrupt binding second, as `Flex::new_async` already did
 - breaking: mspm0: readers lose the `get_` prefix — `gpio::level`, `gpio::output_level`, `adc::hw_channel`
 - breaking: mspm0/flash: `Error` is `#[non_exhaustive]`, the last error enum in the crate that was not
+- docs: mspm0: seven modules say what dropping a wait does, which differs between them — a dropped DMA transfer waits for the channel to stop, a dropped GPIO wait discards a latched edge, and a cancelled I2C target read stretches SCL

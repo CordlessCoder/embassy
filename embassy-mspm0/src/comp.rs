@@ -23,7 +23,7 @@
 //!
 //! [`Reference`] turns the generator on and picks what feeds the DAC. Three of the six sources
 //! exist on every comparator; the other three reach a dedicated internal reference and exist only
-//! where the metadata says so, [`Comp::new`] refusing them elsewhere rather than letting the
+//! where the metadata says so, [`Comp::new_blocking`] refusing them elsewhere rather than letting the
 //! comparator run against a threshold that was never applied.
 //!
 //! **`VrefModule` is an internal route, not the `VREF+` pin.** SLAU847 figure 16-5 labels it "From
@@ -41,7 +41,7 @@
 //!
 //! Neither the comparator's enable time nor the reference DAC's settling has a status bit behind it,
 //! so both are blocking delays taken from the device's own datasheet figures. That makes
-//! [`Comp::new`] and [`Comp::set_dac_code`] slower than the register writes they perform, and it is
+//! [`Comp::new_blocking`] and [`Comp::set_dac_code`] slower than the register writes they perform, and it is
 //! why a threshold is trustworthy the moment either returns.
 //!
 //! - **`COMP_ERR_05`** — enabling the comparator raises both edge interrupts, so the first
@@ -53,6 +53,13 @@
 //! **`COMP_ERR_02` needs no code**: it applies to hysteresis built by switching `DACCODE0`/`DACCODE1`
 //! from the comparator's own output, and this driver does not offer that — `Config::hysteresis` is
 //! the `CTL1.HYST` ladder, which is TI's own workaround.
+//!
+//! # Cancelling a wait
+//!
+//! Dropping [`Comp::wait_for_edge`]'s future leaves the comparator's interrupt unmasked, so the next
+//! edge enters the handler, which masks it and finds nobody waiting. Nothing is lost and nothing is
+//! left asserting. The following wait clears both flags before it arms, so it reports an edge from
+//! that point rather than one that arrived in between.
 
 #![macro_use]
 
@@ -75,7 +82,7 @@ pub enum Speed {
     /// Faster response, higher current.
     ///
     /// **Cannot run on LFCLK.** SYSCTL raises a clock error if a comparator is enabled in this mode
-    /// while the bus clock is LFCLK, so [`Comp::new`] rejects the combination.
+    /// while the bus clock is LFCLK, so [`Comp::new_blocking`] rejects the combination.
     Fast,
 
     /// Lower current, slower response. Runs on any bus clock.
@@ -186,7 +193,7 @@ impl Default for OutputPolarity {
 /// and uses the source itself.
 ///
 /// **The three internal-reference sources do not exist everywhere.** Where a device lacks them they
-/// select no reference at all rather than failing, so [`Comp::new`] rejects them with
+/// select no reference at all rather than failing, so [`Comp::new_blocking`] rejects them with
 /// [`ConfigError::NoInternalReference`] on those parts. The device metadata is what decides;
 /// the register-block version cannot, one of the two blocks spanning families that answer
 /// differently.
@@ -768,7 +775,7 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
 
     /// Configure the comparator, keeping the positive pad's own type so it can be lent back.
     ///
-    /// The comparator behaves exactly as [`new`](Self::new) builds it. What differs is that the
+    /// The comparator behaves exactly as [`new_blocking`](Self::new_blocking) builds it. What differs is that the
     /// positive terminal's pin is kept as itself rather than erased, so
     /// [`CompSharedPositive::with_positive_pin`] can hand it to another driver -- an ADC channel
     /// being the case this exists for. Read that type's documentation before using it: the loan

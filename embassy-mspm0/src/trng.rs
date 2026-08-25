@@ -1,4 +1,10 @@
 //! True Random Number Generator (TRNG) driver.
+//!
+//! # Cancelling a read
+//!
+//! Dropping one of the `async_read_*` futures leaves the generator running and its interrupt
+//! unmasked; the word in flight is produced and discarded. Nothing is left asserting once the handler
+//! has run, and the next read starts from whatever the generator has by then.
 use core::fmt::Display;
 #[cfg(feature = "rt")]
 use core::future::poll_fn;

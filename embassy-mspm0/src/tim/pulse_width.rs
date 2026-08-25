@@ -11,6 +11,13 @@
 //! mode the TRM names for measuring a pulse instead starts the counter from the input's own edge,
 //! and `TIMER_ERR_01` makes that capture the start value rather than the counter on more than half
 //! the portfolio. Nothing here sets a zero or load condition, so the erratum does not reach it.
+//!
+//! # Cancelling a wait
+//!
+//! Dropping [`PulseWidth::wait_for_width`]'s future leaves both channels armed and the interrupt
+//! unmasked, so the next pulse enters the handler, which stores its width and finds no waiter. That
+//! width is then what the following wait returns, which is a stale measurement rather than a fresh
+//! one — the next wait resolves on the pulse *after* the one it was called for.
 
 use core::future::poll_fn;
 use core::marker::PhantomData;

@@ -15,6 +15,14 @@
 //! [`bind_interrupts!`](crate::bind_interrupts). There is one handler type and it implements both
 //! traits under the matching cfg, so a binding written for the wrong one names a type that does not
 //! exist rather than silently linking nothing.
+//!
+//! # Cancelling a wait
+//!
+//! Dropping one of the `wait_for_*` futures undoes the arm completely: the pin is masked, its
+//! `FASTWAKE` request is withdrawn, its latched status bit is dropped and the waiter is unlinked. So
+//! an edge that arrived while the wait was live is **not** kept for a later one — a caller that needs
+//! the edge either way should use the manual API on a [`Blocking`](crate::mode::Blocking) pin, where
+//! the latch is the caller's to read.
 
 #![macro_use]
 
@@ -153,7 +161,7 @@ pub enum Port {
 /// set while not in output mode, so the pin's level will be 'remembered' when it is not in output
 /// mode.
 ///
-/// [`Flex::new`] gives a pin whose level can be read and driven. Waiting for an edge needs an
+/// [`Flex::new_blocking`] gives a pin whose level can be read and driven. Waiting for an edge needs an
 /// interrupt handler behind it, so it lives on [`Flex<Async>`] and `Flex::new_async`, which asks
 /// for the binding that installs one.
 pub struct Flex<'d, M: Mode = Blocking> {
@@ -993,7 +1001,7 @@ impl<'d, M: Mode> Drop for Flex<'d, M> {
 
 /// GPIO input driver.
 ///
-/// [`Input::new`] gives a pin whose level can be read. Waiting for an edge needs an interrupt
+/// [`Input::new_blocking`] gives a pin whose level can be read. Waiting for an edge needs an interrupt
 /// handler behind it, so it lives on [`Input<Async>`] and `Input::new_async`, which asks for the
 /// binding that installs one.
 pub struct Input<'d, M: Mode = Blocking> {
@@ -1210,7 +1218,7 @@ impl<'d> Output<'d> {
 /// If pins should retain their state indefinitely, either keep ownership of the
 /// `OutputOpenDrain`, or pass it to [`core::mem::forget`].
 ///
-/// [`OutputOpenDrain::new`] gives a pin whose level can be read and driven. Waiting for an edge
+/// [`OutputOpenDrain::new_blocking`] gives a pin whose level can be read and driven. Waiting for an edge
 /// needs an interrupt handler behind it, so it lives on [`OutputOpenDrain<Async>`] and
 /// `OutputOpenDrain::new_async`, which asks for the binding that installs one.
 pub struct OutputOpenDrain<'d, M: Mode = Blocking> {

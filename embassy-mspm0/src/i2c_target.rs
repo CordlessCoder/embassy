@@ -1,4 +1,13 @@
 //! Inter-Integrated-Circuit (I2C) Target
+//!
+//! # Cancelling a wait
+//!
+//! Dropping [`I2cTarget::listen`]'s future leaves the target armed and its sources unmasked, which is
+//! usually what a caller wants: the controller's next transaction is still answered.
+//!
+//! **Cancelling `respond_to_read` is the one that costs.** The controller is mid-transaction and
+//! expects bytes, so abandoning the response leaves SCL stretched until something ends it.
+//! [`I2cTarget::reset`] is the way out, and it is why that method exists.
 // The following code is modified from embassy-stm32 and embassy-rp
 // https://github.com/embassy-rs/embassy/tree/main/embassy-stm32
 // https://github.com/embassy-rs/embassy/tree/main/embassy-rp

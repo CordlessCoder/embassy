@@ -1,6 +1,12 @@
 //! Input capture.
 //!
 //! The counter runs free, so a captured value is a tick timestamp; subtract two to get an interval.
+//!
+//! # Cancelling a wait
+//!
+//! Dropping `InputCapture::wait_for_capture`'s future leaves the channel armed and its interrupt
+//! unmasked, so the next capture enters the handler, which masks it and finds no waiter. The capture
+//! register keeps that value until the one after it overwrites it.
 
 use core::future::poll_fn;
 use core::marker::PhantomData;
