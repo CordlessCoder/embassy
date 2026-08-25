@@ -222,6 +222,13 @@ time = ["dep:embassy-time", "embassy-embedded-hal/time"]
 ## and rejects more than one.
 allow-time-driver-sleep-floor = []
 
+## Accept an RTIC monotonic on a timer that is not clocked in STANDBY1.
+##
+## The monotonic holds that timer's sleep guard for the life of the program, so on such a timer it is
+## the thing preventing the deep sleep it exists to survive. Separate from the time driver's flag
+## because the two are chosen separately.
+allow-rtic-monotonic-sleep-floor = []
+
 # Use any time driver
 time-driver-any = ["_time-driver"]
 ## Use TIMG0 as time driver

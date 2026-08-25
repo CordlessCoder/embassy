@@ -7,6 +7,26 @@
 //! 32.768 kHz and holds the same sleep guard the time driver does, so **a deadline survives STOP and
 //! STANDBY**, and an application can sleep between them.
 //!
+//! **That is a property of the timer, not of the monotonic.** It holds only for an instance clocked in
+//! STANDBY1; on any other, the guard is what stops the device reaching the modes that sentence
+//! promises, and on a PD1 instance it blocks every deep-sleep level. The macro refuses one under
+//! `low-power`, and `allow-rtic-monotonic-sleep-floor` is the way to say you meant it.
+//!
+//! # A vector someone else owns
+//!
+//! `start` plants this timer's `#[no_mangle]` handler, which collides with an RTIC
+//! `#[task(binds = TIMGx)]` on the same timer. Write `unsafe` before the name and no handler is
+//! emitted; call [`on_interrupt`](crate::rtic_monotonic) from the task instead.
+//!
+//! ```rust,ignore
+//! embassy_mspm0::rtic_monotonic!(unsafe Mono, TIMG0);
+//!
+//! #[task(binds = TIMG0, priority = 2)]
+//! fn timer(_: timer::Context) {
+//!     unsafe { Mono::on_interrupt() }
+//! }
+//! ```
+//!
 //! # Use
 //!
 //! ```rust,ignore
@@ -125,6 +145,12 @@ pub unsafe fn on_interrupt<B: MonotonicBackend>() {
     unsafe { B::timer_queue().on_monotonic_interrupt() };
 }
 
+/// Whether the macro's sleep-floor check applies.
+///
+/// A `cfg!` inside `rtic_monotonic!` would be evaluated in the crate that calls it, where neither
+/// feature exists, so the check would pass on every timer. It has to be answered here.
+pub const CHECK_SLEEP_FLOOR: bool = cfg!(feature = "low-power") && !cfg!(feature = "allow-rtic-monotonic-sleep-floor");
+
 /// Ties a generated backend to the timer it counts.
 ///
 /// Implemented by the per-timer backends in [`crate::rtic_backend`]; nothing else should.
@@ -141,9 +167,22 @@ pub trait MonotonicBackend: TimerQueueBackend<Ticks = u64> {
 /// See the [module docs](crate::rtic_monotonic) for what it is for and how it behaves across sleep.
 #[macro_export]
 macro_rules! rtic_monotonic {
+    (unsafe $name:ident, $timer:ident) => {
+        $crate::rtic_monotonic!(@common $name, $timer);
+
+        impl $name {
+            /// Start the monotonic, without planting the timer's interrupt handler.
+            ///
+            /// Call once, after `embassy_mspm0::init`. Whoever owns the vector table has to route
+            /// this timer's interrupt to [`on_interrupt`](Self::on_interrupt).
+            pub fn start(_timer: $crate::Peri<'static, $crate::peripherals::$timer>) {
+                $crate::rtic_monotonic!(@init $name, $timer);
+            }
+        }
+    };
+
     ($name:ident, $timer:ident) => {
-        /// An RTIC monotonic, ticking at 32.768 kHz and surviving deep sleep.
-        pub struct $name;
+        $crate::rtic_monotonic!(@common $name, $timer);
 
         impl $name {
             /// Start the monotonic. Call once, after `embassy_mspm0::init`, which programs the clock
@@ -155,14 +194,39 @@ macro_rules! rtic_monotonic {
                     unsafe { $name::on_interrupt() }
                 }
 
-                $crate::rtic_time::timer_queue::TimerQueue::initialize(
-                    <$crate::rtic_backend::$timer as $crate::rtic_time::timer_queue::TimerQueueBackend>::timer_queue(),
-                    $crate::rtic_backend::$timer,
-                );
-
-                $crate::rtic_monotonic::start::<$crate::rtic_backend::$timer>();
+                $crate::rtic_monotonic!(@init $name, $timer);
             }
+        }
+    };
 
+    (@init $name:ident, $timer:ident) => {
+        $crate::rtic_time::timer_queue::TimerQueue::initialize(
+            <$crate::rtic_backend::$timer as $crate::rtic_time::timer_queue::TimerQueueBackend>::timer_queue(),
+            $crate::rtic_backend::$timer,
+        );
+
+        $crate::rtic_monotonic::start::<$crate::rtic_backend::$timer>();
+    };
+
+    (@common $name:ident, $timer:ident) => {
+        /// An RTIC monotonic, ticking at 32.768 kHz and surviving deep sleep.
+        pub struct $name;
+
+        // The guard this holds for the life of the program comes from the timer, and on an instance
+        // that is not clocked in STANDBY1 it is what blocks the sleep the module doc promises. A PD1
+        // instance blocks every level. The choice is a call-site constant, so it is answerable here.
+        const _: () = ::core::assert!(
+            !$crate::rtic_monotonic::CHECK_SLEEP_FLOOR
+                || ::core::matches!(
+                    <$crate::peripherals::$timer as $crate::sysctl::LowPowerInstance>::SLEEP.clocked_in_standby1,
+                    Some(true)
+                ),
+            "this timer is not clocked in STANDBY1, so the monotonic holds the device out of deep \
+             sleep for the life of the program. Pick one that is, or enable the \
+             `allow-rtic-monotonic-sleep-floor` feature."
+        );
+
+        impl $name {
             /// Service the timer.
             ///
             /// Called by the handler `start` plants. Public so that an application binding the timer

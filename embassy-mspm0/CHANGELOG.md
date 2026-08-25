@@ -315,3 +315,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: mspm0/sysctl: the brown-out settle says what it actually spends — `asm::delay` counts iterations, so the wait is about three times the figure it was quoting
 - breaking: mspm0/tim: `low_level::Timer`'s register mutators take `&mut self`, and each mode driver's `timer()` is a read-only view with `timer_mut()` beside it for deliberate reprogramming
 - feat: mspm0/tim: `low_level` reaches a channel's whole output surface — all four compare actions, the idle level a stopped channel rests at, the forced-output override and what drives the pin
+- feat: mspm0: `rtic_monotonic!` takes `unsafe` to emit no interrupt handler, so an RTIC hardware task can own the timer's vector
+- fix: mspm0: `rtic_monotonic!` refuses a timer that is not clocked in STANDBY1, where the monotonic's own sleep guard blocked the deep sleep it exists to survive — `allow-rtic-monotonic-sleep-floor` accepts it anyway
