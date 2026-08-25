@@ -27,6 +27,7 @@ static WAKER: IrqWaker = IrqWaker::new();
 
 /// Decimation rate marker types. See [`DecimRate`].
 pub trait SecurityMarker: sealed::Sealed {
+    /// The register value this rate programs.
     type DecimRate: DecimRate;
 }
 
@@ -59,8 +60,11 @@ pub trait DecimRate: sealed::Sealed + Into<vals::DecimRate> + Copy {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FastDecimRate {
+    /// One sample per output word, the fastest and least conditioned.
     Decim1,
+    /// Two samples per output word.
     Decim2,
+    /// Three samples per output word.
     Decim3,
 }
 
@@ -81,10 +85,15 @@ impl DecimRate for FastDecimRate {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CryptoDecimRate {
+    /// Four samples per output word, the shallowest rate rated for cryptographic use.
     Decim4,
+    /// Five samples per output word.
     Decim5,
+    /// Six samples per output word.
     Decim6,
+    /// Seven samples per output word.
     Decim7,
+    /// Eight samples per output word, the slowest and most conditioned.
     Decim8,
 }
 

@@ -798,6 +798,7 @@ impl<'d> I2c<'d> {
     }
 
     #[inline]
+    /// Send a STOP on its own, ending a transfer whose last burst did not carry one.
     pub fn stop(&mut self) {
         // not the first transaction, delay 1000 cycles
         cortex_m::asm::delay(1000);
@@ -810,6 +811,10 @@ impl<'d> I2c<'d> {
     }
 
     #[inline]
+    /// Start a receiving burst of `length` bytes.
+    ///
+    /// `restart` sends a repeated START rather than a START, and `send_stop` ends the transfer.
+    /// `Err` if `length` is past [`MAX_BURST_LEN`].
     pub fn start_read(
         &mut self,
         address: Address,
@@ -846,6 +851,9 @@ impl<'d> I2c<'d> {
     }
 
     #[inline]
+    /// Start a transmitting burst of `length` bytes, whose bytes come from the transmit FIFO.
+    ///
+    /// `Err` if `length` is past [`MAX_BURST_LEN`].
     pub fn start_write(&mut self, address: Address, length: usize, send_stop: bool) -> Result<(), Error> {
         if length > MAX_BURST_LEN {
             return Err(Error::TransferLengthIsOverLimit);

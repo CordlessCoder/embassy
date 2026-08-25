@@ -412,8 +412,10 @@ impl<'d, M: ModeState> SetConfig for Uart<'d, M> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
+    /// A stop bit was not where it should have been, so the byte's framing is wrong.
     Framing,
 
+    /// The three samples of a bit disagreed, so which value it carried is a guess.
     Noise,
 
     /// The receiver dropped at least one byte.
@@ -422,8 +424,10 @@ pub enum Error {
     /// [`BufferedUartRx::take_dropped`] instead.
     Overrun,
 
+    /// The parity bit does not match the byte, so at least one bit flipped.
     Parity,
 
+    /// The line was held low past a whole frame, which is a break rather than a byte.
     Break,
 }
 
@@ -1132,6 +1136,7 @@ impl<'d, M: ModeState> Uart<'d, M> {
 /// Peripheral instance trait.
 #[allow(private_bounds)]
 pub trait Instance: SealedInstance + PeripheralType {
+    /// Interrupt this instance raises.
     type Interrupt: crate::interrupt::typelevel::Interrupt;
 }
 

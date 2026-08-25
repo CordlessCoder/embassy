@@ -653,6 +653,7 @@ impl<T: Instance> embedded_storage_async::nor_flash::NorFlash for Flash<'_, T> {
 }
 
 #[allow(private_bounds)]
+/// A flash controller instance.
 pub trait Instance: SealedInstance + PeripheralType {}
 
 pub(crate) trait SealedInstance {

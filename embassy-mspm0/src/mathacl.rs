@@ -29,8 +29,11 @@ const ERROR_TOLERANCE: f32 = 0.00001;
 ///
 /// The count is the cost: [`Precision::High`] takes 31 cycles and [`Precision::Low`] one.
 pub enum Precision {
+    /// Thirty-one fractional bits, which is the accelerator's full precision.
     High = 31,
+    /// Fifteen fractional bits.
     Medium = 15,
+    /// One fractional bit, which is the fewest the accelerator takes.
     Low = 1,
 }
 
@@ -85,6 +88,10 @@ pub enum Error {
     IQTypeError(IQTypeError),
 }
 
+/// The math accelerator.
+///
+/// Holds the peripheral for as long as it lives, because every operation is a sequence of register
+/// writes and a second caller interleaving with one would read the other's result.
 pub struct Mathacl<'d> {
     regs: &'static Regs,
     /// Held for as long as the driver exists; see

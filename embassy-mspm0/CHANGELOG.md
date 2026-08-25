@@ -317,3 +317,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/tim: `low_level` reaches a channel's whole output surface — all four compare actions, the idle level a stopped channel rests at, the forced-output override and what drives the pin
 - feat: mspm0: `rtic_monotonic!` takes `unsafe` to emit no interrupt handler, so an RTIC hardware task can own the timer's vector
 - fix: mspm0: `rtic_monotonic!` refuses a timer that is not clocked in STANDBY1, where the monotonic's own sleep guard blocked the deep sleep it exists to survive — `allow-rtic-monotonic-sleep-floor` accepts it anyway
+- docs: mspm0: `missing_docs` is on, and every public item outside `wwdt.rs` now has a doc comment

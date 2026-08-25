@@ -338,6 +338,7 @@ impl<T: Instance> Drop for Crc<'_, T> {
 }
 
 #[allow(private_bounds)]
+/// A CRC instance.
 pub trait Instance: SealedInstance + PeripheralType + LowPowerInstance {}
 
 pub(crate) trait SealedInstance {

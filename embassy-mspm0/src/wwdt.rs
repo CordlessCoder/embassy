@@ -33,6 +33,8 @@
 //! Keep the handle alive for as long as the watchdog should be watching — [`core::mem::forget`] it if
 //! that is for ever.
 
+#![allow(missing_docs)]
+// 65 undocumented items, and documenting them properly is a pass of its own rather than a line each.
 #![macro_use]
 
 use core::marker::PhantomData;

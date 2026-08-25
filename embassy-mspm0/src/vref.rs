@@ -471,6 +471,7 @@ const _: () = {
 };
 
 #[allow(private_bounds)]
+/// A voltage reference instance.
 pub trait Instance: SealedInstance + PeripheralType + LowPowerInstance {}
 
 pub(crate) trait SealedInstance {

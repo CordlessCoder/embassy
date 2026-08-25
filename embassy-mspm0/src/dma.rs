@@ -266,6 +266,7 @@ pub trait ChannelInstance: SealedChannel + PeripheralType + crate::sysctl::LowPo
 pub trait FullChannelInstance: ChannelInstance {}
 
 #[allow(private_bounds)]
+/// A width a transfer can move, which is what sizes each step of the address arithmetic.
 pub trait Word: SealedWord + 'static {
     /// Size in bytes for the width.
     fn size() -> isize;
@@ -345,6 +346,7 @@ impl Word for u128 {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+/// What went wrong with a transfer.
 pub enum Error {
     /// The DMA transfer is too large.
     ///

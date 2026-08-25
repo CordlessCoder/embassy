@@ -514,10 +514,12 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         low_level::result::<T>(0)
     }
 
+    /// How many bits a conversion returns.
     pub fn resolution(&self) -> Resolution {
         self.inner.resolution()
     }
 
+    /// Set how many bits a conversion returns.
     pub fn set_resolution(&mut self, resolution: Resolution) {
         self.inner.set_resolution(resolution);
     }
@@ -536,6 +538,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
 }
 
 impl<'d, T: Instance> Adc<'d, T, Async> {
+    /// Claim the instance for conversions that await their interrupt.
     pub fn new_async(
         peri: Peri<'d, T>,
         _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
@@ -618,6 +621,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
 /// Peripheral instance trait.
 #[allow(private_bounds)]
 pub trait Instance: PeripheralType + SealedInstance + crate::sysctl::LowPowerInstance + 'static {
+    /// Interrupt this instance raises.
     type Interrupt: crate::interrupt::typelevel::Interrupt;
 }
 
@@ -630,6 +634,7 @@ pub struct BorrowedAdcChannel<'a, T> {
 }
 
 impl<T> BorrowedAdcChannel<'_, T> {
+    /// This channel's number as the hardware knows it.
     pub fn get_hw_channel(&self) -> u8 {
         self.channel
     }
@@ -675,6 +680,7 @@ impl<T: Instance> SealedAdcChannel<T> for BorrowedAdcChannel<'_, T> {
 }
 
 #[allow(private_bounds)]
+/// A channel borrowed from something that owns it, usable for the length of that borrow.
 pub trait BorrowedChannel<'a, T>: SealedBorrowedChannel<'a, T> {}
 impl<'a, T, C: SealedBorrowedChannel<'a, T>> BorrowedChannel<'a, T> for C {}
 
@@ -696,6 +702,7 @@ impl<'a, T> SealedBorrowedChannel<'a, T> for BorrowedAdcChannel<'a, T> {
 #[allow(private_bounds)]
 pub trait AdcChannel<T>: SealedAdcChannel<T> + Sized {
     #[allow(unused_mut)]
+    /// Borrow this channel for a single conversion, leaving it owned by whatever holds it.
     fn reborrow_adc<'a>(&'a mut self) -> BorrowedAdcChannel<'a, T> {
         self.setup();
 

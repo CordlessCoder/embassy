@@ -99,12 +99,19 @@ impl SleepLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PowerMode {
+    /// Everything clocked, the CPU running.
     Run,
+    /// The CPU clock stopped; every peripheral keeps its clock.
     Sleep,
+    /// The bus clocks stopped. SYSOSC still runs, so a peripheral can be clocked from it.
     Stop0,
+    /// As STOP0, with fewer peripherals still clocked. Not every family has this level.
     Stop1,
+    /// SYSOSC is off, so only LFCLK-clocked peripherals keep running.
     Stop2,
+    /// PD0 is unpowered; a peripheral survives only if it is retained and LFCLK-clocked.
     Standby0,
+    /// As STANDBY0, with less left clocked.
     Standby1,
 
     /// Nothing but the `SHUTDNSTORE` bytes in SYSCTL survives this.

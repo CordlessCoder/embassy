@@ -1255,6 +1255,7 @@ impl<T: Instance, M: DriverMode> Drop for Comp<'_, T, M> {
 }
 
 #[allow(private_bounds)]
+/// A comparator instance.
 pub trait Instance: SealedInstance + PeripheralType + LowPowerInstance {}
 
 pub(crate) trait SealedInstance {

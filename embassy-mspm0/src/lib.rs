@@ -1,4 +1,5 @@
 #![no_std]
+#![warn(missing_docs)]
 #![allow(unsafe_op_in_unsafe_fn)]
 // Doc feature labels can be tested locally by running RUSTDOCFLAGS="--cfg=docsrs" cargo +nightly doc
 #![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg_hide), doc(cfg_hide(doc, docsrs)))]
@@ -680,6 +681,9 @@ impl Default for Config {
 // Called exactly once — `Peripherals::take_with_cs` panics otherwise — so inlining costs no
 // duplication and lets a constant `Config` fold the clock programming down to its live branches.
 #[inline(always)]
+/// Program the clock tree and hand back every peripheral, once.
+///
+/// Panics on a second call: the singletons it returns are the only ones there are.
 pub fn init(config: Config) -> Peripherals {
     critical_section::with(|cs| {
         let peripherals = Peripherals::take_with_cs(cs);

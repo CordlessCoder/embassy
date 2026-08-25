@@ -263,6 +263,10 @@ impl OutputSource {
     }
 }
 
+/// A timer at register level, which the mode drivers hold.
+///
+/// Powers the instance up, programs a [`Config`] and stops there. It starts no counter, waits for
+/// nothing and installs no interrupt handler.
 pub struct Timer<'d, T: Instance> {
     _timer: Peri<'d, T>,
 

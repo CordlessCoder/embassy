@@ -97,13 +97,21 @@ impl ClockSel {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ClockDiv {
+    /// No division.
     DivBy1,
+    /// Half the input rate.
     DivBy2,
+    /// A third of the input rate.
     DivBy3,
+    /// A quarter of the input rate.
     DivBy4,
+    /// A fifth of the input rate.
     DivBy5,
+    /// A sixth of the input rate.
     DivBy6,
+    /// A seventh of the input rate.
     DivBy7,
+    /// An eighth of the input rate.
     DivBy8,
 }
 
@@ -395,9 +403,11 @@ impl Config {
         self
     }
 
+    /// Pin configuration this config asks for on SDA.
     pub fn sda_pf(&self) -> PfType {
         PfType::input(self.sda_pull, self.invert_sda)
     }
+    /// Pin configuration this config asks for on SCL.
     pub fn scl_pf(&self) -> PfType {
         PfType::input(self.scl_pull, self.invert_scl)
     }
@@ -904,6 +914,7 @@ impl<'d, M: Mode> I2c<'d, M> {
 }
 
 impl<'d> I2c<'d, Blocking> {
+    /// Claim the instance and its pins for a controller that busy-waits.
     pub fn new_blocking<T: Instance>(
         peri: Peri<'d, T>,
         scl: Peri<'d, impl SclPin<T>>,
@@ -917,6 +928,7 @@ impl<'d> I2c<'d, Blocking> {
 }
 
 impl<'d> I2c<'d, Async> {
+    /// Claim the instance and its pins for a controller that awaits its interrupt.
     pub fn new_async<T: Instance>(
         peri: Peri<'d, T>,
         scl: Peri<'d, impl SclPin<T>>,
@@ -1833,6 +1845,7 @@ impl<T: Instance> crate::interrupt::typelevel::Handler<T::Interrupt> for Interru
 /// Peripheral instance trait.
 #[allow(private_bounds)]
 pub trait Instance: SealedInstance + PeripheralType {
+    /// Interrupt this instance raises.
     type Interrupt: crate::interrupt::typelevel::Interrupt;
 }
 

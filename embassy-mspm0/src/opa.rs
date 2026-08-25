@@ -150,10 +150,15 @@ impl Default for Config {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Gain {
+    /// Two times.
     X2 = 1,
+    /// Four times.
     X4 = 2,
+    /// Eight times.
     X8 = 3,
+    /// Sixteen times.
     X16 = 4,
+    /// Thirty-two times.
     X32 = 5,
 }
 
