@@ -24,7 +24,7 @@ use crate::gpio::{AnyPin, Level, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::vals::{Act, Swfrcact};
 use crate::tim::low_level::{self, Config as TimerConfig, Event, Timer};
-use crate::tim::simple_pwm::Polarity;
+pub use crate::tim::simple_pwm::Polarity;
 use crate::tim::{
     Channel, ClockSel, CompareUpdate, CountingMode, Instance, ShadowCompareInstance, ShadowLoadInstance, TimerChannel,
     TimerPin, Word, simple_pwm,
