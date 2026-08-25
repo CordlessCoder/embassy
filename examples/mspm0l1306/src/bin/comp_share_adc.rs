@@ -102,7 +102,7 @@ async fn main(_spawner: Spawner) {
 
     // The loan hands back the concrete pin, so it is still an ADC channel. Checking which one is the
     // point: a selection that reached nothing would still convert and still return a number.
-    let channel = comp.with_positive_pin(|pad| pad.reborrow_adc().get_hw_channel());
+    let channel = comp.with_positive_pin(|pad| pad.reborrow_adc().hw_channel());
     if channel == PA26_ADC_CHANNEL {
         info!("lent pad is ADC channel {} ok", channel);
     } else {

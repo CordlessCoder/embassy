@@ -47,7 +47,7 @@ async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Default::default());
 
     let mut wake = Output::new(p.PA10, Level::Low);
-    let ack = Input::new(p.PA1, Pull::Down);
+    let ack = Input::new_blocking(p.PA1, Pull::Down);
     let mut led = Output::new(p.PA0, Level::Low);
 
     let mut counter = low_level::Timer::new(

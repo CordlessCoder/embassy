@@ -35,7 +35,7 @@ mod app {
         let mut led = Output::new(p.PA0, Level::Low);
         led.set_high();
 
-        watch::spawn(Input::new_async(p.PA14, Pull::Up, Irqs), led)
+        watch::spawn(Input::new_async(p.PA14, Irqs, Pull::Up), led)
             .map_err(|_| ())
             .unwrap();
 

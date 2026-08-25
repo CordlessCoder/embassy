@@ -130,7 +130,7 @@ async fn main(_spawner: Spawner) -> ! {
         DEFAULT_MIN_SLEEP.as_ticks(),
     );
 
-    let wake = Input::new_async(p.PB7, Pull::Down, Irqs);
+    let wake = Input::new_async(p.PB7, Irqs, Pull::Down);
     let ack = Output::new(p.PB2, Level::Low);
 
     // Must be set before `start`, which unmasks. P0 matches the GPIO group interrupt that pends this one,

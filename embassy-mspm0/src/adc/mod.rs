@@ -506,7 +506,7 @@ impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
         // A sampling future dropped half way through leaves a conversion running.
         while low_level::is_converting::<T>() {}
 
-        low_level::setup_one::<T>(channel.reborrow_adc().get_hw_channel(), conversion);
+        low_level::setup_one::<T>(channel.reborrow_adc().hw_channel(), conversion);
         low_level::start::<T>();
 
         // Wait for conversion
@@ -569,7 +569,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
 
         // Wait until ADC is not converting to start - an active conversion might've been cancelled.
         Self::wait_for_conversion().await;
-        low_level::setup_one::<T>(channel.get_hw_channel(), conversion);
+        low_level::setup_one::<T>(channel.hw_channel(), conversion);
 
         // Armed alone, so nothing else in the mask is left over to wake this.
         low_level::arm_only::<T>(low_level::Event::Result(0));
@@ -602,7 +602,7 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         let sequence_len = sequence.len();
 
         Self::wait_for_conversion().await;
-        low_level::setup_sequence::<T>(sequence.map(|(ch, conv)| (ch.get_hw_channel(), conv)));
+        low_level::setup_sequence::<T>(sequence.map(|(ch, conv)| (ch.hw_channel(), conv)));
 
         // Only the last result wakes this; the earlier ones set their flags as they land.
         low_level::arm_only::<T>(low_level::Event::Result(sequence_len as u8 - 1));
@@ -635,7 +635,7 @@ pub struct BorrowedAdcChannel<'a, T> {
 
 impl<T> BorrowedAdcChannel<'_, T> {
     /// This channel's number as the hardware knows it.
-    pub fn get_hw_channel(&self) -> u8 {
+    pub fn hw_channel(&self) -> u8 {
         self.channel
     }
 }

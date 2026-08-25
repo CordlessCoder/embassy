@@ -82,7 +82,7 @@ async fn main(_spawner: Spawner) -> ! {
         DEFAULT_MIN_SLEEP.as_ticks(),
     );
 
-    let mut wake = Input::new_async(p.PB7, Pull::Down, Irqs);
+    let mut wake = Input::new_async(p.PB7, Irqs, Pull::Down);
     let mut ack = Output::new(p.PB2, Level::Low);
     let mut led = Output::new(p.PA0, Level::High);
     led.set_inversion(true);

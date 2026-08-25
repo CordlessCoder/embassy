@@ -101,7 +101,7 @@ async fn main(_spawner: Spawner) -> ! {
     // could have filled it.
     let negative: Option<Peri<'_, PA27>> = None;
 
-    let mut comp = unwrap!(Comp::new(p.COMP0, Some(p.PA26), negative, config));
+    let mut comp = unwrap!(Comp::new_blocking(p.COMP0, Some(p.PA26), negative, config));
 
     comp.set_dac_code(DacCode::new(LOW_CODE));
     comp.clear_pending();

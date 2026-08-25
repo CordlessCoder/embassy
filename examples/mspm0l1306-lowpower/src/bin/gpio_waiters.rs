@@ -309,7 +309,7 @@ async fn main(_spawner: Spawner) -> ! {
     driven.set_pull(Pull::Up);
     driven.set_high();
 
-    let mut other = Input::new_async(p.PA17, Pull::Up, Irqs);
+    let mut other = Input::new_async(p.PA17, Irqs, Pull::Up);
 
     if driven.is_low() || other.is_low() {
         error!("PA16/PA17 are not idling high; something is driving them. Halting.");

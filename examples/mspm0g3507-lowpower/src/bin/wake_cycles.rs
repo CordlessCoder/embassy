@@ -189,7 +189,7 @@ async fn main(spawner: Spawner) -> ! {
     syst.clear_current();
     syst.enable_counter();
 
-    let mut input = Input::new_async(p.PB7, Pull::Up, Irqs);
+    let mut input = Input::new_async(p.PB7, Irqs, Pull::Up);
 
     if input.is_low() {
         error!("PB7 is being driven low; nothing should be connected to it. Halting.");
@@ -262,7 +262,7 @@ async fn main(spawner: Spawner) -> ! {
     // What two pins pending at once costs. This is where a handler that takes one pin per entry pays
     // back what it saves on the single-pin case, the second pin arriving through the NVIC rather than
     // through a loop — so the two numbers together are the whole trade.
-    let mut second = Input::new_async(p.PB2, Pull::Up, Irqs);
+    let mut second = Input::new_async(p.PB2, Irqs, Pull::Up);
     let mut pair = Spread::new(overhead);
 
     for _ in 0..WAKES {

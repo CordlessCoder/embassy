@@ -43,7 +43,7 @@ mod app {
         // LED1 is active low.
         led.set_high();
 
-        let mut button = Input::new(p.PA14, Pull::Up);
+        let mut button = Input::new_blocking(p.PA14, Pull::Up);
         button.enable_interrupt(Edge::Falling);
 
         (Shared {}, Local { button, led })

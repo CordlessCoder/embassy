@@ -101,6 +101,7 @@ const WEPROTA_SECTORS: u32 = FLASH_WEPROTA_BITS as u32;
 /// What went wrong.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub enum Error {
     /// The range is not inside the MAIN region.
     OutOfBounds,

@@ -48,7 +48,7 @@ async fn main(_spawner: Spawner) -> ! {
     timer.set_output_enabled(Channel::Ch0, true);
     timer.start();
 
-    let mut pin = Flex::new(p.PA26.reborrow());
+    let mut pin = Flex::new_blocking(p.PA26.reborrow());
 
     loop {
         info!("timer drives the pin");

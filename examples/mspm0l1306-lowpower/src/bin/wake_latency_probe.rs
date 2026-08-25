@@ -86,7 +86,7 @@ async fn main(_spawner: Spawner) -> ! {
         DEFAULT_MIN_SLEEP.as_ticks(),
     );
 
-    let mut wake = Input::new_async(p.PA10, Pull::Down, Irqs);
+    let mut wake = Input::new_async(p.PA10, Irqs, Pull::Down);
     let mut ack = Output::new(p.PA1, Level::Low);
 
     // Claimed so nothing else can drive them, then handed to the HAL by port and pin — `probe` writes the

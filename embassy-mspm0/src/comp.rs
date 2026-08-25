@@ -753,7 +753,7 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
     ///
     /// Either terminal may be left without a pin, in which case [`Config::reference`] is what drives
     /// it. Giving neither a pin nor a reference compares two undriven nodes.
-    pub fn new(
+    pub fn new_blocking(
         _peri: Peri<'d, T>,
         positive: Option<Peri<'d, impl PositivePin<T>>>,
         negative: Option<Peri<'d, impl NegativePin<T>>>,

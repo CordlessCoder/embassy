@@ -26,7 +26,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let mut led1 = Output::new(led1, Level::Low);
 
-    let mut s2 = Input::new_async(s2, Pull::Up, Irqs);
+    let mut s2 = Input::new_async(s2, Irqs, Pull::Up);
 
     // led1 is active low
     led1.set_high();

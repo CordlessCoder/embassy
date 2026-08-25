@@ -326,3 +326,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - breaking: mspm0/tim: the six `Config` types are `#[non_exhaustive]` with a `with_*` builder per field, so a later field is not a breaking change and a config still folds in a `const`
 - feat: mspm0/opa: `OpaPair::only_a_ext`/`only_b_ext` drive a single stage's output pin, and `OpaTap::set_gain` re-ranges a standing chain's upstream stage
 - breaking: mspm0: one spelling for "what raised the line" — `comp::clear_interrupt` becomes `clear_pending`, `gpio::take_pending` becomes `take_active`, and `timb` gains the `take_active` it had no route for
+- breaking: mspm0: one constructor scheme — `uart`'s async constructors gain `_async` (plain `new` used to mean async there and blocking in `gpio` and `comp`), and `gpio`'s and `comp`'s blocking ones become `new_blocking`
+- breaking: mspm0/gpio: `Input::new_async` and `OutputOpenDrain::new_async` take the interrupt binding second, as `Flex::new_async` already did
+- breaking: mspm0: readers lose the `get_` prefix — `gpio::level`, `gpio::output_level`, `adc::hw_channel`
+- breaking: mspm0/flash: `Error` is `#[non_exhaustive]`, the last error enum in the crate that was not

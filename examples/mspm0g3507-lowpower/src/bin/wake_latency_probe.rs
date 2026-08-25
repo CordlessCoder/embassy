@@ -100,7 +100,7 @@ async fn main(_spawner: Spawner) -> ! {
     probe::arm(Marker::GpioWaker, Port::PortB, 0);
     probe::arm(Marker::ExecutorPoll, Port::PortB, 1);
 
-    let mut wake = Input::new_async(p.PB7, Pull::Down, Irqs);
+    let mut wake = Input::new_async(p.PB7, Irqs, Pull::Down);
     let mut ack = Output::new(p.PB2, Level::Low);
 
     loop {

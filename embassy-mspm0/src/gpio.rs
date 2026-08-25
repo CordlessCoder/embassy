@@ -167,7 +167,7 @@ impl<'d> Flex<'d, Blocking> {
     /// The pin remains disconnected. The initial output level is unspecified, but can be changed
     /// before the pin is put into output mode.
     #[inline]
-    pub fn new(pin: Peri<'d, impl Pin>) -> Self {
+    pub fn new_blocking(pin: Peri<'d, impl Pin>) -> Self {
         // Pin will be in disconnected state.
         Self {
             pin: pin.into(),
@@ -205,7 +205,7 @@ impl<'d> Flex<'d, Blocking> {
     /// # Both directions, on some devices
     ///
     /// Where `GPIO_ERR_01` applies both edges are latched whatever `edge` asks for, because its case 2
-    /// otherwise loses every STANDBY1 wake after the first. Classify with [`Flex::get_level`] in the
+    /// otherwise loses every STANDBY1 wake after the first. Classify with [`Flex::level`] in the
     /// handler rather than trusting the selection.
     pub fn enable_interrupt(&mut self, edge: Edge) {
         let block = self.pin.block();
@@ -513,7 +513,7 @@ impl<'d, M: Mode> Flex<'d, M> {
 
     /// Returns current pin level
     #[inline]
-    pub fn get_level(&self) -> Level {
+    pub fn level(&self) -> Level {
         self.is_high().into()
     }
 
@@ -552,7 +552,7 @@ impl<'d, M: Mode> Flex<'d, M> {
 
     /// Get the current pin output level.
     #[inline]
-    pub fn get_output_level(&self) -> Level {
+    pub fn output_level(&self) -> Level {
         self.is_set_high().into()
     }
 
@@ -1003,9 +1003,9 @@ pub struct Input<'d, M: Mode = Blocking> {
 impl<'d> Input<'d, Blocking> {
     /// Create GPIO input driver for a [Pin] with the provided [Pull] configuration.
     #[inline]
-    pub fn new(pin: Peri<'d, impl Pin>, pull: Pull) -> Self {
+    pub fn new_blocking(pin: Peri<'d, impl Pin>, pull: Pull) -> Self {
         Self {
-            pin: Self::configure(Flex::new(pin), pull),
+            pin: Self::configure(Flex::new_blocking(pin), pull),
         }
     }
 
@@ -1045,7 +1045,7 @@ impl<'d> Input<'d, Blocking> {
 impl<'d> Input<'d, Async> {
     /// Create a GPIO input driver that can wait for an edge.
     #[inline]
-    pub fn new_async(pin: Peri<'d, impl Pin>, pull: Pull, irqs: impl PortInterrupts + 'd) -> Self {
+    pub fn new_async(pin: Peri<'d, impl Pin>, irqs: impl PortInterrupts + 'd, pull: Pull) -> Self {
         Self {
             pin: Self::configure(Flex::new_async(pin, irqs), pull),
         }
@@ -1074,8 +1074,8 @@ impl<'d, M: Mode> Input<'d, M> {
 
     /// Get the current pin input level.
     #[inline]
-    pub fn get_level(&self) -> Level {
-        self.pin.get_level()
+    pub fn level(&self) -> Level {
+        self.pin.level()
     }
 
     /// Configure the logic inversion of this pin.
@@ -1147,7 +1147,7 @@ impl<'d> Output<'d> {
     /// Create GPIO output driver for a [Pin] with the provided [Level] configuration.
     #[inline]
     pub fn new(pin: Peri<'d, impl Pin>, initial_output: Level) -> Self {
-        let mut pin = Flex::new(pin);
+        let mut pin = Flex::new_blocking(pin);
         pin.set_level(initial_output);
         pin.set_as_output();
         Self { pin }
@@ -1185,8 +1185,8 @@ impl<'d> Output<'d> {
 
     /// What level output is set to
     #[inline]
-    pub fn get_output_level(&self) -> Level {
-        self.pin.get_output_level()
+    pub fn output_level(&self) -> Level {
+        self.pin.output_level()
     }
 
     /// Toggle pin output
@@ -1230,9 +1230,9 @@ impl<M: Mode> OutputOpenDrain<'_, M> {
 impl<'d> OutputOpenDrain<'d, Blocking> {
     /// Create a new GPIO open drain output driver for a [Pin] with the provided [Level].
     #[inline]
-    pub fn new(pin: Peri<'d, impl Pin>, initial_output: Level) -> Self {
+    pub fn new_blocking(pin: Peri<'d, impl Pin>, initial_output: Level) -> Self {
         Self {
-            pin: Self::configure(Flex::new(pin), initial_output),
+            pin: Self::configure(Flex::new_blocking(pin), initial_output),
         }
     }
 
@@ -1272,7 +1272,7 @@ impl<'d> OutputOpenDrain<'d, Blocking> {
 impl<'d> OutputOpenDrain<'d, Async> {
     /// Create a new GPIO open drain output driver that can wait for an edge.
     #[inline]
-    pub fn new_async(pin: Peri<'d, impl Pin>, initial_output: Level, irqs: impl PortInterrupts + 'd) -> Self {
+    pub fn new_async(pin: Peri<'d, impl Pin>, irqs: impl PortInterrupts + 'd, initial_output: Level) -> Self {
         Self {
             pin: Self::configure(Flex::new_async(pin, irqs), initial_output),
         }
@@ -1301,8 +1301,8 @@ impl<'d, M: Mode> OutputOpenDrain<'d, M> {
 
     /// Get the current pin input level.
     #[inline]
-    pub fn get_level(&self) -> Level {
-        self.pin.get_level()
+    pub fn level(&self) -> Level {
+        self.pin.level()
     }
 
     /// Set the output as high.
@@ -1337,8 +1337,8 @@ impl<'d, M: Mode> OutputOpenDrain<'d, M> {
 
     /// Get the current output level.
     #[inline]
-    pub fn get_output_level(&self) -> Level {
-        self.pin.get_output_level()
+    pub fn output_level(&self) -> Level {
+        self.pin.output_level()
     }
 
     /// Toggle pin output

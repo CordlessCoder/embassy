@@ -505,7 +505,7 @@ impl<'d> UartRx<'d, Blocking> {
 
 impl<'d> UartRx<'d, Async> {
     /// Create a new rx-only UART that waits on the FIFO rather than a software buffer.
-    pub fn new<T: Instance>(
+    pub fn new_async<T: Instance>(
         peri: Peri<'d, T>,
         rx: Peri<'d, impl RxPin<T>>,
         _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
@@ -518,7 +518,7 @@ impl<'d> UartRx<'d, Async> {
     }
 
     /// Create a new rx-only UART with a request-to-send pin.
-    pub fn new_with_rts<T: Instance>(
+    pub fn new_async_with_rts<T: Instance>(
         peri: Peri<'d, T>,
         rx: Peri<'d, impl RxPin<T>>,
         rts: Peri<'d, impl RtsPin<T>>,
@@ -672,7 +672,7 @@ impl<'d> UartTx<'d, Blocking> {
 
 impl<'d> UartTx<'d, Async> {
     /// Create a new tx-only UART that waits on the FIFO rather than a software buffer.
-    pub fn new<T: Instance>(
+    pub fn new_async<T: Instance>(
         peri: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
         _irq: impl Binding<T::Interrupt, InterruptHandler<T>> + 'd,
@@ -685,7 +685,7 @@ impl<'d> UartTx<'d, Async> {
     }
 
     /// Create a new tx-only UART with a clear-to-send pin.
-    pub fn new_with_cts<T: Instance>(
+    pub fn new_async_with_cts<T: Instance>(
         peri: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
         cts: Peri<'d, impl CtsPin<T>>,
@@ -1017,7 +1017,7 @@ impl<'d> Uart<'d, Blocking> {
 
 impl<'d> Uart<'d, Async> {
     /// Create a new bidirectional UART that waits on the FIFOs rather than a software buffer.
-    pub fn new<T: Instance>(
+    pub fn new_async<T: Instance>(
         peri: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
         rx: Peri<'d, impl RxPin<T>>,
@@ -1036,7 +1036,7 @@ impl<'d> Uart<'d, Async> {
     }
 
     /// Create a new bidirectional UART with request-to-send and clear-to-send pins.
-    pub fn new_with_rtscts<T: Instance>(
+    pub fn new_async_with_rtscts<T: Instance>(
         peri: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
         rx: Peri<'d, impl RxPin<T>>,

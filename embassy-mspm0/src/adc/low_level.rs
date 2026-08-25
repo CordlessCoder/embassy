@@ -214,7 +214,7 @@ impl<'d, T: Instance> Adc<'d, T> {
     ///
     /// The result lands in `MEMRES[0]`.
     pub fn set_conversion<'a>(&mut self, channel: impl BorrowedChannel<'a, T>, conversion: Conversion) {
-        setup_one::<T>(channel.reborrow_adc().get_hw_channel(), conversion);
+        setup_one::<T>(channel.reborrow_adc().hw_channel(), conversion);
     }
 
     /// Aim the next conversion at a sequence of channels, in order.
@@ -232,7 +232,7 @@ impl<'d, T: Instance> Adc<'d, T> {
             super::MAX_SEQUENCE_LEN
         );
 
-        setup_sequence::<T>(sequence.map(|(ch, conv)| (ch.get_hw_channel(), conv)));
+        setup_sequence::<T>(sequence.map(|(ch, conv)| (ch.hw_channel(), conv)));
     }
 
     /// Start converting what [`set_conversion`](Self::set_conversion) or

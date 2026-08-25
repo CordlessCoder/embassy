@@ -69,7 +69,7 @@ mod app {
         // LED1 is active low.
         led.set_high();
 
-        let button = Input::new_async(p.PA14, Pull::Up, Irqs);
+        let button = Input::new_async(p.PA14, Irqs, Pull::Up);
 
         watch::spawn(button, led).map_err(|_| ()).unwrap();
         report::spawn().map_err(|_| ()).unwrap();

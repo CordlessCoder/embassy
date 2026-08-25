@@ -69,7 +69,7 @@ async fn main(_spawner: Spawner) -> ! {
     let p = embassy_mspm0::init(Config::default());
 
     let mut response = Output::new(p.PA16, Level::Low);
-    let mut stimulus = Input::new_async(p.PA18, Pull::Down, Irqs);
+    let mut stimulus = Input::new_async(p.PA18, Irqs, Pull::Down);
 
     loop {
         stimulus.wait_for_rising_edge().await;
