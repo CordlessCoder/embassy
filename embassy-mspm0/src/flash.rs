@@ -361,6 +361,15 @@ impl<'d, T: Instance> Flash<'d, T> {
         suspended.set_icache(false);
         suspended.set_liten(false);
         pac::CPUSS.ctl().write_value(suspended);
+
+        // CPU_ERR_02: the disable does not take effect while a flash access is pending, and what
+        // completes one is a bus transaction to another slave rather than a barrier. Same sequence as
+        // `prefetch::PrefetchSuspend::new`, which is the only other place that clears these bits.
+        #[cfg(mspm0_shutdnstore)]
+        let _ = pac::SYSCTL.shutdnstore(0).read();
+        #[cfg(not(mspm0_shutdnstore))]
+        let _ = pac::SYSCTL.clkstatus().read();
+
         cortex_m::asm::dsb();
         cortex_m::asm::isb();
 
