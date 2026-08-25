@@ -511,10 +511,17 @@ impl<'d, T: Instance> Adc<'d, T, Blocking> {
 impl<'d, T: Instance, M: Mode> Adc<'d, T, M> {
     /// Read an ADC pin.
     pub fn blocking_read<'a>(&mut self, channel: impl BorrowedChannel<'a, T>, conversion: Conversion) -> u16 {
+        // The channel's type stops mattering here, so the body below is shared rather than copied
+        // once per type an application reads. Everything after this line is a `u8` and two spins.
+        self.blocking_read_hw(channel.reborrow_adc().hw_channel(), conversion)
+    }
+
+    /// [`blocking_read`](Self::blocking_read) with the channel already reduced to its number.
+    fn blocking_read_hw(&mut self, channel: u8, conversion: Conversion) -> u16 {
         // A sampling future dropped half way through leaves a conversion running.
         while low_level::is_converting::<T>() {}
 
-        low_level::setup_one::<T>(channel.reborrow_adc().hw_channel(), conversion);
+        low_level::setup_one::<T>(channel, conversion);
         low_level::start::<T>();
 
         // Wait for conversion
@@ -571,13 +578,24 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
     }
 
     /// Read an ADC pin asynchronously using the irq handler.
-    pub async fn irq_read<'a>(&mut self, channel: impl BorrowedChannel<'a, T>, conversion: Conversion) -> u16 {
+    ///
+    /// Returns the future rather than being an `async fn`, so that the generic half is a plain call
+    /// and the future itself is one shape however many channel types the caller reads.
+    pub fn irq_read<'a>(
+        &mut self,
+        channel: impl BorrowedChannel<'a, T>,
+        conversion: Conversion,
+    ) -> impl Future<Output = u16> {
+        self.irq_read_hw(channel.reborrow_adc().hw_channel(), conversion)
+    }
+
+    /// [`irq_read`](Self::irq_read) with the channel already reduced to its number.
+    async fn irq_read_hw(&mut self, channel: u8, conversion: Conversion) -> u16 {
         let _guard = self.conversion_guard();
-        let channel = channel.reborrow_adc();
 
         // Wait until ADC is not converting to start - an active conversion might've been cancelled.
         Self::wait_for_conversion().await;
-        low_level::setup_one::<T>(channel.hw_channel(), conversion);
+        low_level::setup_one::<T>(channel, conversion);
 
         // Armed alone, so nothing else in the mask is left over to wake this.
         low_level::arm_only::<T>(low_level::Event::Result(0));

@@ -337,3 +337,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - breaking: mspm0/tim: `pulse_train::Config::idle` takes an `Idle` rather than a `Level`, whose third variant leaves the pin undriven between trains
 - feat: mspm0/tim: `pulse_train::Config::polarity` inverts the whole waveform, so a train can begin with a low period and end with a high one
 - feat: mspm0/tim: `pulse_train::Config::end` can stop a train at its last element's compare match, so a train of `n` elements emits `n` active phases and `n - 1` trailing ones
+- mspm0/adc: `blocking_read` and `irq_read` erase the channel's type at the boundary, so the body is shared rather than copied once per channel type an application reads
