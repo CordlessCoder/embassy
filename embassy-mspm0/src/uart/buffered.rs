@@ -1122,14 +1122,6 @@ fn on_interrupt(r: Regs, state: &'static BufferedState) {
 
     let int = low_level::masked_status(r);
 
-    // Per https://github.com/embassy-rs/embassy/pull/1458, both buffered and unbuffered handlers may be bound.
-    if low_level::dma_enabled(r) {
-        #[cfg(feature = "_probe")]
-        crate::probe::clear(handler_marker);
-
-        return;
-    }
-
     // RX
     if state.rx_buf.is_available() {
         // SAFETY: RX must have been initialized if RXE is set.

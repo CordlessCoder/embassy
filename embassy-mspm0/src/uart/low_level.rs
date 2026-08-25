@@ -1375,11 +1375,6 @@ pub(crate) fn busy(r: Regs) -> bool {
     !r.stat().read().txfe()
 }
 
-// Always false: the driver never sets `DMAEN`, having no receive or transmit DMA path.
-pub(crate) fn dma_enabled(_r: Regs) -> bool {
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

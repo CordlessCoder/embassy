@@ -82,20 +82,21 @@ pub struct TrainState {
 impl TrainState {
     /// The compare action that drives the pin to the configured idle level.
     fn idle_act(&self) -> Act {
+        act(self.idle_level())
+    }
+
+    /// The configured idle level, as the handler sees it.
+    fn idle_level(&self) -> Level {
         if self.idle_high.load(Ordering::Relaxed) {
-            Act::CcpHigh
+            Level::High
         } else {
-            Act::CcpLow
+            Level::Low
         }
     }
 
     /// The override that holds the pin at the configured idle level.
     fn idle_force(&self) -> Swfrcact {
-        if self.idle_high.load(Ordering::Relaxed) {
-            Swfrcact::CcpHigh
-        } else {
-            Swfrcact::CcpLow
-        }
+        force(self.idle_level())
     }
 }
 
@@ -185,6 +186,22 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             write_element(r, channel, pulse);
             state.next.store(next + 1, Ordering::Relaxed);
         }
+    }
+}
+
+/// The compare action that drives a pin to `level`.
+const fn act(level: Level) -> Act {
+    match level {
+        Level::Low => Act::CcpLow,
+        Level::High => Act::CcpHigh,
+    }
+}
+
+/// The forced-output override that holds a pin at `level`.
+const fn force(level: Level) -> Swfrcact {
+    match level {
+        Level::Low => Swfrcact::CcpLow,
+        Level::High => Swfrcact::CcpHigh,
     }
 }
 
@@ -570,10 +587,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
 
     /// The compare action that drives the pin to the configured idle level.
     fn idle_act(&self) -> Act {
-        match self.idle {
-            Level::Low => Act::CcpLow,
-            Level::High => Act::CcpHigh,
-        }
+        act(self.idle)
     }
 
     /// Hold the output at the idle level through the forced-output override.

@@ -618,11 +618,20 @@ const fn wait_cycles(mclk: u32, ns: u32) -> u32 {
     // every multiply here be a plain one: `saturating_mul` is a *widening* multiply on this core and
     // links `__aeabi_lmul`, so the defensive version costs more than the case it defends against.
     let us = div_ceil_no_builtin(ns, 1_000, US_BITS);
+
+    // The clock is checked on the way in rather than on the way out. `divmod_no_builtin` cannot
+    // return a quotient wider than the bit count it is given, so a check on `whole_mhz` can never
+    // fire — past the bound it hands back a truncated quotient and an oversized remainder, which is
+    // the short wait the guard is here to prevent.
+    if mclk >= (MAX_MHZ + 1) * 1_000_000 {
+        return u32::MAX;
+    }
+
     let (whole_mhz, rem_hz) = divmod_no_builtin(mclk, 1_000_000, MHZ_BITS);
 
-    // A request or a clock past what the loops can represent. Waiting far too long is safe here and
-    // waiting too little is not, so it saturates rather than wrapping into a short wait.
-    if us > MAX_US || whole_mhz > MAX_MHZ {
+    // A request past what the loop can represent. `div_ceil_no_builtin` adds one to a saturated
+    // quotient, so unlike the clock this one is reachable from its own output.
+    if us > MAX_US {
         return u32::MAX;
     }
 

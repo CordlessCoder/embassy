@@ -10,7 +10,7 @@ use crate::sysctl::MaybeWakeGuard;
 #[cfg(any(feature = "low-power", feature = "_time-driver", feature = "rtic-monotonic"))]
 use crate::sysctl::SleepLevel;
 use crate::tim::compare::CompareAction;
-use crate::tim::{Channel, ClockSel, CountingMode, Instance, Word};
+use crate::tim::{Channel, ClockSel, CountingMode, Instance, ShadowCompareInstance, ShadowLoadInstance, Word};
 
 /// Why a frequency cannot be programmed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,17 +217,52 @@ const _: () = {
     }
 };
 
-/// Low-level timer driver.
-///
-/// # The instance parameter duplicates every method body
-///
-/// `T` puts a copy of each method in the binary for every instance it is used with, and a chip has
-/// several of these. Nothing shows it in a symbol listing: the bodies inline into the caller.
-///
-/// **Erasing it is not automatically the fix.** Monomorphising folds the register addresses to
-/// immediates, so a shared body has to carry them as arguments instead — measured on the timer, that
-/// lost at every instance count a part reaches. [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm)
-/// carries the figures and what did pay.
+impl<T: ShadowLoadInstance> Timer<'_, T> {
+    /// Hold `LOAD` writes until the counter next reaches zero, instead of applying them at once.
+    ///
+    /// A period changed part way through one then takes effect at the boundary rather than
+    /// truncating or extending the period in flight.
+    ///
+    /// Set this **before** writing the load value it is meant to govern; a value written while this
+    /// is off went to the register rather than to the shadow, and turning it on afterwards leaves the
+    /// shadow holding its reset value to be transferred at the next zero event. The TRM also asks for
+    /// the counter to be running when this changes.
+    pub fn set_shadow_load(&mut self, enabled: bool) {
+        self.regs().commonregs(0).gctl().modify(|w| w.set_shdwlden(enabled));
+    }
+}
+
+impl<T: ShadowCompareInstance> Timer<'_, T> {
+    /// Choose when a write to `channel`'s compare register reaches it.
+    ///
+    /// [`CompareUpdate::Immediately`] is the reset behaviour and races the counter: a duty written
+    /// after the counter has passed the old compare value loses that edge, so the period in flight
+    /// comes out the wrong width. Any other setting buffers the write and applies it at the event
+    /// named, which gives the caller a whole period instead of a deadline.
+    ///
+    /// Set this **before** writing the compare value it is meant to govern. Written the other way
+    /// round the value reaches the register rather than the shadow, and the shadow's reset value is
+    /// what the update event then transfers — an output that is wrong and reports nothing.
+    pub fn set_compare_update(&mut self, channel: Channel, update: super::CompareUpdate) {
+        self.regs()
+            .counterregs(0)
+            .ccctl(channel.index())
+            .modify(|w| w.set_ccupd(update.into()));
+    }
+
+    /// Choose when a write to `channel`'s action register reaches it.
+    ///
+    /// The same buffering as [`set_compare_update`](Self::set_compare_update), applied to what a
+    /// match does to the pin rather than to the value matched against. Carries the same ordering
+    /// requirement.
+    pub fn set_action_update(&mut self, channel: Channel, update: super::CompareUpdate) {
+        self.regs()
+            .counterregs(0)
+            .ccctl(channel.index())
+            .modify(|w| w.set_ccactupd(update.into()));
+    }
+}
+
 /// What each of a channel's four counter events does to its output.
 ///
 /// The output is whatever the last event to fire left behind, so these are read and written together.
@@ -310,6 +345,17 @@ impl OutputSource {
 ///
 /// Powers the instance up, programs a [`Config`] and stops there. It starts no counter, waits for
 /// nothing and installs no interrupt handler.
+/// Low-level timer driver.
+///
+/// # The instance parameter duplicates every method body
+///
+/// `T` puts a copy of each method in the binary for every instance it is used with, and a chip has
+/// several of these. Nothing shows it in a symbol listing: the bodies inline into the caller.
+///
+/// **Erasing it is not automatically the fix.** Monomorphising folds the register addresses to
+/// immediates, so a shared body has to carry them as arguments instead — measured on the timer, that
+/// lost at every instance count a part reaches. [`simple_pwm::SimplePwm`](crate::tim::simple_pwm::SimplePwm)
+/// carries the figures and what did pay.
 pub struct Timer<'d, T: Instance> {
     _timer: Peri<'d, T>,
 
@@ -479,67 +525,6 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// compare writes and not load writes.
     pub fn has_shadow_compare(&self) -> bool {
         T::info().shadow_ccs
-    }
-
-    /// Hold `LOAD` writes until the counter next reaches zero, instead of applying them at once.
-    ///
-    /// A period changed part way through one then takes effect at the boundary rather than
-    /// truncating or extending the period in flight.
-    ///
-    /// Set this **before** writing the load value it is meant to govern; a value written while this
-    /// is off went to the register rather than to the shadow, and turning it on afterwards leaves the
-    /// shadow holding its reset value to be transferred at the next zero event. The TRM also asks for
-    /// the counter to be running when this changes.
-    ///
-    /// Panics on an instance without the capability rather than accepting a write that does nothing.
-    pub fn set_shadow_load(&mut self, enabled: bool) {
-        assert!(
-            self.has_shadow_load(),
-            "this timer instance has no shadow load register"
-        );
-
-        self.regs().commonregs(0).gctl().modify(|w| w.set_shdwlden(enabled));
-    }
-
-    /// Choose when a write to `channel`'s compare register reaches it.
-    ///
-    /// [`CompareUpdate::Immediately`] is the reset behaviour and races the counter: a duty written
-    /// after the counter has passed the old compare value loses that edge, so the period in flight
-    /// comes out the wrong width. Any other setting buffers the write and applies it at the event
-    /// named, which gives the caller a whole period instead of a deadline.
-    ///
-    /// Set this **before** writing the compare value it is meant to govern. Written the other way
-    /// round the value reaches the register rather than the shadow, and the shadow's reset value is
-    /// what the update event then transfers — an output that is wrong and reports nothing.
-    ///
-    /// Panics on an instance without shadow compare rather than accepting a write that does nothing.
-    pub fn set_compare_update(&mut self, channel: Channel, update: super::CompareUpdate) {
-        assert!(
-            self.has_shadow_compare(),
-            "this timer instance has no shadow compare register"
-        );
-
-        self.regs()
-            .counterregs(0)
-            .ccctl(channel.index())
-            .modify(|w| w.set_ccupd(update.into()));
-    }
-
-    /// Choose when a write to `channel`'s action register reaches it.
-    ///
-    /// The same buffering as [`set_compare_update`](Self::set_compare_update), applied to what a
-    /// match does to the pin rather than to the value matched against. Carries the same ordering
-    /// requirement.
-    pub fn set_action_update(&mut self, channel: Channel, update: super::CompareUpdate) {
-        assert!(
-            self.has_shadow_compare(),
-            "this timer instance has no shadow compare register"
-        );
-
-        self.regs()
-            .counterregs(0)
-            .ccctl(channel.index())
-            .modify(|w| w.set_ccactupd(update.into()));
     }
 
     /// Change what a compare match does to `channel`'s pin.
@@ -1063,11 +1048,7 @@ impl From<Event> for Events {
 // The channel handles have the instance erased, so they reach these with a bare register block.
 
 pub(crate) fn enable_interrupt(regs: Tim, event: Event, enable: bool) {
-    let mask = event.mask().0;
-
-    regs.cpu_int(0).imask().modify(|w| {
-        w.0 = if enable { w.0 | mask } else { w.0 & !mask };
-    });
+    enable_interrupts(regs, Events::of(event), enable);
 }
 
 pub(crate) fn is_pending(regs: Tim, event: Event) -> bool {

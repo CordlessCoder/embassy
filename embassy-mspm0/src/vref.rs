@@ -379,14 +379,15 @@ impl<'d, T: Instance> Drop for Vref<'d, T> {
 /// make that safe.
 const fn startup_cycles(mclk: u32) -> u32 {
     let us = STARTUP_NS.div_ceil(1_000);
-    let (whole_mhz, rem_hz) = divmod_no_builtin(mclk, 1_000_000, MHZ_BITS);
-
-    // A clock past what the loop can represent would get a truncated quotient and a short wait.
-    // Waiting far too long hands the reference over late, which is safe; waiting too little hands it
-    // over unsettled, which is not.
-    if whole_mhz > MAX_MHZ {
+    // Checked on the way in. `divmod_no_builtin` cannot return a quotient wider than the bit count
+    // it is given, so a check on its output can never fire — past the bound it hands back a truncated
+    // quotient and an oversized remainder, which is exactly the short wait to avoid. Waiting far too
+    // long hands the reference over late, which is safe; too little hands it over unsettled.
+    if mclk >= (MAX_MHZ + 1) * 1_000_000 {
         return u32::MAX;
     }
+
+    let (whole_mhz, rem_hz) = divmod_no_builtin(mclk, 1_000_000, MHZ_BITS);
 
     // `us * whole_mhz` is at most 4095 * 1023 and `us * rem_hz` at most 4095 * 999_999, both inside
     // `u32`. `us` is a constant here, so its bound is the `const` assertion below rather than a
