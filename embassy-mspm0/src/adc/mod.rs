@@ -411,7 +411,7 @@ impl Config {
     /// amplifier at all, which is why an empty table is a real answer rather than a gap.
     ///
     /// Every published figure is measured with `CFGBASE.GBW` at its high setting, which is what
-    /// [`opa::Config`](crate::opa::Config) defaults to. Selecting the low setting puts the
+    /// `opa::Config` defaults to. Selecting the low setting puts the
     /// amplifier outside all of them.
     pub const fn pga_sample_min_ns(gain: u8) -> Option<u32> {
         let table = crate::_generated::ADC_PGA_SAMPLE_NS;

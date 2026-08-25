@@ -21,7 +21,7 @@
 //! Dropping one of the `wait_for_*` futures undoes the arm completely: the pin is masked, its
 //! `FASTWAKE` request is withdrawn, its latched status bit is dropped and the waiter is unlinked. So
 //! an edge that arrived while the wait was live is **not** kept for a later one — a caller that needs
-//! the edge either way should use the manual API on a [`Blocking`](crate::mode::Blocking) pin, where
+//! the edge either way should use the manual API on a [`Blocking`] pin, where
 //! the latch is the caller's to read.
 
 #![macro_use]
@@ -735,7 +735,7 @@ const DETECT_BOTH_EDGES: bool = cfg!(gpio_err_01);
 
 /// Which edge to detect.
 ///
-/// Pass this to [`Flex::wait_for_edge`] where the edge is chosen at run time, or to
+/// Pass this to `Flex::wait_for_edge` where the edge is chosen at run time, or to
 /// [`Flex::enable_interrupt`] where the handler is the application's own. The three `wait_for_*_edge`
 /// methods are the same wait with the edge fixed, and cost a caller who knows it at compile time
 /// nothing extra.

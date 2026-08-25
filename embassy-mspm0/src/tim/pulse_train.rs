@@ -590,10 +590,14 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         act(self.idle)
     }
 
-    /// Hold the output at the idle level through the forced-output override.
+    /// Leave the forced-output override at the idle level, and put the channel back on the pin.
     ///
-    /// The override is what expresses a level no compare value can, and it is the only thing holding
-    /// the pin between trains — the counter is stopped, so the compare actions never fire.
+    /// **The override is not what holds the pin between trains.** A forced action is evaluated at a
+    /// period boundary and a stopped counter never reaches one, so this write never asserts. What
+    /// holds a stopped channel is `OCTL.CCPIV`, set once in [`new`](Self::new).
+    ///
+    /// Writing it anyway is state hygiene: it stops a force left over from a cancelled train being
+    /// evaluated by the first boundary of the next one, which is why `arm` clears it before starting.
     fn park(&mut self) {
         self.timer.set_forced_output(self.channel, Some(self.idle));
         self.timer.set_output_enabled(self.channel, true);
@@ -606,6 +610,11 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
 /// `select!`, stops the train and parks the output, so the pin never rests part way through an
 /// element. The elements stay borrowed for as long as this value lives, because the handler is
 /// reading them.
+///
+/// **The destructor is what ends that read.** The handler reaches the elements through a raw pointer
+/// held in a `static`, so leaking this with [`mem::forget`](core::mem::forget) ends the borrow without
+/// stopping the train, and the handler goes on dereferencing storage the caller is then free to reuse.
+/// That is the same bargain every DMA driver in this crate takes.
 #[must_use = "dropping this stops the train at once; await it, or hold it while the train runs"]
 pub struct ActiveTrain<'a, 'd, T: ShadowLoadInstance + ShadowCompareInstance> {
     train: &'a mut PulseTrain<'d, T>,

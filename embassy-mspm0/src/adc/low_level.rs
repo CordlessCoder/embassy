@@ -62,7 +62,7 @@ use crate::sysctl::SleepLevel;
 /// A condition the instance can raise its interrupt on.
 ///
 /// One variant per source this driver's configuration can reach. `DMADONE` is not among them —
-/// [`configure`] clears `CTL2.DMAEN` and nothing exposes it — and neither is the window comparator's
+/// `configure` clears `CTL2.DMAEN` and nothing exposes it — and neither is the window comparator's
 /// `INIFG`, which is a mask bit rather than a source.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

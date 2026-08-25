@@ -345,12 +345,12 @@ impl<'d, T: General2ChannelInstance> PulseWidth<'d, T> {
     /// Both captures have to be read before the next leading edge overwrites the first one. The
     /// slack is the *gap* between the pulse ending and the next one starting, not the period, and
     /// what has to fit inside it is the interrupt handler — which is why the handler does the
-    /// reading and this only collects the result. **Measured at 3 us on an LP-MSPM0L1306**, against
-    /// 17 us for the same driver reading the registers from here.
+    /// reading and this only collects the result. That is about 3 us of deadline, against about 17
+    /// for the same driver reading the registers from here.
     ///
     /// Missing the deadline has a signature rather than being noise: the leading register holds the
     /// *next* pulse's start, so the subtraction returns `counter_range - gap` — a value a few ticks
-    /// below [`Word::MAX`](crate::tim::Word::MAX). A caller measuring pulses far shorter than the
+    /// below [`Word::MAX`]. A caller measuring pulses far shorter than the
     /// counter's range can reject it with one comparison, which is a bound this driver does not
     /// have.
     pub fn wait_for_width(&mut self) -> impl Future<Output = T::Word> {

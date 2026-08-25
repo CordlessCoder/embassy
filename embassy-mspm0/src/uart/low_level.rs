@@ -56,7 +56,7 @@
 //! pay it back. A method that is public and *not* generic is compiled into this crate's rlib whether
 //! or not any binary calls it, and it takes a `&self` holding the instance's `&'static State`. That
 //! makes the static's address escape into a function the optimiser cannot see the end of, so the
-//! clock [`configure`] stores there can never be proved dead — and the clock-tree read behind it,
+//! clock `configure` stores there can never be proved dead — and the clock-tree read behind it,
 //! and the 40-byte `CLOCKS` static behind that.
 //!
 //! Measured on a blocking-only transmit binary: 12 bytes of text and 40 bytes of `.data`, on a
@@ -95,7 +95,7 @@ const RX_TIMEOUT_BITS: u8 = 8;
 /// LIN capture, the address match, the DMA completions and the edge detectors — and every one of them
 /// needs a mode [`Config`] cannot select, so arming it here would read back set and never fire.
 ///
-/// `NERR`, the majority-voting disagreement, is left out for the same reason: [`configure`] clears
+/// `NERR`, the majority-voting disagreement, is left out for the same reason: `configure` clears
 /// `CTL0.MAJVOTE` and nothing exposes it yet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -106,7 +106,7 @@ pub enum Event {
 
     /// Reception stopped with the receive FIFO below its level, so [`Event::Rx`] will not arrive.
     ///
-    /// Needs a FIFO level above one entry to be reachable at all — [`configure`] leaves `RXTOSEL` at
+    /// Needs a FIFO level above one entry to be reachable at all — `configure` leaves `RXTOSEL` at
     /// zero without one, which is what disables the counter.
     RxTimeout,
 

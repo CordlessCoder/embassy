@@ -784,7 +784,7 @@ fn enable_hal_interrupts(cs: critical_section::CriticalSection, priority: Option
 /// }
 /// ```
 ///
-/// [`low_power::sleep`] is the same sleep without the guard rail below, for a caller that has already
+/// `low_power::sleep` is the same sleep without the guard rail below, for a caller that has already
 /// established it.
 ///
 /// # Panics

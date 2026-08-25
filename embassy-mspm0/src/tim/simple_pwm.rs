@@ -495,6 +495,13 @@ impl<'d> SimplePwmChannel<'d> {
     /// Set the duty in ticks, saturating at [`Self::max_duty`].
     ///
     /// Takes effect immediately, so a change mid-period shortens or lengthens that one period.
+    ///
+    /// **The two extremes are the exception.** 0% and 100% are a forced-output action rather than a
+    /// compare value, and SLAU846E 34.2.5.3 defers a forced action to the end of the period in
+    /// flight. So a write of either asserts at the next boundary. For a PWM that is arguably the
+    /// wanted behaviour; it matters to a caller writing 0% and expecting the pin low on the next
+    /// instruction. The latency has not been measured — `TESTING.md` C34 read the levels in steady
+    /// state, which cannot tell a deferred write from an immediate one.
     #[inline]
     pub fn set_duty(&mut self, ticks: u32) {
         set_duty(self.regs, self.channel, ticks);
@@ -671,7 +678,6 @@ mod tests {
     }
 }
 
-/// Duty value that means 100%, for the channel handles that have no instance to ask.
 /// Program one channel's compare block for PWM output, following SLAU847F 28.2.5.2.1.
 ///
 /// Takes the register block rather than `&mut SimplePwm<T>` so that one copy serves every timer
@@ -806,6 +812,7 @@ pub(crate) fn set_duty(regs: Tim, channel: Channel, ticks: u32) {
         .modify(|w| w.set_swfrcact(force));
 }
 
+/// Duty value that means 100%, for the channel handles that have no instance to ask.
 pub(crate) fn max_duty(regs: Tim) -> u32 {
     let load = regs.counterregs(0).load().read();
 

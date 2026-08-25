@@ -235,7 +235,7 @@ impl<T: ShadowLoadInstance> Timer<'_, T> {
 impl<T: ShadowCompareInstance> Timer<'_, T> {
     /// Choose when a write to `channel`'s compare register reaches it.
     ///
-    /// [`CompareUpdate::Immediately`] is the reset behaviour and races the counter: a duty written
+    /// [`CompareUpdate::Immediately`](super::CompareUpdate::Immediately) is the reset behaviour and races the counter: a duty written
     /// after the counter has passed the old compare value loses that edge, so the period in flight
     /// comes out the wrong width. Any other setting buffers the write and applies it at the event
     /// named, which gives the caller a whole period instead of a deadline.

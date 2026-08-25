@@ -656,9 +656,10 @@ const MAX_MHZ: u32 = (1 << MHZ_BITS) - 1;
 ///
 /// The divisors above are constants and it makes no difference: ARMv6-M has no widening multiply, so
 /// the compiler cannot turn a constant divisor into a reciprocal multiply and reaches for
-/// `__aeabi_uidiv` instead. That is 252 bytes of `compiler_builtins` in every binary that builds a
-/// comparator, for arithmetic whose quotient never exceeds ten bits. `i2c`'s
-/// `solve_clock_low_timeout` does the same thing for the same reason.
+/// `__aeabi_uidiv` instead. That is 408 bytes of `compiler_builtins` in every binary that builds a
+/// comparator — `specialized_div_rem::u32_div_rem` is 398 and the ABI thunk 10, measured with `nm -S`
+/// — for arithmetic whose quotient never exceeds ten bits. `i2c`'s `solve_clock_low_timeout` does the
+/// same thing for the same reason.
 ///
 /// `bits` bounds the quotient and the caller proves it; `d << (bits - 1)` must not overflow.
 const fn divmod_no_builtin(n: u32, d: u32, bits: u32) -> (u32, u32) {

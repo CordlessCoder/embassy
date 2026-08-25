@@ -114,7 +114,7 @@ impl<'d> Channel<'d> {
     /// considers free again.
     ///
     /// `dst` bounds the memory written, not the number of words: under
-    /// [`TransferOptions::dst_stride`] this moves `dst.len() / stride` words spread across the whole
+    /// `TransferOptions::dst_stride` this moves `dst.len() / stride` words spread across the whole
     /// of `dst`, so a strided read wants a destination `stride` times longer than the data.
     pub unsafe fn read<'a, SW: Word, DW: Word>(
         &'a mut self,
@@ -179,7 +179,7 @@ impl<'d> Channel<'d> {
     /// DMA reading memory the borrow checker considers free again.
     ///
     /// `src` bounds the memory read, not the number of words: under
-    /// [`TransferOptions::src_stride`] this moves `src.len() / stride` words taken from across the
+    /// `TransferOptions::src_stride` this moves `src.len() / stride` words taken from across the
     /// whole of `src`.
     pub unsafe fn write<'a, SW: Word, DW: Word>(
         &'a mut self,

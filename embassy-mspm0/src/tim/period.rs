@@ -12,7 +12,7 @@
 //! - `period` is incremented "midway" between overflows (at half the counter's range)
 //!
 //! When `period` is even the counter is in the lower half of its range, when odd the upper half. That
-//! is what lets [`PeriodCounter::now`] return the right value even if it races an overflow, and it is
+//! is what lets `PeriodCounter::now` return the right value even if it races an overflow, and it is
 //! why **both events are load-bearing and neither may be masked**.
 //!
 //! `period` is a 32-bit integer, so it overflows after 2^32 half-periods: 136 years at 2^15 ticks, and

@@ -26,8 +26,11 @@
 //! # Two things that are not the caller's to get right
 //!
 //! **`I2C_ERR_13`.** A controller must let the address phase settle before `CSR` means anything, and
-//! [`I2c::settle_after_start`] is that wait, sized from the configured bus speed. `start_write` and
-//! `start_read` do it for you.
+//! [`I2c::settle_after_start`] is that wait, sized from the configured bus speed. **Call it yourself
+//! after `start_write` or `start_read`** — they do not, and polling `CSR` any sooner reads it before
+//! the controller has raised `BUSY`, so the wait falls straight through and a NACK goes unnoticed.
+//! The mode drivers call it on the line after every start; this is one of the two things the module
+//! heading says are yours rather than theirs.
 //!
 //! **The clock solution.** [`Timing::solve`](super::Timing) is `const`, so a fixed bus speed costs no
 //! run-time arithmetic — and the divider bands, the headroom check and the clock-low timeout are all
@@ -880,7 +883,7 @@ impl<'d> I2c<'d> {
     /// through and the caller checks for errors against a transfer that has not happened yet. A NACK then
     /// goes unnoticed and the transfer is reported as a success.
     #[inline]
-    pub(crate) fn settle_after_start(&self) {
+    pub fn settle_after_start(&self) {
         cortex_m::asm::delay(self.resolved.settle_cycles as u32);
     }
 

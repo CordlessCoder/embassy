@@ -332,3 +332,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - breaking: mspm0/flash: `Error` is `#[non_exhaustive]`, the last error enum in the crate that was not
 - docs: mspm0: seven modules say what dropping a wait does, which differs between them — a dropped DMA transfer waits for the channel to stop, a dropped GPIO wait discards a latched edge, and a cancelled I2C target read stretches SCL
 - mspm0/tim: the shadow-register setters are bounded by the capability traits, so an instance that cannot buffer a write is a compile error rather than a panic
+- feat: mspm0/i2c: `low_level::I2c::settle_after_start` is public, which the module documentation already told callers to rely on while it was private
+- docs: mspm0: every intra-doc link resolves on every feature set, including the ones without `rt`

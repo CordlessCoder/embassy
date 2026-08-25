@@ -411,7 +411,7 @@ const MAX_MHZ: u32 = (1 << MHZ_BITS) - 1;
 ///
 /// The divisors above are constants and it makes no difference: ARMv6-M has no widening multiply, so
 /// the compiler cannot turn a constant divisor into a reciprocal multiply and reaches for
-/// `__aeabi_uidiv` instead. That is 442 bytes of `compiler_builtins` in every binary that builds a
+/// `__aeabi_uidiv` instead. That is 408 bytes of `compiler_builtins` in every binary that builds a
 /// VREF, for arithmetic whose quotient never exceeds twelve bits. `comp::wait_cycles` and `i2c`'s
 /// `solve_clock_low_timeout` do the same thing for the same reason.
 ///

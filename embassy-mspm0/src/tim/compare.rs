@@ -341,7 +341,6 @@ pub struct CompareChannel<'d, W: Word> {
     _phantom: PhantomData<(&'d mut (), W)>,
 }
 
-/// Which event a match raises in `mode`.
 /// Put one channel in compare mode, wiring its pin only if it was given one.
 ///
 /// Takes the register block rather than `&mut Compare<T>` so that one copy serves every timer
@@ -385,6 +384,7 @@ pub(crate) fn set_action(regs: Tim, channel: Channel, action: CompareAction) {
     });
 }
 
+/// Which event a match on `channel` raises when the counter runs in `direction`.
 const fn event(channel: Channel, direction: CountingDirection) -> Event {
     match direction {
         CountingDirection::Up => Event::CaptureOrCompareUp(channel),
