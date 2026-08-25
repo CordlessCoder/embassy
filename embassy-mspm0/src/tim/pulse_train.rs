@@ -24,6 +24,7 @@ use crate::gpio::{AnyPin, Level, PfType, Pull, SealedPin};
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::pac::tim::vals::{Act, Swfrcact};
 use crate::tim::low_level::{self, Config as TimerConfig, Event, Timer};
+use crate::tim::simple_pwm::Polarity;
 use crate::tim::{
     Channel, ClockSel, CompareUpdate, CountingMode, Instance, ShadowCompareInstance, ShadowLoadInstance, TimerChannel,
     TimerPin, Word, simple_pwm,
@@ -233,8 +234,35 @@ pub struct Config {
     /// Keep counting while the debugger holds the core halted.
     pub free_run_in_debug: bool,
 
-    /// Level the output rests at between trains, and the complement of a pulse's active level.
-    pub idle: Level,
+    /// What the pin does between trains.
+    pub idle: Idle,
+
+    /// Which level a pulse's `high` time drives the pin to.
+    ///
+    /// [`Polarity::ActiveLow`] inverts the whole waveform, so a train begins with a low period and
+    /// ends with a high one. That is how a sequence starting on a falling edge is expressed — there
+    /// is no per-element polarity, and there does not need to be.
+    pub polarity: Polarity,
+}
+
+/// What a [`PulseTrain`] does with its pin between trains.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Idle {
+    /// Drive it low.
+    #[default]
+    Low,
+
+    /// Drive it high.
+    High,
+
+    /// Stop driving it, so something else on the line can.
+    ///
+    /// The pin is disconnected between trains and muxed back to the timer when one starts. **It is
+    /// still driven briefly at the end of a train**: the closing boundary acts in hardware, and the
+    /// release cannot happen until the handler runs, so the resting level appears on the pin for the
+    /// handler's own latency first.
+    HighImpedance,
 }
 
 impl Config {
@@ -249,7 +277,8 @@ impl Config {
             divider: 1,
             prescaler: 1,
             free_run_in_debug: false,
-            idle: Level::Low,
+            idle: Idle::Low,
+            polarity: Polarity::ActiveHigh,
         }
     }
 
@@ -283,8 +312,15 @@ impl Config {
 
     /// Set [`idle`](Self::idle).
     #[must_use]
-    pub const fn with_idle(mut self, idle: Level) -> Self {
+    pub const fn with_idle(mut self, idle: Idle) -> Self {
         self.idle = idle;
+        self
+    }
+
+    /// Set [`polarity`](Self::polarity).
+    #[must_use]
+    pub const fn with_polarity(mut self, polarity: Polarity) -> Self {
+        self.polarity = polarity;
         self
     }
 }
@@ -304,7 +340,18 @@ pub struct PulseTrain<'d, T: Instance> {
     timer: Timer<'d, T>,
     pin: Peri<'d, AnyPin>,
     channel: Channel,
+    /// The resting level as the **signal generator** sees it, which is the caller's asked-for pin
+    /// level already complemented for [`Polarity::ActiveLow`].
+    ///
+    /// `CCPIV`, the compare actions and the forced output all sit upstream of `CCPOINV` — the TRM
+    /// calls `CCPIV` "the logical value put on the signal generator state" — so every one of them is
+    /// written pre-inversion and the complement has to happen once, here.
     idle: Level,
+    /// Whether the pin is disconnected between trains rather than driven.
+    release: bool,
+    /// What to mux the pin back to when a train starts, for [`Idle::HighImpedance`].
+    pf: u8,
+    pull: Pull,
     /// `divider * prescaler`, which is what one tick costs in source clocks. Only the cancel repair's
     /// spin reads it, and a plain multiply there cannot overflow: `divider` is asserted at 8 or less
     /// and a `u16` prescaler leaves the product inside `u32`. A checked multiply would be a widening
@@ -324,7 +371,8 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
-        pin.set_as_pf(pin.pf_num(), PfType::output(pull, false));
+        let pf = pin.pf_num();
+        pin.set_as_pf(pf, PfType::output(pull, false));
 
         let mut timer = Timer::new(
             timer,
@@ -339,17 +387,34 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         );
 
         timer.setup_pwm_channel(C::CHANNEL, CountingMode::EdgeAlignedUp);
+        timer.set_polarity(C::CHANNEL, config.polarity);
+
+        // Inverting the whole waveform is what makes a train that starts low and ends high, so there
+        // is no per-element polarity. It also inverts the resting level, which is why the generator
+        // side of it is worked out once here rather than at each write.
+        let invert = matches!(config.polarity, Polarity::ActiveLow);
+        let idle = match config.idle {
+            // Wherever the last pulse left the generator, so releasing adds no edge of its own.
+            Idle::HighImpedance => Level::Low,
+            Idle::Low if invert => Level::High,
+            Idle::Low => Level::Low,
+            Idle::High if invert => Level::Low,
+            Idle::High => Level::High,
+        };
 
         // `CCPIV` is where the pin sits when the signal generator is not driving it, which is every
         // moment the counter is stopped. The forced-output override cannot do this job: it is an
         // action the counter evaluates, so it holds nothing once the counter halts.
-        timer.set_idle_level(C::CHANNEL, config.idle);
+        timer.set_idle_level(C::CHANNEL, idle);
 
         let mut this = Self {
             timer,
             pin: pin.into(),
             channel: C::CHANNEL,
-            idle: config.idle,
+            idle,
+            release: matches!(config.idle, Idle::HighImpedance),
+            pf,
+            pull,
             tick_divisor: config.divider as u32 * config.prescaler as u32,
         };
 
@@ -434,6 +499,11 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         let state = T::train_state();
         let r = self.timer.regs();
         let channel = self.channel;
+
+        // Back on the timer before anything drives it. A released pin is a GPIO input until here.
+        if self.release {
+            self.pin.set_as_pf(self.pf, PfType::output(self.pull, false));
+        }
 
         low_level::enable_interrupt(r, Event::Zero, false);
 
@@ -601,6 +671,12 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
     fn park(&mut self) {
         self.timer.set_forced_output(self.channel, Some(self.idle));
         self.timer.set_output_enabled(self.channel, true);
+
+        // `ODIS` holds the output at a level; it does not stop driving it. Letting go of the line
+        // means taking the pin off the timer altogether.
+        if self.release {
+            self.pin.set_as_disconnected();
+        }
     }
 }
 

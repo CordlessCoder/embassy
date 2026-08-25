@@ -24,9 +24,9 @@ use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_mspm0::bind_interrupts;
-use embassy_mspm0::gpio::{Level, Pull};
+use embassy_mspm0::gpio::Pull;
 use embassy_mspm0::peripherals::TIMG4;
-use embassy_mspm0::tim::pulse_train::{Config as TrainConfig, InterruptHandler, Pulse, PulseTrain};
+use embassy_mspm0::tim::pulse_train::{Config as TrainConfig, Idle, InterruptHandler, Pulse, PulseTrain};
 use embassy_time::{Duration, Timer};
 use panic_probe as _;
 
@@ -62,7 +62,7 @@ async fn main(_spawner: Spawner) -> ! {
         TrainConfig::new()
             .with_divider(8)
             .with_prescaler(4)
-            .with_idle(Level::Low),
+            .with_idle(Idle::Low),
     );
 
     info!("emitting at {} Hz", train.timer().tick_frequency());
