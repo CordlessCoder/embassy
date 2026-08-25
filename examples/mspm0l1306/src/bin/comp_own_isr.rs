@@ -64,7 +64,7 @@ impl interrupt_group::Handler<interrupt_group::COMP0> for RailHandler {
 
             // Clear before arming the other edge. The flags are sticky, so one left over re-enters
             // this handler as soon as the arm below lands.
-            comp.clear_interrupt();
+            comp.clear_pending();
 
             match edge {
                 Edge::Rising | Edge::Any => {
@@ -104,7 +104,7 @@ async fn main(_spawner: Spawner) -> ! {
     let mut comp = unwrap!(Comp::new(p.COMP0, Some(p.PA26), negative, config));
 
     comp.set_dac_code(DacCode::new(LOW_CODE));
-    comp.clear_interrupt();
+    comp.clear_pending();
     comp.enable_edge_interrupt(Edge::Rising);
 
     COMP.lock(|slot| slot.replace(Some(comp)));

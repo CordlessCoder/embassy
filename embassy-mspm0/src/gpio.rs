@@ -194,7 +194,7 @@ impl<'d> Flex<'d, Blocking> {
     /// ```rust,ignore
     /// #[task(binds = GROUP1, local = [button])]
     /// fn on_group1(cx: on_group1::Context) {
-    ///     if cx.local.button.take_pending() {
+    ///     if cx.local.button.take_active() {
     ///         // ...
     ///     }
     ///
@@ -265,8 +265,8 @@ impl<'d> Flex<'d, Blocking> {
     /// What a handler wants: reading and clearing separately drops an edge that arrives between the
     /// two, where this reports it on the next entry.
     #[inline]
-    pub fn take_pending(&mut self) -> bool {
-        self.pin.take_pending()
+    pub fn take_active(&mut self) -> bool {
+        self.pin.take_active()
     }
 }
 
@@ -1034,10 +1034,10 @@ impl<'d> Input<'d, Blocking> {
         self.pin.clear_pending();
     }
 
-    /// Whether an edge is latched, clearing it. See [`Flex::take_pending`].
+    /// Whether an edge is latched, clearing it. See [`Flex::take_active`].
     #[inline]
-    pub fn take_pending(&mut self) -> bool {
-        self.pin.take_pending()
+    pub fn take_active(&mut self) -> bool {
+        self.pin.take_active()
     }
 }
 
@@ -1261,10 +1261,10 @@ impl<'d> OutputOpenDrain<'d, Blocking> {
         self.pin.clear_pending();
     }
 
-    /// Whether an edge is latched, clearing it. See [`Flex::take_pending`].
+    /// Whether an edge is latched, clearing it. See [`Flex::take_active`].
     #[inline]
-    pub fn take_pending(&mut self) -> bool {
-        self.pin.take_pending()
+    pub fn take_active(&mut self) -> bool {
+        self.pin.take_active()
     }
 }
 
@@ -1406,7 +1406,7 @@ impl AnyPin {
     /// # Safety
     /// - `pin_port` should not be in use by another driver, with one exception: a handle taken only
     ///   to reach [`is_pending`](Self::is_pending), [`clear_pending`](Self::clear_pending) or
-    ///   [`take_pending`](Self::take_pending) may name a pin a driver already holds. Those three
+    ///   [`take_active`](Self::take_active) may name a pin a driver already holds. Those three
     ///   touch `RIS`, which is read-only, and `ICLR`, which is write-one-to-clear — neither is a
     ///   read-modify-write, so neither can disturb the port's other pins or a configuration write
     ///   the owning driver is making. Nothing else here is safe to alias, and in particular a second
@@ -1456,7 +1456,7 @@ impl AnyPin {
     /// [`Flex::enable_interrupt`] for the order to service it in when this crate's own edge waits
     /// share the port.
     #[inline]
-    pub fn take_pending(&self) -> bool {
+    pub fn take_active(&self) -> bool {
         let block = self.block();
         let bit = self.bit_index();
 

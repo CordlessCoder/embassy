@@ -60,7 +60,7 @@ mod app {
     /// be told, or it holds its line asserted.
     #[task(binds = GROUP1, priority = 1, local = [button, led])]
     fn on_edge(cx: on_edge::Context) {
-        if cx.local.button.take_pending() {
+        if cx.local.button.take_active() {
             cx.local.led.toggle();
         }
 

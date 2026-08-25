@@ -235,9 +235,12 @@ impl<'d, T: Instance> BasicTimer<'d, T> {
         });
     }
 
-    /// Whether `event` has fired on `counter` since it was last cleared.
+    /// Whether `event` has fired on `counter` since it was last cleared, whether or not it is
+    /// unmasked.
     #[inline]
     pub fn is_pending(&self, counter: u8, event: Event) -> bool {
+        assert!(counter < T::COUNTERS, "this instance does not have that many counters");
+
         let counter = counter as usize;
         let ris = T::regs().cpu_int(0).ris().read();
         match event {
@@ -250,12 +253,42 @@ impl<'d, T: Instance> BasicTimer<'d, T> {
     /// Acknowledge `event` on `counter`.
     #[inline]
     pub fn clear_pending(&self, counter: u8, event: Event) {
+        assert!(counter < T::COUNTERS, "this instance does not have that many counters");
+
         let counter = counter as usize;
         T::regs().cpu_int(0).iclr().write(|w| match event {
             Event::Overflow => w.set_cntovf(counter, true),
             Event::Started => w.set_cntstrt(counter, true),
             Event::Stopped => w.set_cntstop(counter, true),
         });
+    }
+
+    /// Whether `event` is asserting `counter`'s interrupt line, clearing it if so.
+    ///
+    /// The masked status rather than the raw one, so this answers what a handler was entered for
+    /// where [`is_pending`](Self::is_pending) also reports a source nothing armed.
+    #[inline]
+    pub fn take_active(&self, counter: u8, event: Event) -> bool {
+        assert!(counter < T::COUNTERS, "this instance does not have that many counters");
+
+        let counter = counter as usize;
+        let mis = T::regs().cpu_int(0).mis().read();
+
+        let active = match event {
+            Event::Overflow => mis.cntovf(counter),
+            Event::Started => mis.cntstrt(counter),
+            Event::Stopped => mis.cntstop(counter),
+        };
+
+        if active {
+            T::regs().cpu_int(0).iclr().write(|w| match event {
+                Event::Overflow => w.set_cntovf(counter, true),
+                Event::Started => w.set_cntstrt(counter, true),
+                Event::Stopped => w.set_cntstop(counter, true),
+            });
+        }
+
+        active
     }
 
     /// Power the instance down and give the peripheral back, so another driver can claim it.

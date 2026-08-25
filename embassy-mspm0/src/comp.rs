@@ -810,7 +810,7 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
     ///
     /// impl interrupt_group::Handler<interrupt_group::COMP0> for RailHandler {
     ///     unsafe fn on_interrupt() {
-    ///         // ... clear_interrupt, then set_dac_code, then arm the other edge
+    ///         // ... clear_pending, then set_dac_code, then arm the other edge
     ///     }
     /// }
     ///
@@ -827,7 +827,7 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
     /// # Arming an edge does not clear the other one
     ///
     /// `RIS` is sticky. Alternating edges — which is what a threshold pair does — wants
-    /// [`clear_interrupt`](Self::clear_interrupt) first, or a flag left over from before re-enters
+    /// [`clear_pending`](Self::clear_pending) first, or a flag left over from before re-enters
     /// the handler the moment the other edge is armed. Clearing is left to the caller rather than
     /// folded in here, because doing it inside the arm would discard an edge that genuinely arrived
     /// while the handler was running.
@@ -866,7 +866,7 @@ impl<'d, T: Instance> Comp<'d, T, Blocking> {
     }
 
     /// Clear both edge flags.
-    pub fn clear_interrupt(&mut self) {
+    pub fn clear_pending(&mut self) {
         T::regs().cpu_int(0).iclr().write(|w| {
             w.set_compifg(true);
             w.set_compinvifg(true);
