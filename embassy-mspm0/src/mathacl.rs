@@ -102,6 +102,15 @@ pub struct Mathacl<'d> {
     _phantom: PhantomData<&'d mut ()>,
 }
 
+impl Drop for Mathacl<'_> {
+    fn drop(&mut self) {
+        self.regs.gprcm(0).pwren().write(|w| {
+            w.set_enable(false);
+            w.set_key(vals::PwrenKey::Key);
+        });
+    }
+}
+
 impl<'d> Mathacl<'d> {
     /// Mathacl initialization.
     pub fn new<T: Instance>(_instance: Peri<'d, T>) -> Self {
