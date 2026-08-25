@@ -344,21 +344,28 @@ impl Word for u128 {
     }
 }
 
+/// What went wrong with a transfer.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-/// What went wrong with a transfer.
+#[non_exhaustive]
 pub enum Error {
     /// The DMA transfer is too large.
     ///
     /// The hardware limits the DMA to 16384 transfers per channel at a time. This means that transferring
     /// 16384 `u8` and 16384 `u64` are equivalent, since the DMA must copy 16384 values.
     TooManyTransfers,
+
+    /// The transfer would move nothing.
+    ///
+    /// An empty buffer, or a strided transfer whose buffer is shorter than one stride.
+    NoTransfers,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::TooManyTransfers => write!(f, "too many transfers"),
+            Error::NoTransfers => write!(f, "no transfers"),
         }
     }
 }
@@ -584,6 +591,14 @@ const fn strided_count(len: usize, step: usize) -> usize {
 }
 
 fn verify_transfer(count: usize) -> Result<(), Error> {
+    // `SZ.SIZE` counts down and clears `EN` when it reaches zero, so a transfer programmed at zero has
+    // nothing to decrement and the TRM says no transfers occur. A strided transfer is the way in that
+    // is not obviously a caller mistake: the count is the buffer's span over the stride, so asking for
+    // every sixth word of a five-word buffer yields zero.
+    if count == 0 {
+        return Err(Error::NoTransfers);
+    }
+
     if count > (u16::MAX as usize) {
         return Err(Error::TooManyTransfers);
     }
