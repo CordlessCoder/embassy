@@ -252,6 +252,11 @@ pub struct PulseTrain<'d, T: Instance> {
     pin: Peri<'d, AnyPin>,
     channel: Channel,
     idle: Level,
+    /// `divider * prescaler`, which is what one tick costs in source clocks. Only the cancel repair's
+    /// spin reads it, and a plain multiply there cannot overflow: `divider` is asserted at 8 or less
+    /// and a `u16` prescaler leaves the product inside `u32`. A checked multiply would be a widening
+    /// one, which links `__aeabi_lmul`.
+    tick_divisor: u32,
 }
 
 impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
@@ -297,6 +302,7 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
             pin: pin.into(),
             channel: C::CHANNEL,
             idle: config.idle,
+            tick_divisor: config.divider as u32 * config.prescaler as u32,
         };
 
         this.park();
@@ -489,8 +495,11 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
             r.counterregs(0).ctrctl().modify(|w| w.set_en(true));
 
             // The enable-time zero event is what evaluates the idle actions. Bounded, so a part
-            // that never raises it cannot hang a `Drop`; the flag arrives within a few ticks.
-            for _ in 0..8192 {
+            // that never raises it cannot hang a `Drop`; the flag arrives within a few ticks — but a
+            // tick is `source / divider / prescaler`, so a fixed iteration count expires early on a
+            // slow tree and leaves the latch unrepaired. Scaling by the two dividers is a multiply
+            // where deriving it from the tick rate would link a software divider.
+            for _ in 0..8192 * self.tick_divisor {
                 if low_level::is_pending(r, Event::Zero) {
                     break;
                 }

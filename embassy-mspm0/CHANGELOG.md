@@ -309,3 +309,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - breaking: mspm0/i2c: `low_level::start_write` and `start_read` return `Result` and reject a length past the new `low_level::MAX_BURST_LEN`, where a longer one silently truncated into a twelve-bit field
 - fix: mspm0/i2c: bus recovery keeps each pin's pull and inversion, where clearing them left an internally pulled-up bus with nothing to raise SCL
 - fix: mspm0/adc: dropping the driver powers the instance down, where the analog block stayed biased after the peripheral was handed back
+- fix: mspm0/tim: a cancelled pulse train's output repair waits a tick rather than a fixed number of loops, so it no longer expires early on a slow clock tree
