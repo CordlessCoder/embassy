@@ -649,13 +649,19 @@ fn generate_groups() -> TokenStream {
         let name = Ident::new(&group.name.to_lowercase(), Span::call_site());
         let number = Literal::u32_unsuffixed(group.number);
         let doc = format!("Clear one of `{}`'s latched sources, and say which it was.", group.name);
+        // The index comes from the metadata rather than from the position: the numbering is the
+        // silicon's priority table and it has holes wherever a device leaves a source out, so counting
+        // the names gives the wrong answer on most devices.
         let sources = group
             .interrupts
             .iter()
-            .map(|interrupt| format!("`{}`", interrupt.name))
+            .map(|interrupt| format!("`{}` at {}", interrupt.name, interrupt.number + 1))
             .collect::<Vec<_>>()
             .join(", ");
-        let listing = format!("The sources on this group are {sources}, in `IIDX` order from 1.");
+        let listing = format!(
+            "The sources on this group are {sources}. An index with no source is a position this \
+             device does not implement."
+        );
 
         quote! {
             #[doc = #doc]
