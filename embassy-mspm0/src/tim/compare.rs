@@ -61,6 +61,7 @@ impl CompareAction {
 /// Output compare configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub struct Config {
     /// Counting direction, which selects the compare-up or compare-down event.
     pub direction: CountingDirection,
@@ -94,6 +95,41 @@ impl Config {
             prescaler: 1,
             free_run_in_debug: false,
         }
+    }
+
+    /// Set [`direction`](Self::direction).
+    #[must_use]
+    pub const fn with_direction(mut self, direction: CountingDirection) -> Self {
+        self.direction = direction;
+        self
+    }
+
+    /// Set [`clock`](Self::clock).
+    #[must_use]
+    pub const fn with_clock(mut self, clock: ClockSel) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Set [`divider`](Self::divider).
+    #[must_use]
+    pub const fn with_divider(mut self, divider: u8) -> Self {
+        self.divider = divider;
+        self
+    }
+
+    /// Set [`prescaler`](Self::prescaler).
+    #[must_use]
+    pub const fn with_prescaler(mut self, prescaler: u16) -> Self {
+        self.prescaler = prescaler;
+        self
+    }
+
+    /// Set [`free_run_in_debug`](Self::free_run_in_debug).
+    #[must_use]
+    pub const fn with_free_run_in_debug(mut self, free_run_in_debug: bool) -> Self {
+        self.free_run_in_debug = free_run_in_debug;
+        self
     }
 }
 

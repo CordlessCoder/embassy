@@ -164,6 +164,7 @@ impl PulseLevel {
 /// Pulse-width capture configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub struct Config {
     /// Clock source driving the counter, which sets what one tick of a width is worth.
     pub clock: ClockSel,
@@ -199,6 +200,48 @@ impl Config {
             level: PulseLevel::High,
             filter: Filter::None,
         }
+    }
+
+    /// Set [`clock`](Self::clock).
+    #[must_use]
+    pub const fn with_clock(mut self, clock: ClockSel) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Set [`divider`](Self::divider).
+    #[must_use]
+    pub const fn with_divider(mut self, divider: u8) -> Self {
+        self.divider = divider;
+        self
+    }
+
+    /// Set [`prescaler`](Self::prescaler).
+    #[must_use]
+    pub const fn with_prescaler(mut self, prescaler: u16) -> Self {
+        self.prescaler = prescaler;
+        self
+    }
+
+    /// Set [`free_run_in_debug`](Self::free_run_in_debug).
+    #[must_use]
+    pub const fn with_free_run_in_debug(mut self, free_run_in_debug: bool) -> Self {
+        self.free_run_in_debug = free_run_in_debug;
+        self
+    }
+
+    /// Set [`level`](Self::level).
+    #[must_use]
+    pub const fn with_level(mut self, level: PulseLevel) -> Self {
+        self.level = level;
+        self
+    }
+
+    /// Set [`filter`](Self::filter).
+    #[must_use]
+    pub const fn with_filter(mut self, filter: Filter) -> Self {
+        self.filter = filter;
+        self
     }
 }
 

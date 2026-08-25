@@ -57,11 +57,7 @@ async fn main(_spawner: Spawner) -> ! {
         None,
         None,
         Irqs,
-        CompareConfig {
-            divider: 8,
-            prescaler: 256,
-            ..Default::default()
-        },
+        CompareConfig::new().with_divider(8).with_prescaler(256),
     );
 
     let tick_hz = compare.timer().tick_frequency();

@@ -35,11 +35,7 @@ async fn main(_spawner: Spawner) -> ! {
         p.TIMG7,
         None,
         Some(PwmPin::new(p.PA31, Pull::None)),
-        PwmConfig {
-            divider: 8,
-            frequency: FREQUENCY,
-            ..Default::default()
-        },
+        PwmConfig::new().with_divider(8).with_frequency(FREQUENCY),
     ));
 
     let max = pwm.max_duty();

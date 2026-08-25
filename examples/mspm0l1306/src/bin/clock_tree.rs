@@ -147,10 +147,7 @@ async fn main(_spawner: Spawner) -> ! {
         p.TIMG1,
         Some(PwmPin::new(p.PA26, Pull::None)),
         None,
-        PwmConfig {
-            frequency: PWM_HZ,
-            ..Default::default()
-        },
+        PwmConfig::new().with_frequency(PWM_HZ),
     ));
     pwm.channel(Channel::Ch0).set_duty_percent(50);
     pwm.channel(Channel::Ch0).enable();
@@ -158,15 +155,13 @@ async fn main(_spawner: Spawner) -> ! {
 
     let mut counter = low_level::Timer::new(
         p.TIMG2,
-        low_level::Config {
-            clock: ClockSel::BusClk,
-            prescaler: PRESCALER,
+        low_level::Config::new()
+            .with_clock(ClockSel::BusClk)
+            .with_prescaler(PRESCALER)
             // The counter is read across windows, so enabling must not restart it.
-            counter_on_enable: low_level::CounterOnEnable::Preserve,
+            .with_counter_on_enable(low_level::CounterOnEnable::Preserve)
             // A halted core must not stop the count, or a breakpoint would read as a slow clock.
-            free_run_in_debug: true,
-            ..Default::default()
-        },
+            .with_free_run_in_debug(true),
     );
     counter.start();
 

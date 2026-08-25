@@ -53,10 +53,7 @@ async fn main(_spawner: Spawner) -> ! {
         p.TIMG1,
         Some(PwmPin::new(p.PA26, Pull::None)),
         None,
-        PwmConfig {
-            frequency: FREQUENCY,
-            ..Default::default()
-        },
+        PwmConfig::new().with_frequency(FREQUENCY),
     ));
 
     pwm.channel(Channel::Ch0).enable();
@@ -67,14 +64,12 @@ async fn main(_spawner: Spawner) -> ! {
         p.PA10,
         Pull::Down,
         Irqs,
-        WidthConfig {
-            // 32 MHz / 8 / 4, so one tick is one microsecond.
-            divider: 8,
-            prescaler: 4,
-            level: PulseLevel::High,
-            filter: Filter::None,
-            ..Default::default()
-        },
+        // 32 MHz / 8 / 4, so one tick is one microsecond.
+        WidthConfig::new()
+            .with_divider(8)
+            .with_prescaler(4)
+            .with_level(PulseLevel::High)
+            .with_filter(Filter::None),
     );
 
     let max_duty = pwm.channel(Channel::Ch0).max_duty();

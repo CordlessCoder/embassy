@@ -51,6 +51,7 @@ impl Default for CounterOnEnable {
 /// Timer configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub struct Config {
     /// Clock source driving the counter.
     pub clock: ClockSel,
@@ -88,6 +89,48 @@ impl Config {
             counter_on_enable: CounterOnEnable::DEFAULT,
             free_run_in_debug: false,
         }
+    }
+
+    /// Set [`clock`](Self::clock).
+    #[must_use]
+    pub const fn with_clock(mut self, clock: ClockSel) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Set [`divider`](Self::divider).
+    #[must_use]
+    pub const fn with_divider(mut self, divider: u8) -> Self {
+        self.divider = divider;
+        self
+    }
+
+    /// Set [`prescaler`](Self::prescaler).
+    #[must_use]
+    pub const fn with_prescaler(mut self, prescaler: u16) -> Self {
+        self.prescaler = prescaler;
+        self
+    }
+
+    /// Set [`counting_mode`](Self::counting_mode).
+    #[must_use]
+    pub const fn with_counting_mode(mut self, counting_mode: CountingMode) -> Self {
+        self.counting_mode = counting_mode;
+        self
+    }
+
+    /// Set [`counter_on_enable`](Self::counter_on_enable).
+    #[must_use]
+    pub const fn with_counter_on_enable(mut self, counter_on_enable: CounterOnEnable) -> Self {
+        self.counter_on_enable = counter_on_enable;
+        self
+    }
+
+    /// Set [`free_run_in_debug`](Self::free_run_in_debug).
+    #[must_use]
+    pub const fn with_free_run_in_debug(mut self, free_run_in_debug: bool) -> Self {
+        self.free_run_in_debug = free_run_in_debug;
+        self
     }
 }
 

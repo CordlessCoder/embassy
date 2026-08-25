@@ -52,14 +52,12 @@ async fn main(_spawner: Spawner) -> ! {
 
     let mut counter = low_level::Timer::new(
         p.TIMG2,
-        low_level::Config {
-            clock: ClockSel::BusClk,
+        low_level::Config::new()
+            .with_clock(ClockSel::BusClk)
             // Undivided: the whole point is to resolve microseconds.
-            prescaler: 1,
-            counter_on_enable: low_level::CounterOnEnable::Preserve,
-            free_run_in_debug: true,
-            ..Default::default()
-        },
+            .with_prescaler(1)
+            .with_counter_on_enable(low_level::CounterOnEnable::Preserve)
+            .with_free_run_in_debug(true),
     );
     counter.start();
 

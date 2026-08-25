@@ -34,10 +34,7 @@ async fn main(_spawner: Spawner) -> ! {
         p.TIMG1,
         Some(PwmPin::new(p.PA26, Pull::None)),
         None,
-        PwmConfig {
-            frequency: FREQUENCY,
-            ..Default::default()
-        },
+        PwmConfig::new().with_frequency(FREQUENCY),
     ));
 
     pwm.channel(Channel::Ch0).set_duty_percent(50);
@@ -49,10 +46,7 @@ async fn main(_spawner: Spawner) -> ! {
         Some(CapturePin::new(p.PA10, Pull::Down, CaptureEdge::Rising, Filter::Ticks3)),
         None,
         Irqs,
-        CaptureConfig {
-            divider: 8,
-            ..Default::default()
-        },
+        CaptureConfig::new().with_divider(8),
     );
 
     let expected = capture.timer().tick_frequency() / FREQUENCY;

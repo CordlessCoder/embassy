@@ -58,13 +58,11 @@ async fn main(_spawner: Spawner) -> ! {
         p.PA10,
         Pull::None,
         Irqs,
-        TrainConfig {
-            // 32 MHz / 8 / 4, so one tick is one microsecond.
-            divider: 8,
-            prescaler: 4,
-            idle: Level::Low,
-            ..Default::default()
-        },
+        // 32 MHz / 8 / 4, so one tick is one microsecond.
+        TrainConfig::new()
+            .with_divider(8)
+            .with_prescaler(4)
+            .with_idle(Level::Low),
     );
 
     info!("emitting at {} Hz", train.timer().tick_frequency());

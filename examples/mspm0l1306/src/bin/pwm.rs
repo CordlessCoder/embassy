@@ -25,10 +25,7 @@ async fn main(_spawner: Spawner) -> ! {
     let red = PwmPin::new(p.PA26, Pull::None);
     let blue = PwmPin::new(p.PA27, Pull::None);
 
-    let config = Config {
-        frequency: FREQUENCY,
-        ..Default::default()
-    };
+    let config = Config::new().with_frequency(FREQUENCY);
 
     let mut pwm = unwrap!(SimplePwm::new_2ch(p.TIMG1, Some(red), Some(blue), config));
 

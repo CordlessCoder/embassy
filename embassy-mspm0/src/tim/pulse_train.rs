@@ -202,6 +202,7 @@ fn write_element(r: crate::pac::tim::Tim, channel: Channel, pulse: &Pulse) {
 /// Pulse-train configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub struct Config {
     /// Clock source driving the counter, which sets what one tick is worth.
     pub clock: ClockSel,
@@ -233,6 +234,41 @@ impl Config {
             free_run_in_debug: false,
             idle: Level::Low,
         }
+    }
+
+    /// Set [`clock`](Self::clock).
+    #[must_use]
+    pub const fn with_clock(mut self, clock: ClockSel) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Set [`divider`](Self::divider).
+    #[must_use]
+    pub const fn with_divider(mut self, divider: u8) -> Self {
+        self.divider = divider;
+        self
+    }
+
+    /// Set [`prescaler`](Self::prescaler).
+    #[must_use]
+    pub const fn with_prescaler(mut self, prescaler: u16) -> Self {
+        self.prescaler = prescaler;
+        self
+    }
+
+    /// Set [`free_run_in_debug`](Self::free_run_in_debug).
+    #[must_use]
+    pub const fn with_free_run_in_debug(mut self, free_run_in_debug: bool) -> Self {
+        self.free_run_in_debug = free_run_in_debug;
+        self
+    }
+
+    /// Set [`idle`](Self::idle).
+    #[must_use]
+    pub const fn with_idle(mut self, idle: Level) -> Self {
+        self.idle = idle;
+        self
     }
 }
 

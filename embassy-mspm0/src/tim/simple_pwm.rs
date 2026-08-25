@@ -31,6 +31,7 @@ pub enum Polarity {
 /// PWM configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub struct Config {
     /// Counting direction and alignment, which set where the pulse sits in the period.
     ///
@@ -86,6 +87,55 @@ impl Config {
             load: None,
             free_run_in_debug: false,
         }
+    }
+
+    /// Set [`counting_mode`](Self::counting_mode).
+    #[must_use]
+    pub const fn with_counting_mode(mut self, counting_mode: CountingMode) -> Self {
+        self.counting_mode = counting_mode;
+        self
+    }
+
+    /// Set [`clock`](Self::clock).
+    #[must_use]
+    pub const fn with_clock(mut self, clock: crate::tim::ClockSel) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Set [`divider`](Self::divider).
+    #[must_use]
+    pub const fn with_divider(mut self, divider: u8) -> Self {
+        self.divider = divider;
+        self
+    }
+
+    /// Set [`prescaler`](Self::prescaler).
+    #[must_use]
+    pub const fn with_prescaler(mut self, prescaler: u16) -> Self {
+        self.prescaler = prescaler;
+        self
+    }
+
+    /// Set [`frequency`](Self::frequency).
+    #[must_use]
+    pub const fn with_frequency(mut self, frequency: u32) -> Self {
+        self.frequency = frequency;
+        self
+    }
+
+    /// Set [`load`](Self::load).
+    #[must_use]
+    pub const fn with_load(mut self, load: Option<u32>) -> Self {
+        self.load = load;
+        self
+    }
+
+    /// Set [`free_run_in_debug`](Self::free_run_in_debug).
+    #[must_use]
+    pub const fn with_free_run_in_debug(mut self, free_run_in_debug: bool) -> Self {
+        self.free_run_in_debug = free_run_in_debug;
+        self
     }
 }
 

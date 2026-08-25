@@ -138,15 +138,13 @@ async fn main(_spawner: Spawner) {
     // chain, and neither goes through `resolve()`'s arithmetic.
     let mut counter = low_level::Timer::new(
         p.TIMA0,
-        low_level::Config {
-            clock: ClockSel::BusClk,
-            prescaler: PRESCALER,
+        low_level::Config::new()
+            .with_clock(ClockSel::BusClk)
+            .with_prescaler(PRESCALER)
             // The counter is read across windows, so enabling must not restart it.
-            counter_on_enable: low_level::CounterOnEnable::Preserve,
+            .with_counter_on_enable(low_level::CounterOnEnable::Preserve)
             // A halted core must not stop the count, or a breakpoint would read as a slow clock.
-            free_run_in_debug: true,
-            ..Default::default()
-        },
+            .with_free_run_in_debug(true),
     );
     counter.start();
 
