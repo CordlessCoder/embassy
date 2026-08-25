@@ -304,3 +304,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/tim: `pulse_train::PulseTrain` emits a sequence of pulses of differing widths back to back on one channel and leaves the output at a chosen level, with each element loaded a period before it takes effect so no edge waits on software
 - fix: mspm0: seven drivers wait out bus isolation after powering an instance up, where a register write landing in that window was dropped — `unicomm`'s mode select is the one whose loss was silent
 - fix: mspm0/flash: the cache and prefetch disable around a flash operation completes the pending access the erratum requires, so the disable actually takes effect
+- breaking: mspm0/uart: `send_break` becomes `set_break` and `clear_break` — `LCRH.BRK` is a level and nothing could lift it, so one call ended the UART for the life of the program

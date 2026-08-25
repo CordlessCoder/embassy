@@ -149,9 +149,18 @@ impl<'d> BufferedUart<'d> {
         self.rx.take_faults()
     }
 
-    /// Send break character.
-    pub fn send_break(&mut self) {
-        self.tx.send_break()
+    /// Hold the transmit line low until [`clear_break`](Self::clear_break).
+    ///
+    /// Takes effect once the character being transmitted finishes. SLAU846 table 24-40 asks for the
+    /// line to be held for at least two character periods before it is lifted, and that wait is the
+    /// caller's: sizing a spin needs a CPU clock this driver does not own.
+    pub fn set_break(&mut self) {
+        self.tx.set_break()
+    }
+
+    /// Release a break started with [`set_break`](Self::set_break).
+    pub fn clear_break(&mut self) {
+        self.tx.clear_break()
     }
 
     /// Split into separate RX and TX handles.
@@ -424,9 +433,18 @@ impl<'d> BufferedUartTx<'d> {
         low_level::busy(self.info.regs)
     }
 
-    /// Send break character
-    pub fn send_break(&mut self) {
-        low_level::send_break(self.info.regs);
+    /// Hold the transmit line low until [`clear_break`](Self::clear_break).
+    ///
+    /// Takes effect once the character being transmitted finishes. SLAU846 table 24-40 asks for the
+    /// line to be held for at least two character periods before it is lifted, and that wait is the
+    /// caller's: sizing a spin needs a CPU clock this driver does not own.
+    pub fn set_break(&mut self) {
+        low_level::set_break(self.info.regs, true);
+    }
+
+    /// Release a break started with [`set_break`](Self::set_break).
+    pub fn clear_break(&mut self) {
+        low_level::set_break(self.info.regs, false);
     }
 }
 

@@ -866,9 +866,18 @@ impl<'d, M: ModeState> UartTx<'d, M> {
         Ok(())
     }
 
-    /// Send break character
-    pub fn send_break(&self) {
-        self.inner.send_break();
+    /// Hold the transmit line low until [`clear_break`](Self::clear_break).
+    ///
+    /// Takes effect once the character being transmitted finishes. SLAU846 table 24-40 asks for the
+    /// line to be held for at least two character periods before it is lifted, and that wait is the
+    /// caller's: sizing a spin needs a CPU clock this driver does not own.
+    pub fn set_break(&mut self) {
+        self.inner.set_break();
+    }
+
+    /// Release a break started with [`set_break`](Self::set_break).
+    pub fn clear_break(&mut self) {
+        self.inner.clear_break();
     }
 
     /// Check if UART is busy.
@@ -1100,9 +1109,18 @@ impl<'d, M: ModeState> Uart<'d, M> {
         self.rx.set_config(config)
     }
 
-    /// Send break character
-    pub fn send_break(&self) {
-        self.tx.send_break();
+    /// Hold the transmit line low until [`clear_break`](Self::clear_break).
+    ///
+    /// Takes effect once the character being transmitted finishes. SLAU846 table 24-40 asks for the
+    /// line to be held for at least two character periods before it is lifted, and that wait is the
+    /// caller's: sizing a spin needs a CPU clock this driver does not own.
+    pub fn set_break(&mut self) {
+        self.tx.set_break();
+    }
+
+    /// Release a break started with [`set_break`](Self::set_break).
+    pub fn clear_break(&mut self) {
+        self.tx.clear_break();
     }
 
     /// Set baudrate

@@ -323,10 +323,20 @@ impl<'d> Uart<'d> {
         self.tx.busy()
     }
 
-    /// Send a break.
+    /// Hold the transmit line low until [`clear_break`](Self::clear_break).
+    ///
+    /// Takes effect once the character being transmitted finishes. SLAU846 table 24-40 asks for the
+    /// line to be held for at least two character periods before it is lifted, and that wait is the
+    /// caller's: sizing a spin needs a CPU clock this driver does not own.
     #[inline]
-    pub fn send_break(&self) {
-        self.tx.send_break();
+    pub fn set_break(&mut self) {
+        self.tx.set_break();
+    }
+
+    /// Release a break started with [`set_break`](Self::set_break).
+    #[inline]
+    pub fn clear_break(&mut self) {
+        self.tx.clear_break();
     }
 
     /// Let `event` reach the CPU, or stop it.
@@ -496,10 +506,20 @@ impl<'d> UartTx<'d> {
         busy(self.info.regs)
     }
 
-    /// Send a break.
+    /// Hold the transmit line low until [`clear_break`](Self::clear_break).
+    ///
+    /// Takes effect once the character being transmitted finishes. SLAU846 table 24-40 asks for the
+    /// line to be held for at least two character periods before it is lifted, and that wait is the
+    /// caller's: sizing a spin needs a CPU clock this driver does not own.
     #[inline]
-    pub fn send_break(&self) {
-        send_break(self.info.regs);
+    pub fn set_break(&mut self) {
+        set_break(self.info.regs, true);
+    }
+
+    /// Release a break started with [`set_break`](Self::set_break).
+    #[inline]
+    pub fn clear_break(&mut self) {
+        set_break(self.info.regs, false);
     }
 
     /// Shallowest sleep level that keeps a transmission running, if one is needed at all.
@@ -974,9 +994,9 @@ pub(crate) fn apply_baud(r: Regs, baud: &Baud) {
     r.ctl0().modify(|w| w.set_hse(baud.hse));
 }
 
-/// Hold the line low for a frame.
-pub(crate) fn send_break(r: Regs) {
-    r.lcrh().modify(|w| w.set_brk(true));
+/// Hold the line low, or release it. `BRK` is a level and stays set until it is written back.
+pub(crate) fn set_break(r: Regs, on: bool) {
+    r.lcrh().modify(|w| w.set_brk(on));
 }
 
 /// The sources a receive waits on: the FIFO reaching its level, and the timeout that delivers one
