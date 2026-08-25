@@ -420,7 +420,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// The direction is read from the configured counting mode, so this cannot program the field the
     /// counter is not using. Only the action moves — the channel stays in compare mode and keeps its
     /// pin enable.
-    pub fn set_compare_action(&self, channel: Channel, action: super::compare::CompareAction) {
+    pub fn set_compare_action(&mut self, channel: Channel, action: super::compare::CompareAction) {
         super::compare::set_action(self.regs(), channel, action);
     }
 
@@ -444,7 +444,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// [`SimplePwmChannel::set_duty`](super::simple_pwm::SimplePwmChannel::set_duty) calls. Neither
     /// extreme is reachable through the compare value, so both are held by a forced-output
     /// override, and this is what lifts it.
-    pub fn set_pwm_duty(&self, channel: Channel, ticks: u32) {
+    pub fn set_pwm_duty(&mut self, channel: Channel, ticks: u32) {
         super::simple_pwm::set_duty(self.regs(), channel, ticks);
     }
 
@@ -454,7 +454,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// [`Polarity::ActiveLow`](super::simple_pwm::Polarity::ActiveLow) goes high rather than low.
     /// This is `ODIS`, and it is separate from the duty override — holding the output does not
     /// change what [`pwm_duty`](Self::pwm_duty) reports.
-    pub fn set_output_enabled(&self, channel: Channel, enabled: bool) {
+    pub fn set_output_enabled(&mut self, channel: Channel, enabled: bool) {
         super::simple_pwm::set_output_enabled(self.regs(), channel, enabled);
     }
 
@@ -471,7 +471,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// Set which level `channel`'s active phase drives the output to.
     ///
     /// Inverts the pin immediately, including while the counter is stopped.
-    pub fn set_polarity(&self, channel: Channel, polarity: super::simple_pwm::Polarity) {
+    pub fn set_polarity(&mut self, channel: Channel, polarity: super::simple_pwm::Polarity) {
         super::simple_pwm::set_polarity(self.regs(), channel, polarity);
     }
 
@@ -536,7 +536,7 @@ impl<'d, T: Instance> Timer<'d, T> {
 
     /// Set the counter.
     #[inline]
-    pub fn set_counter(&self, count: T::Word) {
+    pub fn set_counter(&mut self, count: T::Word) {
         T::info().regs.counterregs(0).ctr().write_value(count.into());
     }
 
@@ -548,7 +548,7 @@ impl<'d, T: Instance> Timer<'d, T> {
 
     /// Set the reload value, one less than the wanted period in ticks.
     #[inline]
-    pub fn set_load(&self, load: T::Word) {
+    pub fn set_load(&mut self, load: T::Word) {
         T::info().regs.counterregs(0).load().write_value(load.into());
     }
 
@@ -560,7 +560,7 @@ impl<'d, T: Instance> Timer<'d, T> {
 
     /// Set the capture/compare value of `channel`.
     #[inline]
-    pub fn set_compare(&self, channel: Channel, value: T::Word) {
+    pub fn set_compare(&mut self, channel: Channel, value: T::Word) {
         set_compare(T::info().regs, channel, value.into());
     }
 
@@ -596,7 +596,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// Set the period so the counter completes one period at `hz`.
     ///
     /// Errors outside [`Timer::tick_frequency`] down to that divided by the counter's full range.
-    pub fn set_frequency(&self, hz: u32) -> Result<(), ConfigError> {
+    pub fn set_frequency(&mut self, hz: u32) -> Result<(), ConfigError> {
         set_frequency(T::info().regs, T::SLEEP.power_domain, T::Word::MAX.into(), hz)
     }
 
@@ -604,12 +604,12 @@ impl<'d, T: Instance> Timer<'d, T> {
     ///
     /// Takes what [`solve_load`] works out ahead of time, so a frequency known up front reaches the
     /// register without the device dividing for it.
-    pub fn set_load_value(&self, load: u32) -> Result<(), ConfigError> {
+    pub fn set_load_value(&mut self, load: u32) -> Result<(), ConfigError> {
         set_load_value(T::info().regs, T::Word::MAX.into(), load)
     }
 
     /// Enable or disable the interrupt for `event`.
-    pub fn enable_interrupt(&self, event: Event, enable: bool) {
+    pub fn enable_interrupt(&mut self, event: Event, enable: bool) {
         enable_interrupt(T::info().regs, event, enable);
     }
 
@@ -619,7 +619,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     }
 
     /// Clear `event`'s pending flag.
-    pub fn clear_pending(&self, event: Event) {
+    pub fn clear_pending(&mut self, event: Event) {
         clear_pending(T::info().regs, event);
     }
 
@@ -642,14 +642,14 @@ impl<'d, T: Instance> Timer<'d, T> {
     }
 
     /// Acknowledge every event in `events`, in one write.
-    pub fn clear_events(&self, events: Events) {
+    pub fn clear_events(&mut self, events: Events) {
         self.regs().cpu_int(0).iclr().write_value(regs::Int(events.0));
     }
 
     /// Enable or disable the interrupt for every event in `events`, in one write.
     ///
     /// Events outside the set keep their setting.
-    pub fn enable_interrupts(&self, events: Events, enable: bool) {
+    pub fn enable_interrupts(&mut self, events: Events, enable: bool) {
         enable_interrupts(self.regs(), events, enable);
     }
 }

@@ -332,9 +332,20 @@ impl<'d, T: General2ChannelInstance> PulseWidth<'d, T> {
         low_level::clear_pending(self.timer.regs(), Event::CaptureOrCompareUp(self.channel));
     }
 
-    /// The underlying counter.
+    /// The underlying counter, for reading.
+    ///
+    /// Mutating it needs [`timer_mut`](Self::timer_mut): this driver has programmed the instance for
+    /// what it does, and a shared borrow is not the place to reprogram it from.
     pub fn timer(&self) -> &Timer<'d, T> {
         &self.timer
+    }
+
+    /// The underlying counter, for changing something this driver does not wrap.
+    ///
+    /// Whatever is changed here outlives the call. Reprogramming the counter, the compare values or
+    /// the interrupt sources under a running driver is the caller's to get right.
+    pub fn timer_mut(&mut self) -> &mut Timer<'d, T> {
+        &mut self.timer
     }
 
     /// Stop measuring and give the timer and the pin back, with the pin disconnected.

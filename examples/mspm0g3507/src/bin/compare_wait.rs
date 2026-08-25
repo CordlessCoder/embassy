@@ -66,7 +66,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let tick_hz = compare.timer().tick_frequency();
     let period = (tick_hz as u64 * PERIOD_MS / 1000) as u32;
-    unwrap!(compare.timer().set_load_value(period));
+    unwrap!(compare.timer_mut().set_load_value(period));
 
     // A quarter and three quarters of the way through, so the two gaps are equal and neither lands near
     // the wrap, where a match and a reload would be hard to tell apart.
