@@ -340,3 +340,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mspm0/adc: `blocking_read` and `irq_read` erase the channel's type at the boundary, so the body is shared rather than copied once per channel type an application reads
 - fix: mspm0/tim: a pulse train's last element keeps its own falling edge, where the closing action used to take it whenever the resting level was not low
 - fix: mspm0/tim: an inverted pulse train rests at the level asked for — `CCPIV` is not routed through the output inverter, so complementing it was backwards
+- fix: mspm0/tim: building a `PulseTrain` no longer puts a pulse on the pin — the pin joins the timer once the output is already at its resting level, where it used to be muxed before the instance was even powered up

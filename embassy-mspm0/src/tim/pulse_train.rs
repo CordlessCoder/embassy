@@ -457,8 +457,13 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
+        // The pin is **not** muxed yet. Connecting it here would put it on a timer output that has
+        // not been powered up, let alone told what level to rest at, and the pin then shows whatever
+        // the reset state produces until the configuration below catches up — measured at 17 us on
+        // this part. That is once per driver, which is once per frame for a caller whose pin is
+        // shared and whose driver lives for one transaction, and it lands in the window where the
+        // far end is looking for the start of a response.
         let pf = pin.pf_num();
-        pin.set_as_pf(pf, PfType::output(pull, false));
 
         let mut timer = Timer::new(
             timer,
@@ -513,6 +518,12 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         };
 
         this.park();
+
+        // Now. The output is already sitting at the resting level, so the mux is a no-op on the wire
+        // rather than an edge. `park` has already disconnected it where the caller asked for that.
+        if !this.release {
+            this.pin.set_as_pf(pf, PfType::output(pull, false));
+        }
 
         unsafe { T::Interrupt::enable() };
 
