@@ -321,3 +321,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/uart: `set_config` disables the peripheral before rewriting its control registers, which the TRM requires, and neither it nor `set_baudrate` unmasks an interrupt line the caller had left masked
 - breaking: mspm0/dma: a transfer of zero elements is rejected with the new `Error::NoTransfers`, and `Error` is `#[non_exhaustive]`
 - fix: mspm0/mathacl: dropping the driver powers the accelerator down, as every other whole-peripheral driver does
+- feat: mspm0/comp: `new_async_sharing_positive` builds an awaitable comparator whose positive pin can still be lent to another driver, which had no `Async` route

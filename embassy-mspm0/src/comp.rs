@@ -921,6 +921,26 @@ impl<'d, T: Instance> Comp<'d, T, Async> {
         )
     }
 
+    /// Build the comparator with its interrupt bound, keeping the positive terminal's pin lendable.
+    ///
+    /// [`new_sharing_positive`](Comp::new_sharing_positive) with the interrupt, so the threshold can be
+    /// awaited rather than polled while the pad is still reachable — the comparator waiting on a level
+    /// the ADC is also converting is what the shared pin exists for.
+    pub fn new_async_sharing_positive<P: PositivePin<T> + crate::gpio::Pin>(
+        _peri: Peri<'d, T>,
+        positive: Peri<'d, P>,
+        negative: Option<Peri<'d, impl NegativePin<T>>>,
+        _irq: impl CompInterrupt<T> + 'd,
+        config: Config,
+    ) -> Result<CompSharedPositive<'d, T, Async, P>, ConfigError> {
+        SealedPositivePin::<T>::setup(&*positive);
+        let channel = SealedPositivePin::<T>::channel(&*positive);
+
+        let comp = Self::build(Some((None, channel)), erase_negative(negative), config)?;
+
+        Ok(CompSharedPositive { comp, pad: positive })
+    }
+
     /// Wait for the comparator's output to make a transition.
     ///
     /// A transition that already happened is not remembered: this returns on the next one after it
