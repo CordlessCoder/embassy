@@ -1238,12 +1238,20 @@ pub(crate) fn reconfigure(info: &Info, state: &State, config: &Config) -> Result
     info.interrupt.disable();
     let r = info.regs;
     let ctl0 = r.ctl0().read();
-    configure(info, state, config, ctl0.rxe(), ctl0.rtsen(), ctl0.txe(), ctl0.ctsen())?;
+
+    // A rejected config must leave the instance as it was found. `configure` returns before it
+    // re-enables, so an early `?` here would hand back an `Err` that reads recoverable over a
+    // peripheral that is off with its interrupt masked.
+    let configured = configure(info, state, config, ctl0.rxe(), ctl0.rtsen(), ctl0.txe(), ctl0.ctsen());
+
+    if configured.is_err() {
+        r.ctl0().write_value(ctl0);
+    }
 
     info.interrupt.unpend();
     unsafe { info.interrupt.enable() };
 
-    Ok(())
+    configured
 }
 
 /// Set the baud rate and clock settings.
@@ -1267,7 +1275,10 @@ pub(crate) fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(),
         });
     });
 
-    set_baudrate_inner(r, clock, baudrate)?;
+    // Not `?`. An unreachable baud rate is an ordinary caller error -- above about 10.9 kbaud on an
+    // LFCLK-sourced instance -- and returning here would leave the peripheral disabled and its line
+    // masked for good.
+    let programmed = set_baudrate_inner(r, clock, baudrate);
 
     critical_section::with(|_cs| {
         r.ctl0().modify(|w| {
@@ -1278,7 +1289,7 @@ pub(crate) fn set_baudrate(info: &Info, clock: u32, baudrate: u32) -> Result<(),
     info.interrupt.unpend();
     unsafe { info.interrupt.enable() };
 
-    Ok(())
+    programmed
 }
 
 pub(crate) fn set_baudrate_inner(regs: Regs, clock: u32, baudrate: u32) -> Result<(), ConfigError> {
