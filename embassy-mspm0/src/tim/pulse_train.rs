@@ -48,8 +48,12 @@ pub struct Pulse {
 
 impl Pulse {
     /// Ticks the whole element occupies.
+    ///
+    /// Saturates. A wrapped sum is a small number, and a small number is exactly what the bound in
+    /// [`emit`](PulseTrain::emit) is looking for, so wrapping would turn an unrepresentable element
+    /// into an accepted one of the wrong width.
     pub const fn period(&self) -> u32 {
-        self.high + self.low
+        self.high.saturating_add(self.low)
     }
 }
 
@@ -551,8 +555,13 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
 
         for pulse in pulses {
             assert!(pulse.high > 0 && pulse.low > 0, "a pulse needs a high and a low time");
+            // Not `period()`: on a 32-bit counter the saturated value is itself a legal load, so
+            // the sum has to be rejected for overflowing rather than clamped into range.
             assert!(
-                pulse.period() - 1 <= max_load,
+                pulse
+                    .high
+                    .checked_add(pulse.low)
+                    .is_some_and(|period| period - 1 <= max_load),
                 "a pulse is longer than the counter can count"
             );
         }
