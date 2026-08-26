@@ -736,6 +736,18 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
 
             self.timer.set_output_enabled(channel, false);
 
+            // `ODIS` does not let the pin go: it holds the signal low *before* the conditional
+            // inversion (SLAU846E 34.3.32, and its L-series sibling), so on a generator-domain
+            // high idle the repair window would drive the pin at the opposite of its resting
+            // level. Inverting the output for the window turns that held low into the resting
+            // level. Flipping `CCPOINV` while the counter is stopped moves nothing on the pin,
+            // which is showing `CCPIV` — not routed through the inverter.
+            let invert_for_repair = matches!(self.idle, Level::High);
+
+            if invert_for_repair {
+                self.flip_polarity();
+            }
+
             low_level::clear_pending(r, Event::Zero);
 
             // A raw enable rather than `start`: the stop above released the running guard, and
@@ -763,6 +775,10 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
             low_level::clear_pending(r, Event::Zero);
             self.timer.set_counter(<T::Word as Word>::from_reg(0));
 
+            if invert_for_repair {
+                self.flip_polarity();
+            }
+
             self.timer.set_output_enabled(channel, true);
         }
 
@@ -775,6 +791,16 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
     /// The compare action that drives the pin to the configured idle level.
     fn idle_act(&self) -> Act {
         act(self.idle)
+    }
+
+    /// Swap the channel's output inversion, for the cancel repair's window.
+    fn flip_polarity(&mut self) {
+        let flipped = match self.timer.polarity(self.channel) {
+            Polarity::ActiveHigh => Polarity::ActiveLow,
+            Polarity::ActiveLow => Polarity::ActiveHigh,
+        };
+
+        self.timer.set_polarity(self.channel, flipped);
     }
 
     /// Leave the forced-output override at the idle level, and put the channel back on the pin.
