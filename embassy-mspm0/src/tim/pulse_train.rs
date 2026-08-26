@@ -424,6 +424,25 @@ impl Default for Config {
 ///
 /// Holds the whole instance: the counter's period is the element being emitted, so no other channel
 /// of it can be doing anything else.
+///
+/// # Widths on MFCLK, with `low-power`
+///
+/// A train is only as accurate as the clock counting it, and on [`ClockSel::MfClk`] that clock
+/// changes underneath a sleeping part. [`SleepLevel::Stop1`](crate::sysctl::SleepLevel::Stop1)
+/// limits SYSOSC to 4 MHz, and MFCLK is taken straight from SYSOSC at that point rather than through
+/// the divider that otherwise holds it at 4 — so the counter ticks on SYSOSC's 4 MHz trim, which the
+/// datasheets band separately from its base frequency and considerably wider.
+///
+/// **A train on MFCLK reaches STOP1 and a train on the bus clock does not**, because a PD0 timer at
+/// 4 MHz or less only has to block STOP2 to keep running, where one at 32 MHz blocks every STOP
+/// level. Emitting from a sleep is the point of that, and the width error is its price: measured at
+/// 0.73% short on one part, inside the trim's published band and therefore not a fault to be fixed
+/// in silicon or here.
+///
+/// Callers who need the width rather than the sleep can hold a
+/// [`WakeGuard`](crate::sysctl::WakeGuard) at `Stop1` for as long as the train runs, which restores
+/// the widths to the accuracy the bus clock gives. Without `low-power` nothing sleeps and none of
+/// this applies.
 pub struct PulseTrain<'d, T: Instance> {
     timer: Timer<'d, T>,
     pin: Peri<'d, AnyPin>,
