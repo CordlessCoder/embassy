@@ -687,6 +687,15 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
 
         low_level::enable_interrupt(r, Event::Zero, false);
         low_level::enable_interrupt(r, Event::CaptureOrCompareUp(channel), false);
+
+        // Let a shared line go before anything else happens to it. The repair below runs the
+        // counter, and a pin still muxed to the timer turns that into a driven level on a line the
+        // caller asked to only borrow. The latch the repair fixes is inside the timer, so the pin
+        // has no part in it; `arm` is what muxes it back.
+        if self.release {
+            self.pin.set_as_disconnected();
+        }
+
         self.timer.stop();
 
         // A completed train stops on a boundary, with the counter already at zero. A cancelled one
