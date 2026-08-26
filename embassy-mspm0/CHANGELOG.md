@@ -345,3 +345,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/tim: a pulse whose high and low times overflow `u32` is rejected, where the wrapped sum used to pass the bound check as a short element
 - fix: mspm0/tim: cancelling a pulse train that rests high no longer drives the pin low for the width of the output repair
 - fix: mspm0/tim: a pulse train that idles undriven releases the pin when the train stops, rather than after the output repair has run
+- fix: mspm0/tim: the first train a `PulseTrain` emits no longer opens with a notch against the resting level

@@ -521,6 +521,9 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
             tick_divisor: config.divider as u32 * config.prescaler as u32,
         };
 
+        // Before the mux, so the microseconds it takes are spent on a pin nothing is connected to.
+        // Skipping it costs the first train a notch instead.
+        this.park_latch();
         this.park();
 
         // Now. The output is already sitting at the resting level, so the mux is a no-op on the wire
@@ -726,75 +729,95 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
                 w.set_cuact(self.idle_act());
             });
         } else {
-            // Both copies of the action register have to say idle: the zero event evaluates the
-            // live one and then transfers the shadow over it. Shadow first — the update mode has
-            // to be set before the register it routes, or the write lands in the wrong copy.
-            self.timer.set_action_update(channel, CompareUpdate::AtZero);
-
-            r.counterregs(0).ccact(channel.index()).write(|w| {
-                w.set_zact(self.idle_act());
-                w.set_cuact(self.idle_act());
-            });
-
-            self.timer.set_action_update(channel, CompareUpdate::Immediately);
-
-            r.counterregs(0).ccact(channel.index()).write(|w| {
-                w.set_zact(self.idle_act());
-                w.set_cuact(self.idle_act());
-            });
-
-            self.timer.set_output_enabled(channel, false);
-
-            // `ODIS` does not let the pin go: it holds the signal low *before* the conditional
-            // inversion (SLAU846E 34.3.32, and its L-series sibling), so on a generator-domain
-            // high idle the repair window would drive the pin at the opposite of its resting
-            // level. Inverting the output for the window turns that held low into the resting
-            // level. Flipping `CCPOINV` while the counter is stopped moves nothing on the pin,
-            // which is showing `CCPIV` — not routed through the inverter.
-            let invert_for_repair = matches!(self.idle, Level::High);
-
-            if invert_for_repair {
-                self.flip_polarity();
-            }
-
-            low_level::clear_pending(r, Event::Zero);
-
-            // A raw enable rather than `start`: the stop above released the running guard, and
-            // this window is over before the executor could reach a sleep.
-            r.counterregs(0).ctrctl().modify(|w| w.set_en(true));
-
-            // The enable-time zero event is what evaluates the idle actions. Bounded, so a part
-            // that never raises it cannot hang a `Drop`; the flag arrives within a few ticks — but a
-            // tick is `source / divider / prescaler`, so a fixed iteration count expires early on a
-            // slow tree and leaves the latch unrepaired. Scaling by the two dividers is a multiply
-            // where deriving it from the tick rate would link a software divider.
-            for _ in 0..8192 * self.tick_divisor {
-                if low_level::is_pending(r, Event::Zero) {
-                    break;
-                }
-            }
-
-            // A little margin for the action itself — each read is a volatile register access.
-            for _ in 0..16 {
-                let _ = low_level::is_pending(r, Event::Zero);
-            }
-
-            r.counterregs(0).ctrctl().modify(|w| w.set_en(false));
-
-            low_level::clear_pending(r, Event::Zero);
-            self.timer.set_counter(<T::Word as Word>::from_reg(0));
-
-            if invert_for_repair {
-                self.flip_polarity();
-            }
-
-            self.timer.set_output_enabled(channel, true);
+            self.park_latch();
         }
 
         T::train_state().len.store(0, Ordering::Relaxed);
         T::train_state().pulses.store(core::ptr::null_mut(), Ordering::Relaxed);
 
         self.park();
+    }
+
+    /// Drive the output generator's level latch to the idle level, with the pin held quiet.
+    ///
+    /// **The latch is not a register**, so nothing writes it and nothing reads it back. The only
+    /// thing that moves it is a compare action the counter evaluates, and a stopped counter never
+    /// reaches one — so parking it means running the counter for a single throwaway zero event
+    /// with every action set to idle.
+    ///
+    /// Two callers need that and for the same reason. A cancelled train leaves the cancelled
+    /// element's active level in the latch. A driver that has just been built has never run the
+    /// counter at all, so the latch sits at its reset level, which is low. Either way the next
+    /// enable drives the pin from `EN` until the enable-time zero event lands, and on the wire
+    /// that is a notch against the resting level — 2 us, and invisible whenever the resting level
+    /// is itself low, which is why it went unnoticed until a train was asked to rest high.
+    fn park_latch(&mut self) {
+        let r = self.timer.regs();
+        let channel = self.channel;
+
+        // Both copies of the action register have to say idle: the zero event evaluates the
+        // live one and then transfers the shadow over it. Shadow first — the update mode has
+        // to be set before the register it routes, or the write lands in the wrong copy.
+        self.timer.set_action_update(channel, CompareUpdate::AtZero);
+
+        r.counterregs(0).ccact(channel.index()).write(|w| {
+            w.set_zact(self.idle_act());
+            w.set_cuact(self.idle_act());
+        });
+
+        self.timer.set_action_update(channel, CompareUpdate::Immediately);
+
+        r.counterregs(0).ccact(channel.index()).write(|w| {
+            w.set_zact(self.idle_act());
+            w.set_cuact(self.idle_act());
+        });
+
+        self.timer.set_output_enabled(channel, false);
+
+        // `ODIS` does not let the pin go: it holds the signal low *before* the conditional
+        // inversion (SLAU846E 34.3.32, and its L-series sibling), so on a generator-domain
+        // high idle the repair window would drive the pin at the opposite of its resting
+        // level. Inverting the output for the window turns that held low into the resting
+        // level. Flipping `CCPOINV` while the counter is stopped moves nothing on the pin,
+        // which is showing `CCPIV` — not routed through the inverter.
+        let invert_for_repair = matches!(self.idle, Level::High);
+
+        if invert_for_repair {
+            self.flip_polarity();
+        }
+
+        low_level::clear_pending(r, Event::Zero);
+
+        // A raw enable rather than `start`: the stop above released the running guard, and
+        // this window is over before the executor could reach a sleep.
+        r.counterregs(0).ctrctl().modify(|w| w.set_en(true));
+
+        // The enable-time zero event is what evaluates the idle actions. Bounded, so a part
+        // that never raises it cannot hang a `Drop`; the flag arrives within a few ticks — but a
+        // tick is `source / divider / prescaler`, so a fixed iteration count expires early on a
+        // slow tree and leaves the latch unrepaired. Scaling by the two dividers is a multiply
+        // where deriving it from the tick rate would link a software divider.
+        for _ in 0..8192 * self.tick_divisor {
+            if low_level::is_pending(r, Event::Zero) {
+                break;
+            }
+        }
+
+        // A little margin for the action itself — each read is a volatile register access.
+        for _ in 0..16 {
+            let _ = low_level::is_pending(r, Event::Zero);
+        }
+
+        r.counterregs(0).ctrctl().modify(|w| w.set_en(false));
+
+        low_level::clear_pending(r, Event::Zero);
+        self.timer.set_counter(<T::Word as Word>::from_reg(0));
+
+        if invert_for_repair {
+            self.flip_polarity();
+        }
+
+        self.timer.set_output_enabled(channel, true);
     }
 
     /// The compare action that drives the pin to the configured idle level.
