@@ -695,18 +695,6 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         // not where anybody would look.
         self.timer.set_counter(<T::Word as Word>::from_reg(0));
 
-        // A completed train leaves the closing action in the register, transferred by the boundary
-        // that ended it. A cancelled one leaves it stuck in the shadow, because the counter stopped
-        // before any boundary could transfer it — so the update has to go back to immediate before
-        // the same action is written here. Without this the *next* train's first element comes out
-        // long, and only that one, which is a nasty thing to go looking for.
-        self.timer.set_action_update(channel, CompareUpdate::Immediately);
-
-        r.counterregs(0).ccact(channel.index()).modify(|w| {
-            w.set_zact(self.idle_act());
-            w.set_cuact(self.idle_act());
-        });
-
         // The output generator latches the last level an action drove, and the latch is not a
         // register. The software force cannot reach it while the counter is stopped either: a
         // forced action is itself deferred to a period boundary (SLAU846E 34.2.5.3), and a stopped
@@ -716,7 +704,19 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         // completed train's closing boundary action parks the latch, so only a cancellation needs
         // the repair: run the counter for one throwaway zero event with every action set to idle
         // and the output held by `ODIS`, which is the one thing that does drive the latch.
-        if !T::train_state().done.load(Ordering::Acquire) {
+        if T::train_state().done.load(Ordering::Acquire) {
+            // The closing action is in the register, transferred by the boundary that ended the
+            // train, and the update setting is still shadowed. Put it back to immediate so the idle
+            // actions land in the register rather than in a shadow no boundary will ever transfer:
+            // without this the *next* train's first element comes out long, and only that one,
+            // which is a nasty thing to go looking for.
+            self.timer.set_action_update(channel, CompareUpdate::Immediately);
+
+            r.counterregs(0).ccact(channel.index()).modify(|w| {
+                w.set_zact(self.idle_act());
+                w.set_cuact(self.idle_act());
+            });
+        } else {
             // Both copies of the action register have to say idle: the zero event evaluates the
             // live one and then transfers the shadow over it. Shadow first — the update mode has
             // to be set before the register it routes, or the write lands in the wrong copy.
