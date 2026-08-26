@@ -443,9 +443,10 @@ pub struct PulseTrain<'d, T: Instance> {
     pf: u8,
     pull: Pull,
     /// `divider * prescaler`, which is what one tick costs in source clocks. Only the cancel repair's
-    /// spin reads it, and a plain multiply there cannot overflow: `divider` is asserted at 8 or less
-    /// and a `u16` prescaler leaves the product inside `u32`. A checked multiply would be a widening
-    /// one, which links `__aeabi_lmul`.
+    /// spin reads it, scaled by 8192. [`Timer::new`] has already asserted the divider at 8 or less
+    /// and the prescaler at 256 or less, so the scaled product tops out at 2^24 — the spin's bound
+    /// leans on those assertions, not on the field types, and relaxing either moves it. A checked
+    /// multiply would be a widening one, which links `__aeabi_lmul`.
     tick_divisor: u32,
 }
 

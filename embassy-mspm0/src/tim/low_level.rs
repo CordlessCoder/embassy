@@ -903,8 +903,8 @@ pub(crate) fn configure<T: Instance>(config: &Config) {
 /// value. Split out so [`Timer::reconfigure`] can change a running instance's role without the reset
 /// and power-up sequence, which would be a restart rather than a mode change.
 fn apply_config<T: Instance>(config: &Config) {
-    // `pulse_train`'s output repair multiplies the product of these two by 8192 to bound a spin;
-    // relaxing either maximum moves that bound towards overflowing a `u32`.
+    // `pulse_train`'s cancel-repair spin multiplies the product of these two by 8192; relaxing
+    // either maximum moves that bound towards overflowing a `u32`.
     assert!((1..=8).contains(&config.divider), "timer divider must be 1 to 8");
     assert!(
         (1..=256).contains(&config.prescaler),
