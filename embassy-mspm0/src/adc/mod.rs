@@ -175,6 +175,23 @@ impl SolvedSampleClock {
 }
 
 /// Conversion resolution of the ADC results.
+///
+/// # Results are unsigned, and the signed read-back format is deliberately not offered
+///
+/// `CTL2.DF` selects between an unsigned result and a left-aligned two's-complement one. This driver
+/// fixes it at unsigned, because the register's own description settles what the choice is worth:
+/// **"Data is always stored in binary unsigned format"** — `DF` changes the *read-back* encoding and
+/// nothing about the conversion.
+///
+/// So the signed form carries no information the unsigned one does not, and a caller who wants it can
+/// produce it losslessly:
+///
+/// ```ignore
+/// let signed = (code << (16 - resolution.bits())) as i16;
+/// ```
+///
+/// Exposing it would cost more than it returns: results and [`Window`]'s thresholds would all have to
+/// change type, since the TRM makes the threshold format follow `DF` too.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Resolution {
