@@ -12,7 +12,7 @@
 use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
-use core::sync::atomic::{Ordering, compiler_fence};
+use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 use core::task::{Context, Poll};
 use core::{fmt, mem};
 
@@ -144,6 +144,10 @@ impl<'d> Channel<'d> {
             options.mode.terminates(),
             "a repeating TransferMode never finishes; use FullChannel's repeating constructors"
         );
+        assert!(
+            options.early_irq.is_none(),
+            "early_irq needs a full-feature channel; the field reads back zero on a basic one"
+        );
 
         unsafe { self.start_read(trigger_source, src, dst, options) }
     }
@@ -225,6 +229,10 @@ impl<'d> Channel<'d> {
             options.mode.terminates(),
             "a repeating TransferMode never finishes; use FullChannel's repeating constructors"
         );
+        assert!(
+            options.early_irq.is_none(),
+            "early_irq needs a full-feature channel; the field reads back zero on a basic one"
+        );
 
         unsafe { self.start_write(trigger_source, src, dst, options) }
     }
@@ -290,6 +298,52 @@ impl<'d> FullChannel<'d> {
     /// Reborrow the channel as a basic [`Channel`], allowing it to be used in multiple places.
     pub fn reborrow(&mut self) -> Channel<'_> {
         self.0.reborrow()
+    }
+
+    /// Create a read transfer, with the full channel's extra options available.
+    ///
+    /// The same as [`Channel::read`] except that [`TransferOptions::early_irq`] is accepted here --
+    /// only a full-feature channel implements it.
+    ///
+    /// # Safety
+    ///
+    /// As [`Channel::read`].
+    pub unsafe fn read<'a, SW: Word, DW: Word>(
+        &'a mut self,
+        trigger_source: u8,
+        src: *mut SW,
+        dst: &'a mut [DW],
+        options: TransferOptions,
+    ) -> Result<Transfer<'a>, Error> {
+        assert!(
+            options.mode.terminates(),
+            "a repeating TransferMode never finishes; use read_repeating"
+        );
+
+        unsafe { self.0.start_read(trigger_source, src, dst as *mut [DW], options) }
+    }
+
+    /// Create a write transfer, with the full channel's extra options available.
+    ///
+    /// The same as [`Channel::write`] except that [`TransferOptions::early_irq`] is accepted here --
+    /// only a full-feature channel implements it.
+    ///
+    /// # Safety
+    ///
+    /// As [`Channel::write`].
+    pub unsafe fn write<'a, SW: Word, DW: Word>(
+        &'a mut self,
+        trigger_source: u8,
+        src: &'a [SW],
+        dst: *mut DW,
+        options: TransferOptions,
+    ) -> Result<Transfer<'a>, Error> {
+        assert!(
+            options.mode.terminates(),
+            "a repeating TransferMode never finishes; use write_repeating"
+        );
+
+        unsafe { self.0.start_write(trigger_source, src as *const [SW], dst, options) }
     }
 
     /// Start a repeating read, which runs until it is stopped.
@@ -523,6 +577,47 @@ impl TransferMode {
     }
 }
 
+/// When the early interrupt fires, counted in transfers still to go.
+///
+/// The ladder is the hardware's and **it has no sixteen** -- it steps 1, 2, 4, 8, 32, 64. A caller
+/// wanting sixteen has to pick a neighbour, which is why this is a type rather than a count the
+/// driver would have to reject half of.
+///
+/// [`Half`](Self::Half) is relative to the *original* transfer size, so under a repeating mode it
+/// means half of every pass rather than half of the first.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum EarlyIrq {
+    /// One transfer left.
+    One,
+    /// Two transfers left.
+    Two,
+    /// Four transfers left.
+    Four,
+    /// Eight transfers left.
+    Eight,
+    /// Thirty-two transfers left.
+    ThirtyTwo,
+    /// Sixty-four transfers left.
+    SixtyFour,
+    /// Half the original count left.
+    Half,
+}
+
+impl EarlyIrq {
+    const fn to_preirq(self) -> Preirq {
+        match self {
+            Self::One => Preirq::Preirq1,
+            Self::Two => Preirq::Preirq2,
+            Self::Four => Preirq::Preirq4,
+            Self::Eight => Preirq::Preirq8,
+            Self::ThirtyTwo => Preirq::Preirq32,
+            Self::SixtyFour => Preirq::Preirq64,
+            Self::Half => Preirq::PreirqHalf,
+        }
+    }
+}
+
 /// DMA transfer options.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -538,6 +633,13 @@ pub struct TransferOptions {
     /// How far the destination address moves between elements.
     #[cfg(dma_stride)]
     pub dst_stride: Stride,
+
+    /// Raise an interrupt this many transfers before the end, as well as at the end.
+    ///
+    /// [`Transfer::wait_for_early`] is what waits for it. **Full-feature channels only** -- the
+    /// field reads back zero on a basic one, so [`Channel::read`] and [`Channel::write`] refuse it
+    /// rather than accepting a setting that would do nothing.
+    pub early_irq: Option<EarlyIrq>,
 }
 
 impl TransferOptions {
@@ -553,6 +655,7 @@ impl TransferOptions {
             src_stride: Stride::One,
             #[cfg(dma_stride)]
             dst_stride: Stride::One,
+            early_irq: None,
         }
     }
 }
@@ -665,6 +768,33 @@ impl<'a> Transfer<'a> {
         self.channel.is_running()
     }
 
+    /// Wait for the early interrupt [`TransferOptions::early_irq`] asked for.
+    ///
+    /// Resolves once the count has fallen to the chosen threshold, which is a point *during* the
+    /// transfer -- awaiting the [`Transfer`] itself still waits for the end. Waiting on a transfer
+    /// that asked for no early interrupt would never resolve, so it panics instead.
+    ///
+    /// Fires once per armed transfer. Under a repeating mode the count reloads, but the early line is
+    /// masked when it fires, so this reports the first pass and not the ones after it.
+    pub fn wait_for_early(&mut self) -> impl Future<Output = ()> + '_ {
+        assert!(
+            self.channel.ctl().read().preirq() != Preirq::PreirqDisable,
+            "wait_for_early needs TransferOptions::early_irq set"
+        );
+
+        let state: &ChannelState = &STATE[self.channel.id as usize];
+
+        core::future::poll_fn(move |cx| {
+            state.waker.register(cx.waker());
+
+            if state.early.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+    }
+
     /// Blocking wait until the transfer finishes.
     pub fn blocking_wait(mut self) {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
@@ -771,11 +901,20 @@ struct ChannelState {
     /// Woken by [`on_irq`], which is the only waker side: every channel's interrupt is the one `DMA`
     /// line, so the handler cannot preempt itself.
     waker: IrqWaker,
+
+    /// Set by the handler when the `PRE-IRQ` event fires, cleared when a transfer is armed.
+    ///
+    /// A flag rather than a second waker: both events reach the same line and the same task, so one
+    /// wake serves them and the flag is what says which one arrived.
+    early: AtomicBool,
 }
 
 impl ChannelState {
     const fn new() -> Self {
-        Self { waker: IrqWaker::new() }
+        Self {
+            waker: IrqWaker::new(),
+            early: AtomicBool::new(false),
+        }
     }
 }
 
@@ -856,6 +995,15 @@ impl<'d> Channel<'d> {
     }
 
     #[inline]
+    /// Unmask or mask this channel's `PRE-IRQ` line, which is a bit of its own.
+    fn mask_early_interrupt(&self, enable: bool) {
+        critical_section::with(|_cs| {
+            pac::DMA.int_event(0).imask().modify(|w| {
+                w.set_preirqch(self.id as usize, enable);
+            });
+        })
+    }
+
     fn mask_interrupt(&self, enable: bool) {
         // Enabling interrupts is an RMW operation.
         critical_section::with(|_cs| {
@@ -902,7 +1050,10 @@ impl<'d> Channel<'d> {
         self.ctl().modify(|w| {
             // Not every part supports auto enable, so force its value to 0.
             w.set_autoen(Autoen::None);
-            w.set_preirq(Preirq::PreirqDisable);
+            w.set_preirq(match options.early_irq {
+                Some(early) => early.to_preirq(),
+                None => Preirq::PreirqDisable,
+            });
             w.set_srcwdth(src_wdth);
             w.set_dstwdth(dst_wdth);
             w.set_srcincr(if increment_src {
@@ -966,6 +1117,27 @@ impl<'d> Channel<'d> {
         });
 
         self.mask_interrupt(true);
+
+        // Read back rather than carry a copy: `configure` has just written `PREIRQ`, and the register
+        // cannot disagree with what the hardware will do. Only `start` arms this -- `resume` leaves it
+        // alone, so an early event already delivered is not raised a second time.
+        if self.ctl().read().preirq() != Preirq::PreirqDisable {
+            // Sixteen channels can complete and only eight can report early, so the mask bit does not
+            // exist above that. Saying so beats the metapac's own bounds assert, which names an index
+            // rather than the reason.
+            assert!(
+                (self.id as usize) < PREIRQ_LINES,
+                "this channel has no PRE-IRQ line, so early_irq cannot be delivered on it"
+            );
+
+            STATE[self.id as usize].early.store(false, Ordering::Relaxed);
+
+            pac::DMA.int_event(0).iclr().write(|w| {
+                w.set_preirqch(self.id as usize, true);
+            });
+
+            self.mask_early_interrupt(true);
+        }
 
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         compiler_fence(Ordering::SeqCst);
@@ -1055,6 +1227,12 @@ macro_rules! impl_full_dma_channel {
 /// Lowest `IIDX` index that names a channel; zero is "nothing pending".
 const IIDX_CH0: u8 = pac::dma::vals::Stat::Ch0.to_bits();
 
+/// How many channels have a `PRE-IRQ` line, which is fewer than have a completion one.
+const PREIRQ_LINES: usize = 8;
+
+/// Lowest `IIDX` index that names a `PRE-IRQ`; they sit above every channel.
+const IIDX_PREIRQCH0: u8 = pac::dma::vals::Stat::Preirqch0.to_bits();
+
 /// The two error indices, which sort above every channel and every `PRE-IRQ`.
 const IIDX_ADDRERR: u8 = pac::dma::vals::Stat::Addrerr.to_bits();
 const IIDX_DATAERR: u8 = pac::dma::vals::Stat::Dataerr.to_bits();
@@ -1086,9 +1264,28 @@ fn on_irq(dma: pac::dma::Dma) {
             _ => {}
         }
 
-        // `PRE-IRQ` indices sit above the channels and below the errors. Every channel disables it in
-        // `CTL`, so nothing unmasks one and `IIDX` cannot report it — but it costs a bounds check to
-        // say so rather than indexing past the end.
+        // `PRE-IRQ` indices sit above the channels and below the errors, so subtracting `IIDX_CH0`
+        // from one names a channel that is not the right one rather than running off the end. Take
+        // that arm first.
+        if stat >= IIDX_PREIRQCH0 {
+            let channel = (stat - IIDX_PREIRQCH0) as usize;
+
+            let Some(state) = STATE.get(channel) else {
+                break 'dispatch;
+            };
+
+            state.early.store(true, Ordering::Release);
+            state.waker.wake();
+
+            // One early event per armed transfer. Left unmasked under a repeating mode it would raise
+            // again on every pass, since the count reloads.
+            events.imask().modify(|w| {
+                w.set_preirqch(channel, false);
+            });
+
+            break 'dispatch;
+        }
+
         let channel = (stat - IIDX_CH0) as usize;
 
         let Some(state) = STATE.get(channel) else {
