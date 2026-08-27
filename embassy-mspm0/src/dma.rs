@@ -180,8 +180,9 @@ impl<'d> Channel<'d> {
             dst.cast(),
             DW::width(),
             count as u16,
-            false,
-            true,
+            Incr::Unchanged,
+            options.dst_incr(),
+            Em::Normal,
             options,
         );
         transfer.channel.start();
@@ -265,8 +266,9 @@ impl<'d> Channel<'d> {
             dst.cast(),
             DW::width(),
             count as u16,
-            true,
-            false,
+            options.src_incr(),
+            Incr::Unchanged,
+            Em::Normal,
             options,
         );
         transfer.channel.start();
@@ -344,6 +346,66 @@ impl<'d> FullChannel<'d> {
         );
 
         unsafe { self.0.start_write(trigger_source, src as *const [SW], dst, options) }
+    }
+
+    /// Write a pattern across a buffer, without a source buffer to read it from.
+    ///
+    /// The pattern lives in the source *address* register rather than in memory, which is what makes
+    /// this a constructor rather than a transfer option: there is no source slice to point at, and a
+    /// caller handing one over would have it read as a pattern.
+    ///
+    /// [`FillStep`] decides whether every element gets the same value or the pattern ramps, so this
+    /// covers both a memset and a rising or falling sequence.
+    ///
+    /// [`TransferOptions::mode`] is ignored -- the hardware forces a block transfer in fill mode --
+    /// and so is [`TransferOptions::src_stride`], since nothing is being read.
+    ///
+    /// # Safety
+    ///
+    /// The hardware writes `dst` behind the compiler's back, so the returned [`Transfer`] has to be
+    /// awaited, `blocking_wait`ed or dropped before `dst` is read.
+    pub unsafe fn fill<'a, W: Word>(
+        &'a mut self,
+        trigger_source: u8,
+        dst: &'a mut [W],
+        pattern: u32,
+        step: FillStep,
+        options: TransferOptions,
+    ) -> Result<Transfer<'a>, Error> {
+        #[cfg(dma_stride)]
+        let count = strided_count(dst.len(), options.dst_stride.step());
+        #[cfg(not(dma_stride))]
+        let count = dst.len();
+
+        verify_transfer(count)?;
+
+        let channel = &mut self.0;
+        let wake_guard = channel.transfer_guard(trigger_source);
+        let transfer = Transfer {
+            channel: channel.reborrow(),
+            wake_guard,
+        };
+
+        unsafe {
+            transfer.channel.configure(
+                trigger_source,
+                // Not a pointer. `SA` holds the pattern itself, and `configure` writes whatever it is
+                // given straight into that register.
+                pattern as *const u32,
+                step.to_wdth(),
+                dst.as_ptr().cast(),
+                W::width(),
+                count as u16,
+                step.to_incr(),
+                options.dst_incr(),
+                Em::Fillmode,
+                options,
+            );
+        }
+
+        transfer.channel.start();
+
+        Ok(transfer)
     }
 
     /// Start a repeating read, which runs until it is stopped.
@@ -618,6 +680,67 @@ impl EarlyIrq {
     }
 }
 
+/// How much a stepping fill pattern moves between writes.
+///
+/// **This is programmed into `SRCWDTH`, which is a width everywhere else.** Fill mode is the one
+/// place the field means a magnitude instead, per SLAU846 Table 5-4, and the two readings of the
+/// same bits are why fill has a constructor of its own rather than a flag on a transfer.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum FillDelta {
+    /// Steps by one.
+    One,
+    /// Steps by two.
+    Two,
+    /// Steps by four.
+    Four,
+    /// Steps by eight.
+    Eight,
+}
+
+impl FillDelta {
+    const fn to_wdth(self) -> Wdth {
+        match self {
+            Self::One => Wdth::Byte,
+            Self::Two => Wdth::Half,
+            Self::Four => Wdth::Word,
+            Self::Eight => Wdth::Long,
+        }
+    }
+}
+
+/// How a fill pattern changes from one element to the next.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum FillStep {
+    /// Every element gets the same value.
+    Constant,
+    /// Each element is the one before it plus [`FillDelta`], for a rising ramp.
+    Up(FillDelta),
+    /// Each element is the one before it minus [`FillDelta`], for a falling one.
+    Down(FillDelta),
+}
+
+impl FillStep {
+    /// The `SRCINCR` this needs. A constant pattern is a source that does not move.
+    const fn to_incr(self) -> Incr {
+        match self {
+            Self::Constant => Incr::Unchanged,
+            Self::Up(_) => Incr::Increment,
+            Self::Down(_) => Incr::Decrement,
+        }
+    }
+
+    /// The `SRCWDTH` this needs, which is a magnitude here rather than a width.
+    const fn to_wdth(self) -> Wdth {
+        match self {
+            // Unused when the pattern does not step, and `Byte` is the reset value.
+            Self::Constant => Wdth::Byte,
+            Self::Up(delta) | Self::Down(delta) => delta.to_wdth(),
+        }
+    }
+}
+
 /// DMA transfer options.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -721,6 +844,32 @@ impl Stride {
             Self::Seven => 7,
             Self::Eight => 8,
             Self::Nine => 9,
+        }
+    }
+}
+
+impl TransferOptions {
+    /// The `SRCINCR` value for an advancing source, honouring the stride where the device has one.
+    const fn src_incr(self) -> Incr {
+        #[cfg(dma_stride)]
+        {
+            self.src_stride.to_incr()
+        }
+        #[cfg(not(dma_stride))]
+        {
+            Incr::Increment
+        }
+    }
+
+    /// The `DSTINCR` value for an advancing destination, honouring the stride where the device has one.
+    const fn dst_incr(self) -> Incr {
+        #[cfg(dma_stride)]
+        {
+            self.dst_stride.to_incr()
+        }
+        #[cfg(not(dma_stride))]
+        {
+            Incr::Increment
         }
     }
 }
@@ -1028,8 +1177,9 @@ impl<'d> Channel<'d> {
         dst: *const u32,
         dst_wdth: Wdth,
         transfer_count: u16,
-        increment_src: bool,
-        increment_dst: bool,
+        src_incr: Incr,
+        dst_incr: Incr,
+        em: Em,
         options: TransferOptions,
     ) {
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
@@ -1056,32 +1206,10 @@ impl<'d> Channel<'d> {
             });
             w.set_srcwdth(src_wdth);
             w.set_dstwdth(dst_wdth);
-            w.set_srcincr(if increment_src {
-                #[cfg(dma_stride)]
-                {
-                    options.src_stride.to_incr()
-                }
-                #[cfg(not(dma_stride))]
-                {
-                    Incr::Increment
-                }
-            } else {
-                Incr::Unchanged
-            });
-            w.set_dstincr(if increment_dst {
-                #[cfg(dma_stride)]
-                {
-                    options.dst_stride.to_incr()
-                }
-                #[cfg(not(dma_stride))]
-                {
-                    Incr::Increment
-                }
-            } else {
-                Incr::Unchanged
-            });
+            w.set_srcincr(src_incr);
+            w.set_dstincr(dst_incr);
 
-            w.set_em(Em::Normal);
+            w.set_em(em);
             // Single and block will clear the enable bit when the transfers finish.
             w.set_tm(convert_mode(options.mode));
         });
