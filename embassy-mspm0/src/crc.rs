@@ -61,12 +61,26 @@
 //! block and never on the part. A block the driver has not been taught also fails to build, rather
 //! than being treated as one of the ones it knows.
 //!
-//! # `CRC_ERR_01`
+//! # Feeding by DMA, and why this driver does not
+//!
+//! The CRC publishes no event, so it has no DMA trigger: a channel aimed at it is started by
+//! software or cascaded from another channel. It never stalls either — a write to `CRCIN` takes one
+//! clock and no wait states.
+//!
+//! So TI aliases `CRCIN` across a range of addresses, which the TRM says is there "to allow memcpy
+//! to be used instead of DMA". Read the bounds off the CRC chapter; this driver does not use the
+//! alias, and every feed here is a CPU store.
+//!
+//! Cascading is where DMA still pays — one channel moving a received frame into SRAM triggering a
+//! second that moves it into `CRCIN`, so the checksum costs no wakeup.
+//!
+//! # `CRC/CRCP_ERR_01`
 //!
 //! On the families it applies to, **DMA cannot be triggered to reach this peripheral in a suspended
-//! low-power mode**. It does not affect anything this driver does — every feed here is a CPU store —
-//! but a design that planned to checksum a buffer by DMA while the core sleeps does not work, and
-//! nothing reports it. There is no workaround, so there is no code for it.
+//! low-power mode**. Nothing here is affected, but a design that planned to checksum a buffer by DMA
+//! while the core sleeps does not work, and nothing reports it. TI's two workarounds are both
+//! avoidance — stay out of STOP and STANDBY, or wake before triggering the transfer — so there is
+//! nothing for this driver to do.
 
 #![macro_use]
 
