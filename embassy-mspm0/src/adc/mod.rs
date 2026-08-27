@@ -374,6 +374,29 @@ impl Default for Conversion {
     }
 }
 
+/// When the ADC powers its analog front end down.
+///
+/// # `Auto` costs every sample window, not just the first
+///
+/// Under [`Self::Auto`] the ADC is powered down between conversions and has to wake before sampling
+/// can begin, so **the wake-up time joins each sample window rather than being paid once at enable**.
+/// Against the driver's default window of about 6.25 us, a 5 us wake-up roughly doubles it. Size the
+/// window with [`Config::WAKEUP_MAX_NS`] or [`Config::WAKEUP_TYP_NS`] in hand, and read what those
+/// two mean before picking one — they are not interchangeable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum PowerDown {
+    /// Stay powered between conversions. Fastest, and what this driver has always done.
+    #[default]
+    Manual,
+
+    /// Power down between conversions, and wake before each sample window.
+    ///
+    /// Lower current where conversions are infrequent. The cost is a longer sample window on every
+    /// one of them, not a one-off at startup.
+    Auto,
+}
+
 /// ADC configuration.
 #[derive(Copy, Clone)]
 #[non_exhaustive]
@@ -451,6 +474,13 @@ pub struct Config {
     /// Both thresholds are checked against [`Self::resolution`]'s full scale, because a code the
     /// resolution cannot produce is a threshold nothing can ever cross.
     pub window: Option<Window>,
+
+    /// When the analog front end powers down.
+    ///
+    /// Defaults to [`PowerDown::Manual`], which is what this driver did before the setting existed.
+    /// [`PowerDown::Auto`] lowers current between conversions and lengthens every sample window --
+    /// see the type for the arithmetic.
+    pub power_down: PowerDown,
 }
 
 impl Config {
@@ -465,6 +495,40 @@ impl Config {
     /// [`None`] means the metadata is missing the figure, never that the device has no minimum.
     /// Every datasheet states one. Treat it as a reason to stop rather than as "no constraint".
     pub const SAMPLE_MIN_NS: Option<u32> = crate::_generated::ADC_SAMPLE_MIN_NS;
+
+    /// The datasheet's worst-case `Twakeup`, in nanoseconds, or [`None`] where it publishes none.
+    ///
+    /// Only meaningful under [`PowerDown::Auto`], where the ADC wakes before every sample window.
+    ///
+    /// **Exactly one of this and [`Self::WAKEUP_TYP_NS`] is set on any device, and which one is
+    /// itself a fact about the datasheet.** Fifteen families state a ceiling here — 5 us on every one
+    /// of them so far. The `l110x`, `l130x` and `l134x` families state 1 us as a *typical* and give
+    /// no worst case at all, so on those parts this is [`None`] and there is nothing to design
+    /// against.
+    ///
+    /// A window sized on this has margin by construction. A window sized on a typical does not.
+    pub const WAKEUP_MAX_NS: Option<u32> = crate::_generated::ADC_WAKEUP_MAX_NS;
+
+    /// The datasheet's typical `Twakeup`, in nanoseconds, or [`None`] where it publishes a ceiling
+    /// instead.
+    ///
+    /// **A typical is not a bound.** Sizing a sample window on it is a choice to run without margin,
+    /// which may be the right one on a part that offers nothing better — but it should be a choice.
+    /// See [`Self::WAKEUP_MAX_NS`] for which devices are which.
+    pub const WAKEUP_TYP_NS: Option<u32> = crate::_generated::ADC_WAKEUP_TYP_NS;
+
+    /// The wake-up figure to size a sample window against, worst case preferred.
+    ///
+    /// Falls back to the typical where the datasheet publishes no ceiling, so **the result is not
+    /// always a bound** — [`Self::WAKEUP_MAX_NS`] being [`Some`] is what tells the two apart.
+    /// Never [`None`], because every device publishes one or the other.
+    pub const fn wakeup_ns() -> u32 {
+        match (Self::WAKEUP_MAX_NS, Self::WAKEUP_TYP_NS) {
+            (Some(max), _) => max,
+            (None, Some(typ)) => typ,
+            (None, None) => core::panic!("this device publishes neither a Twakeup maximum nor a typical"),
+        }
+    }
 
     /// The shortest window for reading an OPA output at `gain`, in nanoseconds.
     ///
@@ -531,6 +595,7 @@ impl Config {
             sample_period_1: NonZeroU16::new(50).unwrap(),
             averaging: None,
             window: None,
+            power_down: PowerDown::Manual,
         }
     }
 }

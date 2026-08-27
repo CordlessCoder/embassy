@@ -893,6 +893,14 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
     // arrives as something a caller can refuse instead of as a plausible number.
     let sample_min_ns = option_u32(first.sample_min_ns);
 
+    // Exactly one of these is set on every device -- the metapac's `verify.rs` rejects an ADC with
+    // neither or both -- and *which* one is itself the fact. Fifteen families publish a `Twakeup`
+    // ceiling; `l110x`, `l130x` and `l134x` publish only a typical and give no worst case to design
+    // against. Both are emitted rather than folded into one number, so a caller can tell a bound
+    // from a typical instead of being handed a figure that looks like both.
+    let wakeup_max_ns = option_u32(first.wakeup_max_ns);
+    let wakeup_typ_ns = option_u32(first.wakeup_typ_ns);
+
     // Empty is a real answer meaning the chip has no amplifier, not that nobody extracted it. A
     // chip that has one and an empty table fails generation upstream, so it cannot reach here.
     let pga: Vec<TokenStream> = first
@@ -913,6 +921,8 @@ fn generate_adc_constants(cfgs: &mut CfgSet) -> TokenStream {
         pub const ADC_CLK_MAX_HZ: u32 = #max;
 
         pub const ADC_SAMPLE_MIN_NS: Option<u32> = #sample_min_ns;
+        pub const ADC_WAKEUP_MAX_NS: Option<u32> = #wakeup_max_ns;
+        pub const ADC_WAKEUP_TYP_NS: Option<u32> = #wakeup_typ_ns;
         pub const ADC_PGA_SAMPLE_NS: &[(u8, u32)] = &[#(#pga),*];
     }
 }

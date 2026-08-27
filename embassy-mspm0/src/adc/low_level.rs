@@ -52,7 +52,7 @@ use core::num::NonZeroU16;
 
 use super::{
     ADC_MEMCTL, Averaging, BorrowedAdcChannel, BorrowedChannel, Config, Conversion, Instance, Resolution, SampleClock,
-    SampleClockSel, SampleTimeComparator, Vrsel, Window,
+    PowerDown, SampleClockSel, SampleTimeComparator, Vrsel, Window,
 };
 use crate::Peri;
 use crate::interrupt::Interrupt;
@@ -380,6 +380,29 @@ pub(crate) fn configure<T: Instance>(config: Config) -> Option<SleepLevel> {
     let r = T::info().regs;
     let (source, adcclk_hz, sclkdiv, frange) = adc_clock_regs(config.sample_clk);
 
+    // Under `Auto` the front end wakes before *every* sample window rather than once at enable, so a
+    // window shorter than the wake-up samples an ADC that is not ready yet. The reading is a real
+    // number rather than an error, which is what makes it worth refusing here.
+    //
+    // Checked against the shorter of the two comparators, because a sequence is free to use either
+    // and the driver cannot know which conversions will. `wakeup_ns` prefers the datasheet's worst
+    // case and falls back to its typical, so on the L1 families this bound is a typical -- see
+    // `Config::WAKEUP_MAX_NS`.
+    if matches!(config.power_down, PowerDown::Auto) {
+        // The period counts SAMPCLK cycles, and SAMPCLK is ADCCLK *after* `SCLKDIV` -- whose
+        // encoding is the shift, so the divisor is `1 << bits`. Using ADCCLK here instead would make
+        // the window look four to eight times shorter than it is and reject configurations that are
+        // fine.
+        let sampclk_hz = (adcclk_hz >> sclkdiv.to_bits()) as u64;
+        let shortest = config.sample_period_0.get().min(config.sample_period_1.get()) as u64;
+        let window_ns = shortest * 1_000_000_000 / sampclk_hz;
+
+        assert!(
+            window_ns >= Config::wakeup_ns() as u64,
+            "PowerDown::Auto needs a sample window at least Config::wakeup_ns() long"
+        );
+    }
+
     r.gprcm(0).rstctl().write(|w| {
         w.set_resetstkyclr(true);
         w.set_resetassert(true);
@@ -401,8 +424,10 @@ pub(crate) fn configure<T: Instance>(config: Config) -> Option<SleepLevel> {
 
     r.ctl0().write(|w| {
         w.set_enc(false);
-        // TODO: power down config
-        w.set_pwrdn(vals::Pwrdn::Manual);
+        w.set_pwrdn(match config.power_down {
+            PowerDown::Manual => vals::Pwrdn::Manual,
+            PowerDown::Auto => vals::Pwrdn::Auto,
+        });
         w.set_sclkdiv(sclkdiv);
     });
 
