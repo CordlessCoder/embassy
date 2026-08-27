@@ -775,6 +775,7 @@ fn generate_gpio_port_interrupts() -> TokenStream {
 fn generate_dma_channel_count(cfgs: &mut CfgSet) -> TokenStream {
     cfgs.declare("dma_long_long");
     cfgs.declare("dma_stride");
+    cfgs.declare("dma_gather");
 
     let count = METADATA.dma_channels.len();
 
@@ -802,11 +803,18 @@ fn generate_dma_channel_count(cfgs: &mut CfgSet) -> TokenStream {
         cfgs.enable("dma_stride");
     }
 
-    // `Dma::gather_mode` is deliberately not turned into a cfg yet: gather needs a descriptor table in
-    // memory and no driver path builds one, so a cfg for it would gate nothing. Two things to keep
-    // when that changes -- gather is full-channel-only on every device that has it, unlike stride, and
-    // the metadata field is *not* "has extended modes": table and fill are older and present on
-    // devices where it is false.
+    // Unlike the three above, this one is *not* enough on its own: gather is full-channel only on
+    // every device that has it, so a driver combines this with `DmaChannel::full`. And it is not "has
+    // extended modes" -- fill and table are older and present on devices where this is false, which is
+    // why they are offered unconditionally and only gather is gated.
+    if METADATA
+        .peripherals
+        .iter()
+        .filter_map(|peripheral| peripheral.dma)
+        .any(|dma| dma.gather_mode)
+    {
+        cfgs.enable("dma_gather");
+    }
 
     quote! { pub const DMA_CHANNELS: usize = #count; }
 }

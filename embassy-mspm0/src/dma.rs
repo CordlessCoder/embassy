@@ -466,6 +466,64 @@ impl<'d> FullChannel<'d> {
         Ok(transfer)
     }
 
+    /// Read from scattered addresses into one contiguous buffer.
+    ///
+    /// `sources` is a table of addresses, not of data: the controller walks it, reads one element
+    /// from each address it names, and stores them back to back in `dst`. That collects values from
+    /// places that are not next to each other -- several peripherals' data registers, or picked-out
+    /// entries of a larger structure -- without the CPU touching any of them.
+    ///
+    /// One element per address, so `dst` has to be at least as long as `sources`; the shorter of the
+    /// two bounds the transfer.
+    ///
+    /// # Safety
+    ///
+    /// **Every address in `sources` is dereferenced.** The caller is asserting that each names
+    /// readable memory for the whole transfer. `sources` itself must also stay put and unmodified
+    /// while it runs, and the hardware writes `dst` behind the compiler's back, so the returned
+    /// [`Transfer`] has to be awaited, `blocking_wait`ed or dropped before `dst` is read.
+    #[cfg(dma_gather)]
+    pub unsafe fn gather<'a, W: Word>(
+        &'a mut self,
+        trigger_source: u8,
+        sources: &'a [*const W],
+        dst: &'a mut [W],
+        options: TransferOptions,
+    ) -> Result<Transfer<'a>, Error> {
+        // One element arrives per address, so the table is as much a bound on the transfer as the
+        // destination is. Taking the shorter keeps both a bound rather than trusting them to agree.
+        let count = sources.len().min(dst.len());
+
+        verify_transfer(count)?;
+
+        let channel = &mut self.0;
+        let wake_guard = channel.transfer_guard(trigger_source);
+        let transfer = Transfer {
+            channel: channel.reborrow(),
+            wake_guard,
+        };
+
+        unsafe {
+            transfer.channel.configure(
+                trigger_source,
+                sources.as_ptr().cast(),
+                W::width(),
+                dst.as_ptr().cast(),
+                W::width(),
+                count as u16,
+                // The table is walked, so the source advances; the entries it holds are what vary.
+                Incr::Increment,
+                options.dst_incr(),
+                Em::Gathermode,
+                options,
+            );
+        }
+
+        transfer.channel.start();
+
+        Ok(transfer)
+    }
+
     /// Start a repeating read, which runs until it is stopped.
     ///
     /// [`TransferOptions::mode`] has to be one of the repeating modes; the terminating ones belong
