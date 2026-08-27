@@ -52,7 +52,7 @@ use core::num::NonZeroU16;
 
 use super::{
     ADC_MEMCTL, Averaging, BorrowedAdcChannel, BorrowedChannel, Config, Conversion, Instance, Resolution, SampleClock,
-    PowerDown, SampleClockSel, SampleTimeComparator, Vrsel, Window,
+    ConversionMode, PowerDown, SampleClockSel, SampleTimeComparator, Vrsel, Window,
 };
 use crate::Peri;
 use crate::interrupt::Interrupt;
@@ -439,7 +439,12 @@ pub(crate) fn configure<T: Instance>(config: Config) -> Option<SleepLevel> {
         w.set_trigsrc(vals::Trigsrc::Software);
         // Configured, not converting; a read starts it.
         w.set_sc(false);
-        w.set_conseq(vals::Conseq::Sequence);
+        w.set_conseq(match config.conversion_mode {
+            ConversionMode::Single => vals::Conseq::Single,
+            ConversionMode::Sequence => vals::Conseq::Sequence,
+            ConversionMode::RepeatSingle => vals::Conseq::Repeatsingle,
+            ConversionMode::RepeatSequence => vals::Conseq::Repeatsequence,
+        });
         w.set_sampmode(vals::Sampmode::Auto);
 
         // One rate for the peripheral; `Conversion::average` picks which conversions use it.

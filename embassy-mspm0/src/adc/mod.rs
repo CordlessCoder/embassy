@@ -397,6 +397,46 @@ pub enum PowerDown {
     Auto,
 }
 
+/// How many conversions a start produces, and whether it stops.
+///
+/// # The repeating modes do not finish
+///
+/// [`Self::RepeatSingle`] and [`Self::RepeatSequence`] convert until `ENC` is cleared, so nothing
+/// that waits for a conversion to complete will ever return. That is what they are for -- a
+/// free-running ADC feeding the window comparator or the DMA raises its events without the CPU
+/// asking -- but it means **the blocking and async drivers reject them at construction** rather than
+/// hanging on the first read. Drive a repeating mode through [`low_level`], which starts and stops
+/// the counter itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ConversionMode {
+    /// One conversion of the channel at `STARTADD`.
+    Single,
+
+    /// One pass over the channels from `STARTADD` to `ENDADD`.
+    ///
+    /// The default, and what this driver did before the setting existed. A single-channel read is a
+    /// sequence of one.
+    #[default]
+    Sequence,
+
+    /// The channel at `STARTADD`, repeatedly, until stopped.
+    RepeatSingle,
+
+    /// The sequence, repeatedly, until stopped.
+    RepeatSequence,
+}
+
+impl ConversionMode {
+    /// Whether this mode ever stops on its own.
+    ///
+    /// The mode drivers refuse the ones that do not, because every read they offer waits for a
+    /// completion that would never come.
+    pub const fn terminates(self) -> bool {
+        matches!(self, Self::Single | Self::Sequence)
+    }
+}
+
 /// ADC configuration.
 #[derive(Copy, Clone)]
 #[non_exhaustive]
@@ -481,6 +521,12 @@ pub struct Config {
     /// [`PowerDown::Auto`] lowers current between conversions and lengthens every sample window --
     /// see the type for the arithmetic.
     pub power_down: PowerDown,
+
+    /// How many conversions a start produces.
+    ///
+    /// Defaults to [`ConversionMode::Sequence`]. The repeating modes are `low_level`-only -- see the
+    /// type for why.
+    pub conversion_mode: ConversionMode,
 }
 
 impl Config {
@@ -596,6 +642,7 @@ impl Config {
             averaging: None,
             window: None,
             power_down: PowerDown::Manual,
+            conversion_mode: ConversionMode::Sequence,
         }
     }
 }
@@ -627,6 +674,11 @@ pub struct Adc<'d, T: Instance, M: Mode> {
 impl<'d, T: Instance> Adc<'d, T, Blocking> {
     /// Create a blocking ADC driver.
     pub fn new_blocking(peri: Peri<'d, T>, config: Config) -> Self {
+        assert!(
+            config.conversion_mode.terminates(),
+            "a repeating ConversionMode never completes; drive it through adc::low_level"
+        );
+
         Adc {
             inner: low_level::Adc::new(peri, config),
             _mode: PhantomData,
@@ -685,6 +737,11 @@ impl<'d, T: Instance> Adc<'d, T, Async> {
         _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
+        assert!(
+            config.conversion_mode.terminates(),
+            "a repeating ConversionMode never completes; drive it through adc::low_level"
+        );
+
         let inner = low_level::Adc::new(peri, config);
         unsafe { T::info().interrupt.enable() };
 
