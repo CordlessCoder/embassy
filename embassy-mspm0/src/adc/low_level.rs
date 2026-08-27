@@ -52,7 +52,7 @@ use core::num::NonZeroU16;
 
 use super::{
     ADC_MEMCTL, Averaging, BorrowedAdcChannel, BorrowedChannel, Config, Conversion, Instance, Resolution, SampleClock,
-    SampleClockSel, SampleTimeComparator, Vrsel,
+    SampleClockSel, SampleTimeComparator, Vrsel, Window,
 };
 use crate::Peri;
 use crate::interrupt::Interrupt;
@@ -92,6 +92,12 @@ pub enum Event {
     /// A result was below the window comparator's low threshold.
     WindowLow,
 
+    /// A result was inside the window comparator's band, ends included.
+    ///
+    /// The complement of [`Self::WindowHigh`] and [`Self::WindowLow`] taken together, and the one a
+    /// caller waiting for a signal to *return* to range arms.
+    WindowInRange,
+
     /// Any `MEMRES` result at all.
     ///
     /// A sequence arms only its last result and lets the earlier ones latch quietly, so a handler
@@ -114,6 +120,7 @@ impl Event {
             Event::SequenceTimeout => mask.set_tovifg(true),
             Event::WindowHigh => mask.set_highifg(true),
             Event::WindowLow => mask.set_lowifg(true),
+            Event::WindowInRange => mask.set_inifg(true),
             Event::AnyResult => return RESULT_SOURCES,
         }
 
@@ -208,6 +215,18 @@ impl<'d, T: Instance> Adc<'d, T> {
     /// One comparator's sample period, in ADC sample clock cycles.
     pub fn sample_period(&self, comparator: SampleTimeComparator) -> u16 {
         self.regs().scomp(comparator.index()).read().val()
+    }
+
+    /// Move the window comparator's thresholds, or turn it off, without rebuilding the driver.
+    ///
+    /// [`Config::window`] sets these at construction. This is what a caller adjusting a band while
+    /// running needs — tracking a signal, or widening after a threshold has been crossed — since the
+    /// thresholds are two registers and nothing about them is tied to the rest of the configuration.
+    ///
+    /// Checked against the resolution in force now, not the one the [`Config`] was built with, which
+    /// matters because [`Self::set_resolution`] can have moved it since.
+    pub fn set_window(&mut self, window: Option<Window>) {
+        write_window::<T>(window, self.resolution());
     }
 
     /// Aim the next conversion at one channel, and set the window to it alone.
@@ -324,6 +343,36 @@ impl<'d, T: Instance> Adc<'d, T> {
 ///
 /// Resolved here rather than kept as a rate: `floor_for_operation` is `const` and both its inputs are
 /// known by the end of this function, so the driver stores the answer.
+/// Program the window comparator's thresholds, or clear them.
+///
+/// The codes are raw and the hardware does not rescale them when the resolution changes, so they are
+/// checked against whichever resolution is in force at the moment they are written. Clearing writes a
+/// zero high threshold, which is what tells [`set_conversion`] no window is configured — and is why
+/// [`Window::new`] rejects one.
+fn write_window<T: Instance>(window: Option<Window>, resolution: Resolution) {
+    let r = T::info().regs;
+
+    let Some(window) = window else {
+        r.wchigh().write(|w| w.set_data(0));
+        r.wclow().write(|w| w.set_data(0));
+        return;
+    };
+
+    let full_scale = resolution.max_count();
+
+    assert!(
+        window.high as u32 <= full_scale,
+        "the window's high threshold is above the resolution's full scale"
+    );
+    assert!(
+        window.low as u32 <= full_scale,
+        "the window's low threshold is above the resolution's full scale"
+    );
+
+    r.wclow().write(|w| w.set_data(window.low));
+    r.wchigh().write(|w| w.set_data(window.high));
+}
+
 pub(crate) fn configure<T: Instance>(config: Config) -> Option<SleepLevel> {
     assert!(config.sample_period_0 <= Config::MAX_SAMPLE_PERIOD);
     assert!(config.sample_period_1 <= Config::MAX_SAMPLE_PERIOD);
@@ -389,6 +438,8 @@ pub(crate) fn configure<T: Instance>(config: Config) -> Option<SleepLevel> {
         w.set_endadd(0);
     });
 
+    write_window::<T>(config.window, config.resolution);
+
     r.scomp(SampleTimeComparator::Scomp0.index()).write(|w| {
         w.set_val(config.sample_period_0.get());
     });
@@ -410,6 +461,13 @@ pub(crate) fn write_memctl<T: Instance>(i: usize, ch: u8, conversion: Conversion
         !conversion.average || r.ctl1().read().avgn() != vals::Avgn::Disable,
         "Conversion::average needs Config::averaging set"
     );
+    // Same reasoning: read back rather than keep a copy. `Window::new` rejects a zero high
+    // threshold, so a zero here means `Config::window` was `None` and nothing programmed one.
+    assert!(
+        !conversion.window || r.wchigh().read().data() != 0,
+        "Conversion::window needs Config::window set"
+    );
+
 
     r.memctl(i).write(|w| {
         w.set_chansel(ch);
@@ -418,7 +476,7 @@ pub(crate) fn write_memctl<T: Instance>(i: usize, ch: u8, conversion: Conversion
         w.set_avgen(conversion.average);
         w.set_bcsen(false);
         w.set_trig(vals::Trig::AutoNext);
-        w.set_wincomp(false);
+        w.set_wincomp(conversion.window);
     });
 }
 

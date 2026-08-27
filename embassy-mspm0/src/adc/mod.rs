@@ -306,7 +306,53 @@ pub struct Conversion {
     /// the whole peripheral, so a sequence can average some of its channels and not others. Setting
     /// this with no [`Config::averaging`] is a caller error and panics.
     pub average: bool,
-    // TODO: BCS, TRIG, WINCOMP
+
+    /// Check this conversion's result against [`Config::window`].
+    ///
+    /// Per conversion for the same reason as [`Self::average`]: the hardware enables the comparison
+    /// per conversion but holds one pair of thresholds for the whole peripheral, so a sequence can
+    /// watch some of its channels and not others. Setting this with no [`Config::window`] is a
+    /// caller error and panics.
+    pub window: bool,
+    // TODO: BCS, TRIG
+}
+
+/// The window comparator's thresholds, in raw conversion codes.
+///
+/// One comparator unit serves the whole peripheral, so these are global to every channel and
+/// [`Conversion::window`] is what decides which conversions are checked against them.
+///
+/// **The codes are raw and the hardware does not rescale them.** The TRM says so explicitly:
+/// changing [`Config::resolution`] or the data format leaves the thresholds exactly as they were.
+/// The same voltage is a different number at 12, 10 and 8 bits, so a threshold carried across a
+/// resolution change silently means a different level. Both are checked against the resolution the
+/// [`Config`] holding them was built with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Window {
+    /// Results below this code raise [`Event::WindowLow`](low_level::Event::WindowLow).
+    pub low: u16,
+
+    /// Results above this code raise [`Event::WindowHigh`](low_level::Event::WindowHigh).
+    pub high: u16,
+}
+
+impl Window {
+    /// Thresholds bracketing the in-range band.
+    ///
+    /// Panics if `low` is above `high`, which would leave no band for
+    /// [`Event::WindowInRange`](low_level::Event::WindowInRange) to report.
+    pub const fn new(low: u16, high: u16) -> Self {
+        // `core::assert!`, not the crate's: `crate::fmt`'s shim routes to defmt, which is not
+        // const-compatible.
+        core::assert!(low <= high, "the window's low threshold is above its high threshold");
+
+        // Nothing can sit below zero, so a zero high threshold leaves no in-range band and no
+        // below-range results. It is also what tells the driver a window was never configured.
+        core::assert!(high > 0, "the window's high threshold is zero, which no result can be inside");
+
+        Self { low, high }
+    }
 }
 
 impl Conversion {
@@ -316,6 +362,7 @@ impl Conversion {
             vrsel: Vrsel::VddaVssa,
             stime: SampleTimeComparator::Scomp0,
             average: false,
+            window: false,
         }
     }
 }
@@ -391,6 +438,19 @@ pub struct Config {
     /// A conversion takes this many times as long, and the driver holds its sleep guard for all of
     /// it.
     pub averaging: Option<Averaging>,
+
+    /// Thresholds for the window comparator, or [`None`] to leave it off.
+    ///
+    /// One unit for the whole peripheral, like [`Self::averaging`]: the thresholds are global and
+    /// [`Conversion::window`] picks which conversions are checked. A result outside the band raises
+    /// [`Event::WindowHigh`](low_level::Event::WindowHigh) or
+    /// [`Event::WindowLow`](low_level::Event::WindowLow), and one inside it raises
+    /// [`Event::WindowInRange`](low_level::Event::WindowInRange) — so a caller can sleep through
+    /// in-range conversions and be woken only when a reading leaves the band.
+    ///
+    /// Both thresholds are checked against [`Self::resolution`]'s full scale, because a code the
+    /// resolution cannot produce is a threshold nothing can ever cross.
+    pub window: Option<Window>,
 }
 
 impl Config {
@@ -470,6 +530,7 @@ impl Config {
             sample_period_0: NonZeroU16::new(50).unwrap(),
             sample_period_1: NonZeroU16::new(50).unwrap(),
             averaging: None,
+            window: None,
         }
     }
 }

@@ -347,3 +347,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: mspm0/tim: a pulse train that idles undriven releases the pin when the train stops, rather than after the output repair has run
 - fix: mspm0/tim: the first train a `PulseTrain` emits no longer opens with a notch against the resting level
 - mspm0/tim: `PulseTrain` documents why a train clocked from MFCLK emits short widths once the executor can reach STOP1, and how to hold it out
+- feat: mspm0/adc: the window comparator is reachable — `Config::window` sets the thresholds, `Conversion::window` picks which conversions are checked, and `Event::WindowInRange` joins the two existing flags
