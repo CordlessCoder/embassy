@@ -67,10 +67,8 @@ async fn main(_spawner: Spawner) -> ! {
     // The reference is off until here, and off again the moment this is dropped.
     let vref = Vref::new(p.VREF, vref::Config::default());
 
-    let internal = Conversion {
-        vrsel: Vrsel::IntrefVssa,
-        ..Default::default()
-    };
+    let mut internal = Conversion::new();
+    internal.vrsel = Vrsel::IntrefVssa;
 
     // The first conversion after the constructor returns is the one under test.
     let first = adc.blocking_read(&mut pin, internal);

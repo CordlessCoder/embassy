@@ -307,8 +307,28 @@ pub enum Averaging {
 }
 
 /// Sample conversion parameters.
+///
+/// # Building one in a `const`
+///
+/// [`Conversion::new`] is a `const fn` and the fields stay assignable, so a derived constant is a
+/// const block:
+///
+/// ```ignore
+/// const BASE: Conversion = Conversion::new();
+///
+/// const DIVIDER: Conversion = {
+///     let mut c = BASE;
+///     c.stime = SampleTimeComparator::Scomp1;
+///     c
+/// };
+/// ```
+///
+/// `Conversion { ..BASE }` is a struct expression, and this type takes none from another crate --
+/// settings are added here as the driver reaches more of the hardware, and a literal would stop
+/// compiling every time one is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub struct Conversion {
     // TODO: Bitpack a regs::Memctl for smaller size?
     /// Voltage reference selection.

@@ -35,14 +35,11 @@ async fn main(_spawner: Spawner) -> ! {
     // monitor is channel 15 on this part and 31 on the larger ones.
     let mut monitor = SupplyMonitor;
 
+    let mut against_reference = Conversion::new();
+    against_reference.vrsel = Vrsel::IntrefVssa;
+
     loop {
-        let against_vref = adc.blocking_read(
-            &mut monitor,
-            Conversion {
-                vrsel: Vrsel::IntrefVssa,
-                ..Default::default()
-            },
-        );
+        let against_vref = adc.blocking_read(&mut monitor, against_reference);
 
         let against_supply = adc.blocking_read(&mut monitor, Conversion::default());
 
