@@ -352,3 +352,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/adc: `Config::conversion_mode` selects single, sequence or repeating conversions; the repeating modes are rejected by the mode drivers and reachable through `adc::low_level`
 - feat: mspm0/adc: `Config::trigger`, `Conversion::triggered`, `Conversion::burn_out_current` and `Config::reset_sample_capacitor` reach the last four hardcoded conversion settings
 - mspm0/adc: `Conversion` is `#[non_exhaustive]`; build one with `Conversion::new()` and assign fields, since struct literals and struct update no longer work from another crate
+- feat: mspm0/dma: `TransferMode::RepeatSingle` and `RepeatBlock` on full-feature channels, through `FullChannel::read_repeating`/`write_repeating`, which return a stoppable handle rather than a future

@@ -140,6 +140,22 @@ impl<'d> Channel<'d> {
         dst: *mut [DW],
         options: TransferOptions,
     ) -> Result<Transfer<'a>, Error> {
+        assert!(
+            options.mode.terminates(),
+            "a repeating TransferMode never finishes; use FullChannel's repeating constructors"
+        );
+
+        unsafe { self.start_read(trigger_source, src, dst, options) }
+    }
+
+    /// The read path without the mode gate, so the repeating constructors can reach it.
+    unsafe fn start_read<'a, SW: Word, DW: Word>(
+        &'a mut self,
+        trigger_source: u8,
+        src: *mut SW,
+        dst: *mut [DW],
+        options: TransferOptions,
+    ) -> Result<Transfer<'a>, Error> {
         // Only the destination advances on a read, so only its stride shortens the count.
         #[cfg(dma_stride)]
         let count = strided_count(dst.len(), options.dst_stride.step());
@@ -205,6 +221,22 @@ impl<'d> Channel<'d> {
         dst: *mut DW,
         options: TransferOptions,
     ) -> Result<Transfer<'a>, Error> {
+        assert!(
+            options.mode.terminates(),
+            "a repeating TransferMode never finishes; use FullChannel's repeating constructors"
+        );
+
+        unsafe { self.start_write(trigger_source, src, dst, options) }
+    }
+
+    /// The write path without the mode gate, so the repeating constructors can reach it.
+    unsafe fn start_write<'a, SW: Word, DW: Word>(
+        &'a mut self,
+        trigger_source: u8,
+        src: *const [SW],
+        dst: *mut DW,
+        options: TransferOptions,
+    ) -> Result<Transfer<'a>, Error> {
         // Only the source advances on a write, so only its stride shortens the count.
         #[cfg(dma_stride)]
         let count = strided_count(src.len(), options.src_stride.step());
@@ -258,6 +290,85 @@ impl<'d> FullChannel<'d> {
     /// Reborrow the channel as a basic [`Channel`], allowing it to be used in multiple places.
     pub fn reborrow(&mut self) -> Channel<'_> {
         self.0.reborrow()
+    }
+
+    /// Start a repeating read, which runs until it is stopped.
+    ///
+    /// [`TransferOptions::mode`] has to be one of the repeating modes; the terminating ones belong
+    /// on [`Channel::read`], which returns a future instead.
+    ///
+    /// # Safety
+    ///
+    /// As [`Channel::read`], and for longer: the hardware reloads and writes `dst` again every time
+    /// the count runs out, so the borrow lasts until the returned handle is dropped rather than
+    /// until one pass finishes.
+    pub unsafe fn read_repeating<'a, SW: Word, DW: Word>(
+        &'a mut self,
+        trigger_source: u8,
+        src: *mut SW,
+        dst: &'a mut [DW],
+        options: TransferOptions,
+    ) -> Result<RepeatingTransfer<'a>, Error> {
+        assert!(
+            !options.mode.terminates(),
+            "a repeating constructor needs a repeating TransferMode"
+        );
+
+        // The gate in `read_raw` is on the terminating side, so this cannot reach it.
+        unsafe { self.0.start_read(trigger_source, src, dst as *mut [DW], options) }.map(RepeatingTransfer)
+    }
+
+    /// Start a repeating write, which runs until it is stopped.
+    ///
+    /// [`TransferOptions::mode`] has to be one of the repeating modes; the terminating ones belong
+    /// on [`Channel::write`], which returns a future instead.
+    ///
+    /// # Safety
+    ///
+    /// As [`Channel::write`], and for longer: the hardware reloads and reads `src` again every time
+    /// the count runs out, so the borrow lasts until the returned handle is dropped rather than
+    /// until one pass finishes.
+    pub unsafe fn write_repeating<'a, SW: Word, DW: Word>(
+        &'a mut self,
+        trigger_source: u8,
+        src: &'a [SW],
+        dst: *mut DW,
+        options: TransferOptions,
+    ) -> Result<RepeatingTransfer<'a>, Error> {
+        assert!(
+            !options.mode.terminates(),
+            "a repeating constructor needs a repeating TransferMode"
+        );
+
+        unsafe { self.0.start_write(trigger_source, src as *const [SW], dst, options) }.map(RepeatingTransfer)
+    }
+}
+
+/// A DMA transfer that reloads and runs again instead of finishing.
+///
+/// There is no future here on purpose. The repeating modes leave `DMAEN` set and restore the
+/// address and count registers, so nothing ever reports completion -- the transfer ends when this
+/// handle is dropped or [`stop`](Self::stop) is called.
+#[must_use = "the transfer stops when this is dropped"]
+pub struct RepeatingTransfer<'a>(Transfer<'a>);
+
+impl<'a> RepeatingTransfer<'a> {
+    /// Whether the channel is still running.
+    ///
+    /// False here means it was stopped or paused; it never means the work is done.
+    pub fn is_running(&mut self) -> bool {
+        self.0.is_running()
+    }
+
+    /// Stop the transfer and wait for the channel to come to rest.
+    ///
+    /// The same wait [`Drop`] does. Naming it is what lets a caller stop without dropping the
+    /// borrow.
+    pub fn stop(&mut self) {
+        self.0.request_pause();
+        while self.0.is_running() {}
+
+        compiler_fence(Ordering::SeqCst);
     }
 }
 
@@ -388,6 +499,28 @@ pub enum TransferMode {
 
     /// Each DMA trigger will transfer the complete block with one trigger.
     Block,
+
+    /// As [`Single`](Self::Single), but the transfer reloads and runs again instead of stopping.
+    ///
+    /// Full-feature channels only, and it never finishes -- see [`terminates`](Self::terminates).
+    RepeatSingle,
+
+    /// As [`Block`](Self::Block), but the transfer reloads and runs again instead of stopping.
+    ///
+    /// Full-feature channels only, and it never finishes -- see [`terminates`](Self::terminates).
+    RepeatBlock,
+}
+
+impl TransferMode {
+    /// Whether the hardware stops on its own once the count is exhausted.
+    ///
+    /// The repeating modes reload `SA`, `DA` and `SZ` and leave `DMAEN` set, so a [`Transfer`] over
+    /// one is a future that never resolves. [`read`](Channel::read) and [`write`](Channel::write)
+    /// refuse them for that reason, and the repeating constructors on [`FullChannel`] refuse the
+    /// terminating ones.
+    pub const fn terminates(self) -> bool {
+        matches!(self, Self::Single | Self::Block)
+    }
 }
 
 /// DMA transfer options.
@@ -626,6 +759,8 @@ fn convert_mode(mode: TransferMode) -> vals::Tm {
     match mode {
         TransferMode::Single => vals::Tm::Single,
         TransferMode::Block => vals::Tm::Block,
+        TransferMode::RepeatSingle => vals::Tm::Rptsngl,
+        TransferMode::RepeatBlock => vals::Tm::Rptblck,
     }
 }
 
