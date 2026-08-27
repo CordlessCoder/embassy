@@ -137,6 +137,10 @@ macro_rules! interrupt_mod {
                 /// to be called every time the `I` interrupt fires.
                 ///
                 /// This allows drivers to check bindings at compile-time.
+                // The `# Safety` section above is attached, but clippy does not see a doc
+                // comment through a macro expansion, so every HAL using this macro reports
+                // the trait as undocumented.
+                #[allow(clippy::missing_safety_doc)]
                 pub unsafe trait Binding<I: Interrupt, H: Handler<I>>: Copy {}
             }
         }
