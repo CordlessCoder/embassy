@@ -408,6 +408,64 @@ impl<'d> FullChannel<'d> {
         Ok(transfer)
     }
 
+    /// Write a table of registers, each to its own address, in one transfer.
+    ///
+    /// Two reads and one write per entry: the controller takes an address and a value out of the
+    /// table and stores the value at that address. That configures a block of peripheral registers
+    /// with no CPU involvement, which is what it is for.
+    ///
+    /// The destination is not a parameter because the hardware ignores `DA` here -- every entry
+    /// carries its own. `TransferOptions`' widths and strides are ignored too: table mode fixes the
+    /// source at 64 bits and the destination at 32, and this writes those.
+    ///
+    /// # Safety
+    ///
+    /// **Every address in the table is written without any check on what lives there.** The caller
+    /// is asserting that each one is a real, writable register and that writing the paired value is
+    /// sound -- this can reach any peripheral, reconfigure the clock tree, or hit a reserved address.
+    /// `table` must also stay put and unmodified until the transfer ends.
+    pub unsafe fn program<'a>(
+        &'a mut self,
+        trigger_source: u8,
+        table: &'a [RegisterWrite],
+        options: TransferOptions,
+    ) -> Result<Transfer<'a>, Error> {
+        verify_transfer(table.len())?;
+
+        let channel = &mut self.0;
+        let wake_guard = channel.transfer_guard(trigger_source);
+        let transfer = Transfer {
+            channel: channel.reborrow(),
+            wake_guard,
+        };
+
+        let mut options = options;
+        // The hardware wants a block transfer and ignores `TM` otherwise; saying so beats letting a
+        // caller's `Single` look as though it did something.
+        options.mode = TransferMode::Block;
+
+        unsafe {
+            transfer.channel.configure(
+                trigger_source,
+                table.as_ptr().cast(),
+                // Fixed by the mode: one 64-bit read pair in, one 32-bit write out.
+                Wdth::Long,
+                // Ignored, and a null is the honest value for a destination the hardware picks itself.
+                core::ptr::null(),
+                Wdth::Word,
+                table.len() as u16,
+                Incr::Increment,
+                Incr::Unchanged,
+                Em::Tablemode,
+                options,
+            );
+        }
+
+        transfer.channel.start();
+
+        Ok(transfer)
+    }
+
     /// Start a repeating read, which runs until it is stopped.
     ///
     /// [`TransferOptions::mode`] has to be one of the repeating modes; the terminating ones belong
@@ -679,6 +737,39 @@ impl EarlyIrq {
         }
     }
 }
+
+/// One entry of a [`FullChannel::program`] table: a register to write and the value to write there.
+///
+/// The layout is the hardware's. Each entry is eight bytes with the address in the low word and the
+/// value in the high one, and the table has to start on an eight-byte boundary -- `SA[2:0]` must be
+/// zero. **`align(8)` on the entry is what makes that a property of the type**, so an array of these
+/// is always placed correctly and no caller has to assert it or get it wrong.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(C, align(8))]
+pub struct RegisterWrite {
+    /// The address to write to.
+    pub address: u32,
+
+    /// The value to write there.
+    pub value: u32,
+}
+
+impl RegisterWrite {
+    /// Name a register and the value to put in it.
+    pub const fn new(address: u32, value: u32) -> Self {
+        Self { address, value }
+    }
+}
+
+// The hardware reads each entry as one 64-bit word, so the size and the alignment are both part of
+// the contract rather than incidental. `repr(C, align(8))` gives them; this is what keeps them.
+const _: () = {
+    core::assert!(core::mem::size_of::<RegisterWrite>() == 8);
+    core::assert!(core::mem::align_of::<RegisterWrite>() == 8);
+    core::assert!(core::mem::offset_of!(RegisterWrite, address) == 0);
+    core::assert!(core::mem::offset_of!(RegisterWrite, value) == 4);
+};
 
 /// How much a stepping fill pattern moves between writes.
 ///
