@@ -68,10 +68,10 @@ pub struct TrainState {
     /// How many of them there are.
     len: AtomicUsize,
 
-    /// The next element to write into the shadow registers.
-    next: AtomicUsize,
-
     /// Zero events seen, which is how many elements have finished.
+    ///
+    /// Also names the next element to write into the shadow registers: the enable-time zero event
+    /// is the first one seen and writes element one, so the count and the index move together.
     seen: AtomicUsize,
 
     /// The channel driving the pin.
@@ -113,7 +113,6 @@ impl TrainState {
         Self {
             pulses: AtomicPtr::new(core::ptr::null_mut()),
             len: AtomicUsize::new(0),
-            next: AtomicUsize::new(0),
             seen: AtomicUsize::new(0),
             channel: AtomicU8::new(0),
             done: AtomicBool::new(false),
@@ -231,16 +230,13 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             }
         }
 
-        let next = state.next.load(Ordering::Relaxed);
-
-        if next < len {
+        if seen < len {
             // SAFETY: the running train borrows the slice, and every path that ends that borrow
             // masks this event first — the completion arm above, and `halt` under
-            // `ActiveTrain`'s `Drop`. `next < len` was checked above.
-            let pulse = unsafe { &*state.pulses.load(Ordering::Relaxed).add(next) };
+            // `ActiveTrain`'s `Drop`. `seen < len` was checked above.
+            let pulse = unsafe { &*state.pulses.load(Ordering::Relaxed).add(seen) };
 
             write_element(r, channel, pulse);
-            state.next.store(next + 1, Ordering::Relaxed);
         }
     }
 }
@@ -682,12 +678,10 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
 
         // The second element is left for the handler, which the enable-time zero event calls before
         // the first element has finished. Writing it here instead would race that transfer.
-        let next = 1;
 
         // Read through, never written — `AtomicPtr` is the only pointer atomic there is.
         state.pulses.store(pulses.as_ptr().cast_mut(), Ordering::Relaxed);
         state.len.store(pulses.len(), Ordering::Relaxed);
-        state.next.store(next, Ordering::Relaxed);
         state.seen.store(0, Ordering::Relaxed);
         state.channel.store(channel.index() as u8, Ordering::Relaxed);
         state
