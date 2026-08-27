@@ -350,3 +350,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/adc: the window comparator is reachable — `Config::window` sets the thresholds, `Conversion::window` picks which conversions are checked, and `Event::WindowInRange` joins the two existing flags
 - feat: mspm0/adc: `Config::power_down` selects automatic power-down between conversions, with `Config::WAKEUP_MAX_NS`/`WAKEUP_TYP_NS` for sizing the sample window it lengthens
 - feat: mspm0/adc: `Config::conversion_mode` selects single, sequence or repeating conversions; the repeating modes are rejected by the mode drivers and reachable through `adc::low_level`
+- feat: mspm0/adc: `Config::trigger`, `Conversion::triggered`, `Conversion::burn_out_current` and `Config::reset_sample_capacitor` reach the last four hardcoded conversion settings

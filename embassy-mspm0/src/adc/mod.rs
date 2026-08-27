@@ -314,7 +314,22 @@ pub struct Conversion {
     /// watch some of its channels and not others. Setting this with no [`Config::window`] is a
     /// caller error and panics.
     pub window: bool,
-    // TODO: BCS, TRIG
+
+    /// Drive the burn-out current source into the input during this conversion.
+    ///
+    /// A small current pushed into the channel so an open circuit reads as a rail rather than as a
+    /// plausible mid-scale value — the standard check for a sensor whose wire has come off. It
+    /// perturbs the reading, so it is a diagnostic conversion rather than a measurement one, and it
+    /// belongs to the conversion rather than the peripheral so a sequence can interleave the two.
+    pub burn_out_current: bool,
+
+    /// Wait for a trigger before starting this conversion, rather than following the previous one.
+    ///
+    /// In a sequence, each conversion normally begins as soon as the one before it finishes. Setting
+    /// this gates *this* conversion on the trigger named by [`Config::trigger`], which is how a
+    /// sequence is paced by something other than the ADC — a timer, or software releasing one
+    /// conversion at a time.
+    pub triggered: bool,
 }
 
 /// The window comparator's thresholds, in raw conversion codes.
@@ -363,6 +378,8 @@ impl Conversion {
             stime: SampleTimeComparator::Scomp0,
             average: false,
             window: false,
+            burn_out_current: false,
+            triggered: false,
         }
     }
 }
@@ -435,6 +452,24 @@ impl ConversionMode {
     pub const fn terminates(self) -> bool {
         matches!(self, Self::Single | Self::Sequence)
     }
+}
+
+/// What releases a conversion that is waiting for a trigger.
+///
+/// Only reached by conversions with [`Conversion::triggered`] set, and by the start of a sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TriggerSource {
+    /// Software, by starting the conversion.
+    #[default]
+    Software,
+
+    /// The event fabric, through the ADC's subscriber port.
+    ///
+    /// What lets a timer pace conversions with the CPU asleep. **Routing the event is a separate
+    /// job**: this only selects the port as the trigger, and nothing is published to it until a
+    /// subscriber channel is configured.
+    Event,
 }
 
 /// ADC configuration.
@@ -527,6 +562,24 @@ pub struct Config {
     /// Defaults to [`ConversionMode::Sequence`]. The repeating modes are `low_level`-only -- see the
     /// type for why.
     pub conversion_mode: ConversionMode,
+
+    /// What releases a triggered conversion.
+    ///
+    /// Defaults to [`TriggerSource::Software`]. Only conversions with [`Conversion::triggered`] set
+    /// wait for it, so changing this alone changes nothing.
+    pub trigger: TriggerSource,
+
+    /// Discharge the sample-and-hold capacitor at the end of every conversion.
+    ///
+    /// Off by default, which is the reset behaviour. Leaving the capacitor charged means the next
+    /// conversion starts from the previous reading rather than from zero, so a high-impedance source
+    /// that cannot fully charge the capacitor within the sample window reads pulled towards whatever
+    /// was measured before it — the classic multiplexed-channel crosstalk, where a low channel read
+    /// straight after a high one comes out high.
+    ///
+    /// **It costs one conversion clock cycle per conversion**, not one sample window, so it is cheap
+    /// against the alternative of lengthening every window instead.
+    pub reset_sample_capacitor: bool,
 }
 
 impl Config {
@@ -643,6 +696,8 @@ impl Config {
             window: None,
             power_down: PowerDown::Manual,
             conversion_mode: ConversionMode::Sequence,
+            trigger: TriggerSource::Software,
+            reset_sample_capacitor: false,
         }
     }
 }

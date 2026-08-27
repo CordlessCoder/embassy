@@ -52,7 +52,7 @@ use core::num::NonZeroU16;
 
 use super::{
     ADC_MEMCTL, Averaging, BorrowedAdcChannel, BorrowedChannel, Config, Conversion, Instance, Resolution, SampleClock,
-    ConversionMode, PowerDown, SampleClockSel, SampleTimeComparator, Vrsel, Window,
+    ConversionMode, PowerDown, SampleClockSel, TriggerSource, SampleTimeComparator, Vrsel, Window,
 };
 use crate::Peri;
 use crate::interrupt::Interrupt;
@@ -436,7 +436,10 @@ pub(crate) fn configure<T: Instance>(config: Config) -> Option<SleepLevel> {
     });
 
     r.ctl1().write(|w| {
-        w.set_trigsrc(vals::Trigsrc::Software);
+        w.set_trigsrc(match config.trigger {
+            TriggerSource::Software => vals::Trigsrc::Software,
+            TriggerSource::Event => vals::Trigsrc::Event,
+        });
         // Configured, not converting; a read starts it.
         w.set_sc(false);
         w.set_conseq(match config.conversion_mode {
@@ -460,7 +463,7 @@ pub(crate) fn configure<T: Instance>(config: Config) -> Option<SleepLevel> {
         // Binary unsigned
         w.set_df(false);
         w.set_res(to_res(config.resolution));
-        w.set_rstsampcapen(false);
+        w.set_rstsampcapen(config.reset_sample_capacitor);
         w.set_dmaen(false);
         w.set_fifoen(false);
         w.set_sampcnt(0);
@@ -491,6 +494,7 @@ pub(crate) fn write_memctl<T: Instance>(i: usize, ch: u8, conversion: Conversion
         !conversion.average || r.ctl1().read().avgn() != vals::Avgn::Disable,
         "Conversion::average needs Config::averaging set"
     );
+
     // Same reasoning: read back rather than keep a copy. `Window::new` rejects a zero high
     // threshold, so a zero here means `Config::window` was `None` and nothing programmed one.
     assert!(
@@ -498,14 +502,17 @@ pub(crate) fn write_memctl<T: Instance>(i: usize, ch: u8, conversion: Conversion
         "Conversion::window needs Config::window set"
     );
 
-
     r.memctl(i).write(|w| {
         w.set_chansel(ch);
         w.set_vrsel(vrsel(conversion.vrsel));
         w.set_stime(convert_stime(conversion.stime));
         w.set_avgen(conversion.average);
-        w.set_bcsen(false);
-        w.set_trig(vals::Trig::AutoNext);
+        w.set_bcsen(conversion.burn_out_current);
+        w.set_trig(if conversion.triggered {
+            vals::Trig::TriggerNext
+        } else {
+            vals::Trig::AutoNext
+        });
         w.set_wincomp(conversion.window);
     });
 }
