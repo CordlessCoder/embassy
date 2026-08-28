@@ -357,3 +357,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/dma: `FullChannel::fill` writes a constant or a ramping pattern across a buffer with no source buffer to read from
 - feat: mspm0/dma: `FullChannel::program` writes a table of `RegisterWrite` entries, each to its own address, in one transfer
 - feat: mspm0/dma: `FullChannel::gather` reads from a table of addresses into one contiguous buffer, on devices whose DMA implements gather mode
+- feat: mspm0/dac: DAC12 driver — `Dac::set_code` with selectable resolution, reference, data format and output buffer

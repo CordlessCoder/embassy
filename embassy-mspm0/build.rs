@@ -1924,6 +1924,7 @@ fn generate_peripheral_instances() -> TokenStream {
                 Some(quote! { impl_opa_instance!(#peri, #ground, #dac12, #dac8, #vref_plus); #cascade })
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
+            "dac" => Some(quote! { impl_dac_instance!(#peri); }),
             "crc" => Some(quote! { impl_crc_instance!(#peri); }),
             "flashctl" => Some(quote! { impl_flash_instance!(#peri); }),
             "comp" => {

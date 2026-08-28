@@ -22,6 +22,8 @@ pub mod gpio;
 // A UNICOMM chip reaches I2C through that block instead, and its mode driver is not written yet.
 #[cfg(comp)]
 pub mod comp;
+#[cfg(dac)]
+pub mod dac;
 #[cfg(crc)]
 pub mod crc;
 #[cfg(not(unicomm))]
