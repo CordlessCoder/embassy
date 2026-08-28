@@ -1925,6 +1925,28 @@ fn generate_peripheral_instances() -> TokenStream {
             }
             "vref" => Some(quote! { impl_vref_instance!(#peri); }),
             "dac" => Some(quote! { impl_dac_instance!(#peri); }),
+            // DEBUGSS is a source on an interrupt group on 35 chips and owns an NVIC line on eight,
+            // so the binding a caller has to produce differs -- the same split the comparator has.
+            "debugss" => {
+                let grouped = peripheral
+                    .interrupts
+                    .iter()
+                    .any(|interrupt| interrupt.group_iidx.is_some());
+
+                Some(if grouped {
+                    quote! { impl_debugss_grouped!(); }
+                } else {
+                    let line = format_ident!(
+                        "{}",
+                        peripheral
+                            .interrupts
+                            .first()
+                            .expect("a DEBUGSS instance with no interrupt")
+                            .name
+                    );
+                    quote! { impl_debugss_nvic!(#line); }
+                })
+            }
             "crc" => Some(quote! { impl_crc_instance!(#peri); }),
             "flashctl" => Some(quote! { impl_flash_instance!(#peri); }),
             "comp" => {

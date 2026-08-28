@@ -359,3 +359,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/dma: `FullChannel::gather` reads from a table of addresses into one contiguous buffer, on devices whose DMA implements gather mode
 - feat: mspm0/dac: DAC12 driver — `Dac::set_code` with selectable resolution, reference, data format and output buffer
 - feat: mspm0/debugss: `ProbeWatch` reports whether a debug probe attached or left, and whether core debug access is currently enabled
+- feat: mspm0/debugss: `ProbeWatch::wait_for_change` awaits a probe attaching or detaching
