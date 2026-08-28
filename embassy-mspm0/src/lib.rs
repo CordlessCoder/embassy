@@ -24,6 +24,7 @@ pub mod gpio;
 pub mod comp;
 #[cfg(dac)]
 pub mod dac;
+pub mod debugss;
 #[cfg(crc)]
 pub mod crc;
 #[cfg(not(unicomm))]
