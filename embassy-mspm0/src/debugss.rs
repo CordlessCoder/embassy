@@ -11,7 +11,7 @@
 //!
 //! Two different questions, and the hardware answers them separately.
 //!
-//! **[`ProbeWatch::debug_access_enabled`] is "now".** `SPECIAL_AUTH.AHBAPEN` is a level, and it resets
+//! **[`Debugss::debug_access_enabled`] is "now".** `SPECIAL_AUTH.AHBAPEN` is a level, and it resets
 //! to zero, so a one there means a debugger has since been given access to memory. Measured true with
 //! a probe attached; **the false case is unverified**, because reading it with no probe attached needs
 //! a channel a detached probe does not leave behind.
@@ -23,7 +23,7 @@
 //! the same as "the window was clean".
 //!
 //! ```rust,ignore
-//! let mut watch = ProbeWatch::new(p.DEBUGSS);
+//! let mut watch = Debugss::new(p.DEBUGSS);
 //!
 //! watch.clear();
 //! // ... the measurement ...
@@ -31,6 +31,24 @@
 //!     warn!("a probe attached during this window; the sleep figures are not trustworthy");
 //! }
 //! ```
+//!
+//! # The mailbox
+//!
+//! A 32-bit word each way between this CPU and an attached debug probe, over the SWD pair and no
+//! other pins. One word deep in each direction with real flow control, so it is a channel for
+//! results rather than for logging -- a value that must not be truncated, where a byte stream would
+//! be the wrong shape.
+//!
+//! **The register names are the probe's, and this API's are yours.** `TXD` is what the probe
+//! transmits, so the CPU *reads* it and cannot write it; `RXD` is what the probe receives, so the CPU
+//! writes it. A driver that took `TX` to mean "out of this CPU" would have both directions inverted,
+//! and the failure is a mailbox that looks dead rather than one that errors. [`receive`](Debugss::receive)
+//! reads and [`send`](Debugss::send) writes, from the caller's point of view, and the register each
+//! touches is the opposite one to the name's.
+//!
+//! Backpressure is visible in both directions and neither has a queue. A word written stays pending
+//! until the probe collects it; a word from the probe stays pending until this reads it, and
+//! **reading is the only thing that clears it** -- there is no acknowledge register.
 //!
 //! # There is nothing to bring up
 //!
@@ -44,6 +62,7 @@ use core::future::Future;
 use core::task::Poll;
 
 use embassy_hal_internal::Peri;
+use mspm0_metapac::debugss::vals;
 
 use crate::pac;
 use crate::peripherals::DEBUGSS;
@@ -104,12 +123,17 @@ impl State {
 /// nothing. Use the macros.
 pub unsafe trait DebugssInterrupt {}
 
-/// Watches for a debug probe attaching or detaching.
-pub struct ProbeWatch<'d> {
+/// The debug subsystem.
+///
+/// One driver for the whole peripheral rather than one per capability, and the reason is the
+/// interrupt block: `TXIFG`, `RXIFG`, `PWRUPIFG` and `PWRDWNIFG` are bits of a single `CPU_INT`
+/// register set. Two drivers would each read-modify-write `IMASK` and each read `IIDX`, which is two
+/// writers of one register and the shape that has already cost this crate a defect elsewhere.
+pub struct Debugss<'d> {
     _peri: Peri<'d, DEBUGSS>,
 }
 
-impl<'d> ProbeWatch<'d> {
+impl<'d> Debugss<'d> {
     /// Claim the debug subsystem.
     ///
     /// Nothing is powered on or reset -- the block has neither -- and the latched flags are left
@@ -210,6 +234,63 @@ impl<'d> ProbeWatch<'d> {
 
             Poll::Pending
         })
+    }
+
+    /// Take a word the probe has sent, if there is one.
+    ///
+    /// Reads `TXD`, which the probe writes. **The read is what clears the pending flag** -- there is
+    /// no acknowledge path, so a caller that peeks at the status without reading the word leaves the
+    /// channel blocked.
+    pub fn try_receive(&mut self) -> Option<u32> {
+        let r = Self::regs();
+
+        if r.txctl().read().transmit() != vals::Transmit::Full {
+            return None;
+        }
+
+        Some(r.txd().read())
+    }
+
+    /// The flags the probe set alongside its last word.
+    ///
+    /// 31 bits, and **the outbound side has only 7** -- see [`send_flags`](Self::send_flags). The
+    /// asymmetry is the hardware's.
+    pub fn received_flags(&self) -> u32 {
+        Self::regs().txctl().read().transmit_flags()
+    }
+
+    /// Give the probe a word, if the last one has been collected.
+    ///
+    /// Writes `RXD`, which the probe reads. Returns the word back when the channel is still full:
+    /// there is no queue, and overwriting would drop a word the probe has not seen with nothing to
+    /// say it happened.
+    pub fn try_send(&mut self, word: u32) -> Result<(), u32> {
+        let r = Self::regs();
+
+        if r.rxctl().read().receive() == vals::Receive::Full {
+            return Err(word);
+        }
+
+        r.rxd().write_value(word);
+
+        Ok(())
+    }
+
+    /// Whether a word given to the probe is still waiting to be collected.
+    ///
+    /// The backpressure signal, and the only one there is.
+    pub fn send_pending(&self) -> bool {
+        Self::regs().rxctl().read().receive() == vals::Receive::Full
+    }
+
+    /// Set the flags the probe reads alongside the next word.
+    ///
+    /// **Seven bits**, against 31 in the other direction. Values above are a caller error rather than
+    /// a truncation, because a flag silently dropped is indistinguishable from one never set.
+    pub fn send_flags(&mut self, flags: u8) {
+        assert!(flags < 0x80, "only seven flag bits are sent to the probe");
+
+        Self::regs().rxctl().modify(|w| w.set_receive_flags(flags));
     }
 
     #[inline]
