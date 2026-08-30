@@ -105,7 +105,7 @@ async fn main(_spawner: Spawner) -> ! {
             info!("{} sweep at {} Hz", name, train.timer().tick_frequency());
 
             for _ in 0..TRAINS {
-                train.emit(&SWEEP).await;
+                train.emit_static(&SWEEP).await;
 
                 // Clear of the longest low in the sweep, so the sacrificial element's low is the
                 // only one that merges with it.
@@ -126,7 +126,7 @@ async fn main(_spawner: Spawner) -> ! {
                 bus().with_idle(Idle::High),
             );
 
-            match select(train.emit(&CANCEL), Timer::after(Duration::from_micros(100))).await {
+            match select(train.emit_static(&CANCEL), Timer::after(Duration::from_micros(100))).await {
                 Either::First(()) => warn!("the cancelled train finished, which it should not have"),
                 Either::Second(()) => info!("cut mid-high, resting high"),
             }
@@ -148,7 +148,7 @@ async fn main(_spawner: Spawner) -> ! {
                 bus().with_idle(Idle::HighImpedance),
             );
 
-            match select(train.emit(&CANCEL), Timer::after(Duration::from_micros(100))).await {
+            match select(train.emit_static(&CANCEL), Timer::after(Duration::from_micros(100))).await {
                 Either::First(()) => warn!("the cancelled train finished, which it should not have"),
                 Either::Second(()) => info!("cut mid-high, released"),
             }

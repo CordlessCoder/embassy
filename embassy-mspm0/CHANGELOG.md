@@ -361,3 +361,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: mspm0/debugss: `ProbeWatch` reports whether a debug probe attached or left, and whether core debug access is currently enabled
 - feat: mspm0/debugss: `ProbeWatch::wait_for_change` awaits a probe attaching or detaching
 - feat: mspm0/debugss: the DSSM mailbox — `try_send`/`try_receive` exchange a 32-bit word with an attached debug probe over SWD, no pins and no UART
+- breaking: mspm0/tim: `PulseTrain::emit` is now `unsafe` — the handler reads the caller's buffer for as long as the train runs, which outlives the borrow if the returned `ActiveTrain` is leaked; `emit_static` is the safe form for a `'static` table

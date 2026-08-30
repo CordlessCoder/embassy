@@ -84,7 +84,7 @@ async fn main(_spawner: Spawner) -> ! {
             // Rebuilt per phase because the shape is configuration rather than a per-train argument.
             let mut train = PulseTrain::new(timer.reborrow(), pin.reborrow(), Pull::None, Irqs, config);
 
-            train.emit(&RAMP).await;
+            train.emit_static(&RAMP).await;
 
             info!("{} done", name);
 

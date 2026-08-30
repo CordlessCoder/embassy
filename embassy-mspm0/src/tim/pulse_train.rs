@@ -565,7 +565,20 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
     ///
     /// Every element needs a non-zero high and low time and a period the counter can reach. Both are
     /// checked here rather than emitting a waveform that is quietly not the one asked for.
-    pub fn emit<'a>(&'a mut self, pulses: &'a [Pulse]) -> ActiveTrain<'a, 'd, T> {
+    ///
+    /// # Safety
+    ///
+    /// The interrupt handler reads `pulses` through a raw pointer for as long as the train runs, and
+    /// **that outlives the borrow if the returned [`ActiveTrain`] is never dropped**. Awaiting it,
+    /// calling [`stop`](ActiveTrain::stop) or dropping it all end the train; leaking it with
+    /// [`mem::forget`](core::mem::forget()) leaves the handler reading memory the borrow checker
+    /// considers free again.
+    ///
+    /// A destructor is not something the language promises to run, so this cannot be checked here.
+    /// [`emit_static`](Self::emit_static) is the safe form: a buffer that outlives the program cannot
+    /// be reclaimed underneath the handler, so leaking the train is a leak rather than a use after
+    /// free.
+    pub unsafe fn emit<'a>(&'a mut self, pulses: &'a [Pulse]) -> ActiveTrain<'a, 'd, T> {
         assert!(!pulses.is_empty(), "a train needs at least one pulse");
 
         // The load value, not the period: a 32-bit counter would make `MAX + 1` overflow, and the
@@ -588,6 +601,21 @@ impl<'d, T: ShadowLoadInstance + ShadowCompareInstance> PulseTrain<'d, T> {
         self.arm(pulses);
 
         ActiveTrain { train: self }
+    }
+
+    /// Start emitting a train the handler may read for as long as it likes.
+    ///
+    /// The safe form of [`emit`](Self::emit), and identical in every other way. A `'static` buffer is
+    /// never reclaimed, so leaking the returned [`ActiveTrain`] leaks the timer with it rather than
+    /// leaving the handler reading freed memory -- a leak the borrow checker already permits, not a
+    /// use after free.
+    ///
+    /// A waveform table is usually a `static`, which makes this the ordinary way in and
+    /// [`emit`](Self::emit) the one for a buffer built at run time.
+    pub fn emit_static<'a>(&'a mut self, pulses: &'static [Pulse]) -> ActiveTrain<'a, 'd, T> {
+        // SAFETY: `pulses` outlives the program, so nothing the handler reads can be reclaimed while
+        // it is still reading, however the returned train is disposed of.
+        unsafe { self.emit(pulses) }
     }
 
     /// The underlying counter, for reading.

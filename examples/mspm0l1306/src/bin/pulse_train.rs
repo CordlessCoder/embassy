@@ -69,7 +69,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     loop {
         for (name, pulses) in [("ramp", &RAMP[..]), ("single", &SINGLE[..]), ("pair", &PAIR[..])] {
-            train.emit(pulses).await;
+            train.emit_static(pulses).await;
 
             info!("{} done, {} elements", name, pulses.len());
 
@@ -78,7 +78,7 @@ async fn main(_spawner: Spawner) -> ! {
 
         // Started here and collected below. The counter is already running when `emit` returns, so
         // the caller's own work overlaps the train instead of following it.
-        let running = train.emit(&PAIR);
+        let running = train.emit_static(&PAIR);
         let overlapped = !running.is_done();
         running.await;
 
@@ -89,7 +89,7 @@ async fn main(_spawner: Spawner) -> ! {
         // A train dropped part way through. Five 200 us elements is 1 ms of work, abandoned after
         // 300 us, so the pin is cut mid-element rather than at a boundary — the case where a driver
         // that parks lazily leaves a stuck level or a runt behind.
-        match select(train.emit(&CANCEL), Timer::after(Duration::from_micros(300))).await {
+        match select(train.emit_static(&CANCEL), Timer::after(Duration::from_micros(300))).await {
             Either::First(()) => warn!("the cancelled train finished, which it should not have"),
             Either::Second(()) => info!("cancelled part way"),
         }

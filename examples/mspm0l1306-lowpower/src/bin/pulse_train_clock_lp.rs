@@ -90,7 +90,7 @@ async fn main(_spawner: Spawner) -> ! {
             info!("{} sweep at {} Hz", name, train.timer().tick_frequency());
 
             for _ in 0..TRAINS {
-                train.emit(&SWEEP).await;
+                train.emit_static(&SWEEP).await;
 
                 // Long enough that the executor reaches a sleep between trains as well as inside
                 // one, so a phase that can sleep does so on both paths.
