@@ -1254,7 +1254,13 @@ impl Clocks {
     }
 }
 
-// The reset tree must resolve on every part, and must land where the old fixed constants did.
+// The reset tree must resolve on every part, and must land where the generated rates say.
+//
+// **This constrains the resolver, not the rates.** `SYSOSC_BASE_HZ` and its siblings come from device
+// metadata, and `resolve` derives from the same constants, so a metapac bump moves both sides
+// together and this cannot fire on one. What it does catch is `resolve` growing a step that shifts
+// the reset tree away from the untouched-device rates -- which is what it is for, and is less than
+// the phrase "the old fixed constants" implied when those were still written here.
 const _: () = {
     let reset = Clocks::RESET;
 
