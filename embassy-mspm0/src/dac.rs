@@ -77,6 +77,17 @@ impl Resolution {
     }
 }
 
+// The relationship a caller reaches for when converting between the two resolutions, and the one this
+// crate has already got wrong once: §20.2.1 divides by **256 and 4096**, not by 255 and 4095, so full
+// scale is one code short of the reference at either width and an eight-bit code is worth exactly
+// sixteen twelve-bit ones. A test that divided by 255 put a systematic 16 counts into its error and it
+// read as the DAC's. Nothing else re-measures this, so it is pinned here.
+const _: () = {
+    core::assert!(Resolution::Bits8.max_code() as u32 + 1 == 256);
+    core::assert!(Resolution::Bits12.max_code() as u32 + 1 == 4096);
+    core::assert!((Resolution::Bits12.max_code() as u32 + 1) / (Resolution::Bits8.max_code() as u32 + 1) == 16);
+};
+
 /// What a code is measured against at the top of the range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
