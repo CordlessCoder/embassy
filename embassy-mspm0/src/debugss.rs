@@ -289,6 +289,38 @@ impl<'d> Debugss<'d> {
         Some(r.txd().read())
     }
 
+    /// Wait for the probe to send a word, and take it.
+    ///
+    /// Resolves at once if one is already waiting. Reading is what clears the channel, so the word is
+    /// consumed by this returning it and the probe is free to send another.
+    ///
+    /// **The flag is cleared before the level is tested, and the order is load-bearing.**
+    /// `CPU_INT.RIS` latches and nothing else clears it, so unmasking over a stale flag would wake
+    /// this immediately and forever. Clearing first and testing `TXCTL.TRANSMIT` -- a level, not a
+    /// latch -- means a word that arrives between the two is caught by the test, and one that arrives
+    /// after it re-raises the flag that the unmask then delivers. No wake is lost either way.
+    ///
+    /// Dropping this before it resolves consumes nothing: the word stays pending for the next caller.
+    ///
+    /// Needs [`new_async`](Self::new_async) -- without the handler this parks forever.
+    pub fn receive(&mut self) -> impl Future<Output = u32> + '_ {
+        core::future::poll_fn(move |cx| {
+            let r = Self::regs();
+
+            STATE.waker.register(cx.waker());
+
+            r.cpu_int(0).iclr().write(|w| w.set_txifg(true));
+
+            if r.txctl().read().transmit() == vals::Transmit::Full {
+                return Poll::Ready(r.txd().read());
+            }
+
+            r.cpu_int(0).imask().modify(|w| w.set_txifg(true));
+
+            Poll::Pending
+        })
+    }
+
     /// The flags the probe set alongside its last word.
     ///
     /// 31 bits, and **the outbound side has only 7** -- see [`send_flags`](Self::send_flags). The
@@ -312,6 +344,37 @@ impl<'d> Debugss<'d> {
         r.rxd().write_value(word);
 
         Ok(())
+    }
+
+    /// Give the probe a word, waiting for it to collect the last one first.
+    ///
+    /// The channel is one word deep, so this parks while a previous word is still uncollected rather
+    /// than overwriting it. `RXIFG` is the signal, and it fires when the probe *reads* `RXD` --
+    /// SLAU847 table 35-9 rather than table 35-6, which says the opposite and is wrong.
+    ///
+    /// Same clear-then-test order as [`receive`](Self::receive), for the same reason.
+    ///
+    /// **Either the word is written or it is not.** Dropping this before it resolves writes nothing,
+    /// so a cancelled send cannot leave a partial word or displace one the probe has not seen.
+    ///
+    /// Needs [`new_async`](Self::new_async) -- without the handler this parks forever.
+    pub fn send(&mut self, word: u32) -> impl Future<Output = ()> + '_ {
+        core::future::poll_fn(move |cx| {
+            let r = Self::regs();
+
+            STATE.waker.register(cx.waker());
+
+            r.cpu_int(0).iclr().write(|w| w.set_rxifg(true));
+
+            if r.rxctl().read().receive() != vals::Receive::Full {
+                r.rxd().write_value(word);
+                return Poll::Ready(());
+            }
+
+            r.cpu_int(0).imask().modify(|w| w.set_rxifg(true));
+
+            Poll::Pending
+        })
     }
 
     /// Whether a word given to the probe is still waiting to be collected.
