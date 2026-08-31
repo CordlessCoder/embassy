@@ -42,13 +42,51 @@
 //! **The register names are the probe's, and this API's are yours.** `TXD` is what the probe
 //! transmits, so the CPU *reads* it and cannot write it; `RXD` is what the probe receives, so the CPU
 //! writes it. A driver that took `TX` to mean "out of this CPU" would have both directions inverted,
-//! and the failure is a mailbox that looks dead rather than one that errors. [`receive`](Debugss::receive)
-//! reads and [`send`](Debugss::send) writes, from the caller's point of view, and the register each
+//! and the failure is a mailbox that looks dead rather than one that errors. [`try_receive`](Debugss::try_receive)
+//! reads and [`try_send`](Debugss::try_send) writes, from the caller's point of view, and the register each
 //! touches is the opposite one to the name's.
 //!
 //! Backpressure is visible in both directions and neither has a queue. A word written stays pending
 //! until the probe collects it; a word from the probe stays pending until this reads it, and
 //! **reading is the only thing that clears it** -- there is no acknowledge register.
+//!
+//! # What the far end is
+//!
+//! **The probe reaches these buffers through a dedicated access port, not through memory.** SLAU847
+//! table 35-7 puts the mailbox on **SEC-AP, AP index 2**: `TXDATA` at AP address `0x00`, `TXCTL`
+//! `0x04`, `RXDATA` `0x08`, `RXCTL` `0x0C`, and the AP `IDR` at `0x0FC`. So a host drives it by
+//! selecting that AP and reading and writing its registers -- **an ordinary AHB-AP memory write to
+//! this peripheral's address does not reach it**, even though the same buffers are memory-mapped
+//! from the CPU's side. The two ends see one pair of buffers through two different windows.
+//!
+//! The flow control is the probe's mirror of what this driver sees. `TXCTL.TRANSMIT` is set when the
+//! probe writes `TXDATA` and clears only when this CPU reads it or a POR happens; `RXCTL.RECEIVE` is
+//! set when this CPU writes `RXDATA` and clears only when the probe reads it. Neither side can clear
+//! the other's flag by any route but reading the data.
+//!
+//! The flag fields are asymmetric and write-once-per-side: `TXCTL`'s upper 31 bits are
+//! `TRANSMIT_FLAGS`, writable only by the probe, and `RXCTL`'s bits 1 through 7 are `RECEIVE_FLAGS`,
+//! writable only by this CPU. Each side reads the other's and cannot modify them.
+//!
+//! **The TRM contradicts itself on `RXIFG`, and the measurement settles it.** Table 35-6 says
+//! `RXIFG` "is also set on a write by the target device", which would make it fire on *our own*
+//! send; table 35-9 says it "indicates that the data in `RX_DATA` buffer in the DSSM was read",
+//! which would make it fire when the probe collects it. **Table 35-9 is right.** So the probe taking
+//! a word is observable, and a future that waits for space has a signal to park on.
+//!
+//! **Clear `ICLR` before reading `RIS`, or this measurement gives the opposite answer.** The
+//! `CPU_INT.RIS` bits latch and nothing clears them on their own, so on a part that has been running
+//! a while `RIS` reads `0xF` — every source, meaning only "this fired at some point since
+//! power-up". Asking whether `RXIFG` was set before a probe read then answers a different question
+//! and answers it consistently, which is what makes it convincing and wrong. Cleared first, `RIS` is
+//! `0x1` after our own write (`TXIFG` alone) and `0x3` after the probe reads. The first attempt at
+//! this concluded table 35-6.
+//!
+//! **The channel is verified end to end**, on an L1306 with a host on SEC-AP: a word written to
+//! `TXDATA` sets `TRANSMIT`, a CPU read clears it, and the CPU's reply comes back through `RXDATA`.
+//! The returning word was a value the firmware computed rather than one resident in the buffer,
+//! which is what separates a channel from an echo. The AP `IDR` reads `0x002E0000`. Measured by the
+//! consuming project, not here.
 //!
 //! # There is nothing to bring up
 //!
