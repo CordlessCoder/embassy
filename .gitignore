@@ -4,6 +4,7 @@ target_ci_stable
 Cargo.lock
 third_party
 webroot
+work
 /Cargo.toml
 out/
 # compiler crash dumps, which rustc and rustfmt drop in the working directory

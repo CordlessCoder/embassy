@@ -30,30 +30,37 @@
 //! }
 //! ```
 
-#[unsafe(export_name = "__pender")]
 #[cfg(any(feature = "executor-thread", feature = "executor-interrupt"))]
-fn __pender(context: *mut ()) {
-    // `context` is either `THREAD_PENDER`, or an interrupt number passed to `InterruptExecutor::start`.
-    let context = context as usize;
+struct Mspm0Pender;
 
-    #[cfg(feature = "executor-thread")]
-    // Try to optimize away the branch when only thread mode is enabled.
-    if !cfg!(feature = "executor-interrupt") || context == thread::THREAD_PENDER {
-        thread::SIGNAL_WORK_THREAD_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
-        return;
-    }
+#[cfg(any(feature = "executor-thread", feature = "executor-interrupt"))]
+embassy_executor::pender_impl!(Mspm0Pender);
 
-    #[cfg(feature = "executor-interrupt")]
-    {
-        use cortex_m::peripheral::NVIC;
+#[cfg(any(feature = "executor-thread", feature = "executor-interrupt"))]
+impl embassy_executor::pender::Pender for Mspm0Pender {
+    fn pend(context: *mut ()) {
+        // `context` is either `THREAD_PENDER`, or an interrupt number passed to `InterruptExecutor::start`.
+        let context = context as usize;
 
-        // MSPM0 is Cortex-M0+, which has no STIR, and implements 32 interrupts — so ISPR is a
-        // single word and the index is a constant. `NVIC::pend` derives it from the number
-        // instead, leaving a bounds check the optimiser cannot fold.
-        //
-        // SAFETY: `context` was an `InterruptNumber` when passed to `InterruptExecutor::start`, so
-        // it names a line this core implements and the mask below does not change it.
-        unsafe { (*NVIC::PTR).ispr[0].write(1 << (context & 31)) };
+        #[cfg(feature = "executor-thread")]
+        // Try to optimize away the branch when only thread mode is enabled.
+        if !cfg!(feature = "executor-interrupt") || context == thread::THREAD_PENDER {
+            thread::SIGNAL_WORK_THREAD_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+
+        #[cfg(feature = "executor-interrupt")]
+        {
+            use cortex_m::peripheral::NVIC;
+
+            // MSPM0 is Cortex-M0+, which has no STIR, and implements 32 interrupts — so ISPR is a
+            // single word and the index is a constant. `NVIC::pend` derives it from the number
+            // instead, leaving a bounds check the optimiser cannot fold.
+            //
+            // SAFETY: `context` was an `InterruptNumber` when passed to `InterruptExecutor::start`, so
+            // it names a line this core implements and the mask below does not change it.
+            unsafe { (*NVIC::PTR).ispr[0].write(1 << (context & 31)) };
+        }
     }
 }
 

@@ -1,46 +1,53 @@
-#[unsafe(export_name = "__pender")]
 #[cfg(any(feature = "executor-thread", feature = "executor-interrupt"))]
-fn __pender(context: *mut ()) {
-    unsafe {
-        // Safety: `context` is either `usize::MAX` created by `Executor::run`, or a valid interrupt
-        // request number given to `InterruptExecutor::start`.
+struct CortexMPender;
 
-        let context = context as usize;
+#[cfg(any(feature = "executor-thread", feature = "executor-interrupt"))]
+pender_impl!(CortexMPender);
 
-        #[cfg(feature = "executor-thread")]
-        // Try to make Rust optimize the branching away if we only use thread mode.
-        if !cfg!(feature = "executor-interrupt") || context == THREAD_PENDER {
-            core::arch::asm!("sev");
-            return;
-        }
+#[cfg(any(feature = "executor-thread", feature = "executor-interrupt"))]
+impl crate::pender::Pender for CortexMPender {
+    fn pend(context: *mut ()) {
+        unsafe {
+            // Safety: `context` is either `usize::MAX` created by `Executor::run`, or a valid interrupt
+            // request number given to `InterruptExecutor::start`.
 
-        #[cfg(feature = "executor-interrupt")]
-        {
-            use cortex_m::peripheral::NVIC;
+            let context = context as usize;
 
-            // STIR is faster, but is only available in v7 and higher.
-            #[cfg(not(armv6m))]
-            {
-                use cortex_m::interrupt::InterruptNumber;
-
-                #[derive(Clone, Copy)]
-                struct Irq(u16);
-                unsafe impl InterruptNumber for Irq {
-                    fn number(self) -> u16 {
-                        self.0
-                    }
-                }
-
-                let mut nvic: NVIC = core::mem::transmute(());
-                nvic.request(Irq(context as u16));
+            #[cfg(feature = "executor-thread")]
+            // Try to make Rust optimize the branching away if we only use thread mode.
+            if !cfg!(feature = "executor-interrupt") || context == THREAD_PENDER {
+                core::arch::asm!("sev");
+                return;
             }
 
-            // ARMv6-M implements 32 interrupts, so ISPR is a single word and the index is a
-            // constant. `NVIC::pend` derives it from the number instead, leaving a bounds check the
-            // optimiser cannot fold — worth a panicking branch, its frame setup, and
-            // `panic_bounds_check` in any binary that does not already link one.
-            #[cfg(armv6m)]
-            (*NVIC::PTR).ispr[0].write(1 << (context & 31));
+            #[cfg(feature = "executor-interrupt")]
+            {
+                use cortex_m::peripheral::NVIC;
+
+                // STIR is faster, but is only available in v7 and higher.
+                #[cfg(not(armv6m))]
+                {
+                    use cortex_m::interrupt::InterruptNumber;
+
+                    #[derive(Clone, Copy)]
+                    struct Irq(u16);
+                    unsafe impl InterruptNumber for Irq {
+                        fn number(self) -> u16 {
+                            self.0
+                        }
+                    }
+
+                    let mut nvic: NVIC = core::mem::transmute(());
+                    nvic.request(Irq(context as u16));
+                }
+
+                // ARMv6-M implements 32 interrupts, so ISPR is a single word and the index is a
+                // constant. `NVIC::pend` derives it from the number instead, leaving a bounds check the
+                // optimiser cannot fold — worth a panicking branch, its frame setup, and
+                // `panic_bounds_check` in any binary that does not already link one.
+                #[cfg(armv6m)]
+                (*NVIC::PTR).ispr[0].write(1 << (context & 31));
+            }
         }
     }
 }
