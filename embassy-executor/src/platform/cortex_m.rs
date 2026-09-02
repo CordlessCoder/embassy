@@ -113,6 +113,7 @@ mod thread {
             loop {
                 unsafe {
                     self.inner.poll();
+                    crate::trace_idle();
                     asm!("wfe");
                 };
             }

@@ -24,15 +24,19 @@ use embassy_sync::waitqueue::AtomicWaker;
 // Re-export SVD variants to allow user to directly set values.
 pub use pac::uarte::vals::{Baudrate, ConfigParity as Parity};
 
-use crate::chip::{EASY_DMA_SIZE, FORCE_COPY_BUFFER_SIZE};
+use crate::chip::FORCE_COPY_BUFFER_SIZE;
 use crate::gpio::{self, AnyPin, DISCONNECTED, Pin as GpioPin, PselBits, SealedPin as _};
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac::gpio::vals as gpiovals;
+use crate::pac::uarte::regs::RxMaxcnt;
 use crate::pac::uarte::vals;
 use crate::ppi::{AnyConfigurableChannel, ConfigurableChannel, Event, Ppi, Task};
 use crate::timer::{Frequency, Instance as TimerInstance, Timer};
 use crate::util::slice_in_ram_or;
 use crate::{interrupt, pac};
+
+/// The maximum buffer size (in bytes) that the UARTE EasyDMA can transfer in one operation.
+pub const DMA_SIZE: usize = crate::util::easy_dma_max!(RxMaxcnt, set_maxcnt, maxcnt);
 
 /// UARTE config.
 #[derive(Clone)]
@@ -85,21 +89,27 @@ impl ErrorSource {
 }
 
 /// UART error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
     /// Buffer was too long.
+    #[error("buffer was too long")]
     BufferTooLong,
     /// The buffer is not in data RAM. It's most likely in flash, and nRF's DMA cannot access flash.
+    #[error("buffer not in RAM: buffer is likely in flash which nRF DMA cannot access")]
     BufferNotInRAM,
     /// Framing Error
+    #[error("framing error")]
     Framing,
     /// Parity Error
+    #[error("parity error")]
     Parity,
     /// Buffer Overrun
+    #[error("buffer overrun")]
     Overrun,
     /// Break condition
+    #[error("break condition")]
     Break,
 }
 
@@ -465,7 +475,7 @@ impl<'d> UarteTx<'d> {
         }
 
         slice_in_ram_or(buffer, Error::BufferNotInRAM)?;
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::BufferTooLong);
         }
 
@@ -535,7 +545,7 @@ impl<'d> UarteTx<'d> {
         }
 
         slice_in_ram_or(buffer, Error::BufferNotInRAM)?;
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::BufferTooLong);
         }
 
@@ -695,7 +705,7 @@ impl<'d> UarteRx<'d> {
         if buffer.is_empty() {
             return Ok(());
         }
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::BufferTooLong);
         }
 
@@ -763,7 +773,7 @@ impl<'d> UarteRx<'d> {
         if buffer.is_empty() {
             return Ok(());
         }
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::BufferTooLong);
         }
 
@@ -880,7 +890,7 @@ impl<'d> UarteRx<'d> {
         if buffer.is_empty() {
             return Ok(0);
         }
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::BufferTooLong);
         }
 
@@ -939,7 +949,7 @@ impl<'d> UarteRx<'d> {
         if buffer.is_empty() {
             return Ok(0);
         }
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::BufferTooLong);
         }
 
@@ -1053,7 +1063,7 @@ impl<'d> UarteRxWithIdle<'d> {
         if buffer.is_empty() {
             return Ok(0);
         }
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::BufferTooLong);
         }
 
@@ -1127,7 +1137,7 @@ impl<'d> UarteRxWithIdle<'d> {
         if buffer.is_empty() {
             return Ok(0);
         }
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::BufferTooLong);
         }
 
@@ -1319,20 +1329,6 @@ mod eh02 {
         }
     }
 }
-
-impl core::fmt::Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match *self {
-            Self::BufferTooLong => f.write_str("BufferTooLong"),
-            Self::BufferNotInRAM => f.write_str("BufferNotInRAM"),
-            Self::Framing => f.write_str("Framing"),
-            Self::Parity => f.write_str("Parity"),
-            Self::Overrun => f.write_str("Overrun"),
-            Self::Break => f.write_str("Break"),
-        }
-    }
-}
-impl core::error::Error for Error {}
 
 mod _embedded_io {
     use super::*;

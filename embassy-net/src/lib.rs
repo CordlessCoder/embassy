@@ -43,13 +43,11 @@ pub use xarxa::IcmpError;
 use xarxa::driver::{Driver, LinkState};
 use xarxa::iface::IfaceHandle;
 pub use xarxa::{Full, config, wire};
-#[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-pub use xarxa::{Neighbor, NeighborState};
 pub use xarxa_driver as driver;
 
 use crate::iface::Iface;
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-pub use crate::neighbor::NeighborCache;
+pub use crate::neighbor::{Neighbor, NeighborCache, NeighborState};
 use crate::route::Routes;
 use crate::time::{instant_from_xarxa, instant_to_xarxa};
 
@@ -364,7 +362,7 @@ impl<'d> Stack<'d> {
     }
 
     /// Whether any interface has a non-link-local IPv6 address.
-    #[cfg(all(feature = "ipv6", feature = "dns"))]
+    #[cfg(all(feature = "ipv6", feature = "dns", feature = "embedded-nal"))]
     pub(crate) fn any_ipv6(&self) -> bool {
         self.with(|i| {
             let mut iter = i.stack.ifaces();
@@ -542,6 +540,18 @@ pub(crate) fn is_link_local(addr: &xarxa::iface::IfaceAddr) -> bool {
 /// other than IPv6 link-local autoconfiguration put there.
 pub(crate) fn is_config_up(iface: &xarxa::iface::Iface<'_, '_>) -> bool {
     iface.ip_addrs().iter().any(|a| !is_link_local(a))
+}
+
+#[cfg(feature = "ipv4")]
+/// Check if any IPv4 address is configured.
+pub(crate) fn is_config_v4_up(iface: &xarxa::iface::Iface<'_, '_>) -> bool {
+    iface.ip_addrs().iter().any(|a| a.cidr.is_ipv4())
+}
+
+#[cfg(feature = "ipv6")]
+/// Check if any non link-local IPv6 address is configured.
+pub(crate) fn is_config_v6_up(iface: &xarxa::iface::Iface<'_, '_>) -> bool {
+    iface.ip_addrs().iter().any(|a| a.cidr.is_ipv6() && !is_link_local(a))
 }
 
 /// Whether an interface's link is up.

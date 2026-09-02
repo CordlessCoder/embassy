@@ -31,8 +31,10 @@ pub use pac::uarte::vals::{Baudrate, ConfigParity as Parity};
 
 use crate::gpio::{AnyPin, Pin as GpioPin};
 use crate::interrupt::typelevel::Interrupt;
-use crate::uarte::{Config, Instance as UarteInstance, configure, configure_rx_pins, configure_tx_pins, drop_tx_rx};
-use crate::{EASY_DMA_SIZE, interrupt, pac};
+use crate::uarte::{
+    Config, DMA_SIZE, Instance as UarteInstance, configure, configure_rx_pins, configure_tx_pins, drop_tx_rx,
+};
+use crate::{interrupt, pac};
 
 pub(crate) struct State {
     tx_buf: RingBuffer,
@@ -43,20 +45,12 @@ pub(crate) struct State {
 }
 
 /// UART error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
     // No errors for now
 }
-
-impl core::fmt::Display for Error {
-    fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match *self {}
-    }
-}
-
-impl core::error::Error for Error {}
 
 impl State {
     pub(crate) const fn new() -> Self {
@@ -140,7 +134,7 @@ impl<U: UarteInstance> interrupt::typelevel::Handler<U::Interrupt> for Interrupt
             // If not TXing, start.
             if s.tx_count.load(Ordering::Relaxed) == 0 {
                 let (ptr, len) = tx.pop_buf();
-                let len = len.min(EASY_DMA_SIZE);
+                let len = len.min(DMA_SIZE);
                 if len != 0 {
                     //trace!("  irq_tx: starting {:?}", len);
                     s.tx_count.store(len, Ordering::Relaxed);
@@ -516,7 +510,7 @@ impl<'d, U: UarteInstance> BufferedUarteRx<'d, U> {
 
         // Initialize state
         let s = U::buffered_state();
-        let rx_len = rx_buffer.len().min(EASY_DMA_SIZE * 2);
+        let rx_len = rx_buffer.len().min(DMA_SIZE * 2);
         let rx_ptr = rx_buffer.as_mut_ptr();
         unsafe { s.rx_buf.init(rx_ptr, rx_len) };
 

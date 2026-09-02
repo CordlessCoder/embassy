@@ -4,20 +4,61 @@
 //! configuration: hardware address, IP addresses, and whatever address
 //! autoconfiguration is turned on for it.
 
+#[cfg(feature = "dhcpv4")]
+pub mod dhcpv4;
+#[cfg(feature = "dhcpv4-server")]
+pub mod dhcpv4_server;
+
+use embassy_time::Instant;
 use heapless::Vec;
 use xarxa::Full;
 use xarxa::config::IFACE_ADDR_COUNT;
 use xarxa::driver::{Capabilities, Driver, LinkState};
 #[cfg(feature = "multicast")]
 pub use xarxa::iface::MulticastError;
-#[cfg(feature = "dhcpv4")]
-pub use xarxa::iface::dhcpv4;
 #[cfg(feature = "slaac")]
 pub use xarxa::iface::slaac;
-pub use xarxa::iface::{AddrOrigin, IfaceAddr, IfaceHandle, Medium};
+pub use xarxa::iface::{AddrOrigin, IfaceHandle, Medium};
 use xarxa::wire::{HardwareAddress, IpAddress, IpCidr};
 
+use crate::time::instant_from_xarxa;
 use crate::{Stack, is_config_up, is_link_up, wait_iface};
+
+/// An IP address assigned to an interface.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct IfaceAddr {
+    /// The address and its prefix.
+    pub cidr: IpCidr,
+    /// Where the address came from.
+    pub origin: AddrOrigin,
+    /// When the address stops being preferred and becomes deprecated
+    /// (RFC 4862 section 5.5.4). `None` means "forever".
+    ///
+    /// Only SLAAC sets this: a router advertises a preferred lifetime alongside
+    /// the valid one, and shortens it to zero to signal that a prefix is on its
+    /// way out while addresses formed from it still work.
+    pub preferred_until: Option<Instant>,
+}
+
+impl IfaceAddr {
+    fn from_xarxa(addr: xarxa::iface::IfaceAddr) -> Self {
+        Self {
+            cidr: addr.cidr,
+            origin: addr.origin,
+            preferred_until: addr.preferred_until.map(instant_from_xarxa),
+        }
+    }
+
+    /// Whether the address is still preferred, i.e. not deprecated.
+    ///
+    /// A deprecated address keeps working for connections that already use it,
+    /// but is avoided when a source address is chosen for a new one.
+    pub fn is_preferred(&self, now: Instant) -> bool {
+        self.preferred_until.is_none_or(|until| until > now)
+    }
+}
 
 /// An interface added to a [`Stack`].
 ///
@@ -110,7 +151,7 @@ impl<'d> Iface<'d> {
 
     /// The IP addresses assigned to the interface.
     pub fn ip_addrs(&self) -> Vec<IfaceAddr, IFACE_ADDR_COUNT> {
-        self.with(|i| i.ip_addrs().iter().copied().collect())
+        self.with(|i| i.ip_addrs().iter().copied().map(IfaceAddr::from_xarxa).collect())
     }
 
     /// Whether the given address is assigned to the interface.
@@ -173,7 +214,7 @@ impl<'d> Iface<'d> {
     /// Panics if the interface is not an Ethernet interface.
     #[cfg(feature = "dhcpv4")]
     pub fn set_dhcpv4(&self, config: Option<dhcpv4::DhcpConfig>) {
-        self.with_mut(|i| i.set_dhcpv4(config))
+        self.with_mut(|i| i.set_dhcpv4(config.map(|c| c.to_xarxa())))
     }
 
     /// The current DHCPv4 lease, if the client is on and has one.
@@ -187,6 +228,54 @@ impl<'d> Iface<'d> {
     #[cfg(feature = "dhcpv4")]
     pub fn restart_dhcpv4(&self) {
         self.with_mut(|i| i.restart_dhcpv4())
+    }
+
+    /// Turn the DHCPv4 server on, with the given configuration, or off with `None`.
+    ///
+    /// While on, the stack answers DHCP requests arriving on this interface,
+    /// handing out addresses from the configured pool.
+    ///
+    /// You must configure at least one IPv4 address on the interface, and the
+    /// pool must be inside its subnet.
+    ///
+    /// Turning the server off, or on again with a new configuration, drops all
+    /// leases.
+    ///
+    /// # Panics
+    /// Panics if the interface is not an Ethernet interface, or if the pool is
+    /// backwards (`pool_start` above `pool_end`).
+    #[cfg(feature = "dhcpv4-server")]
+    pub fn set_dhcpv4_server(&self, config: Option<dhcpv4_server::DhcpServerConfig>) {
+        self.with_mut(|i| i.set_dhcpv4_server(config.map(|c| c.to_xarxa())))
+    }
+
+    /// Call `f` with an iterator over the DHCP server's lease table. It is empty
+    /// if the server is off.
+    ///
+    /// All entries are passed, whether their lease is running or already over.
+    /// Check each entry's [`state`](dhcpv4_server::DhcpServerLease::state) and
+    /// [`expires_at`](dhcpv4_server::DhcpServerLease::expires_at).
+    #[cfg(feature = "dhcpv4-server")]
+    pub fn dhcpv4_server_leases<R>(
+        &self,
+        f: impl FnOnce(&mut dyn Iterator<Item = dhcpv4_server::DhcpServerLease>) -> R,
+    ) -> R {
+        self.with(|i| {
+            let mut leases = i
+                .dhcpv4_server_leases()
+                .iter()
+                .map(|l| dhcpv4_server::DhcpServerLease::from_xarxa(l.clone()));
+            f(&mut leases)
+        })
+    }
+
+    /// Remove the DHCP server lease of the given address, freeing it for other
+    /// clients. Returns whether there was one.
+    ///
+    /// The client is not told: it keeps using the address until it next renews.
+    #[cfg(feature = "dhcpv4-server")]
+    pub fn remove_dhcpv4_server_lease(&self, address: xarxa::wire::Ipv4Address) -> bool {
+        self.with_mut(|i| i.remove_dhcpv4_server_lease(address))
     }
 
     /// Turn SLAAC on, with the given configuration, or off with `None`.
@@ -238,6 +327,18 @@ impl<'d> Iface<'d> {
         self.with(|i| is_config_up(i))
     }
 
+    /// Check whether the network stack has a valid IPv4 configuration.
+    #[cfg(feature = "ipv4")]
+    pub fn is_config_v4_up(&self) -> bool {
+        self.with(|i| crate::is_config_v4_up(i))
+    }
+
+    /// Check whether the network stack has a valid non link-local IPv6 configuration.
+    #[cfg(feature = "ipv6")]
+    pub fn is_config_v6_up(&self) -> bool {
+        self.with(|i| crate::is_config_v6_up(i))
+    }
+
     /// Wait for the network device to obtain a link signal.
     pub async fn wait_link_up(&self) {
         wait_iface(self.stack, self.handle, is_link_up).await
@@ -256,5 +357,33 @@ impl<'d> Iface<'d> {
     /// Wait for the interface to lose a valid IP configuration.
     pub async fn wait_config_down(&self) {
         wait_iface(self.stack, self.handle, |i| !is_config_up(i)).await
+    }
+
+    /// Wait for the interface to obtain a valid IPv4 configuration.
+    #[cfg(feature = "ipv4")]
+    pub async fn wait_config_v4_up(&self) {
+        wait_iface(self.stack, self.handle, |i| crate::is_config_v4_up(i)).await
+    }
+
+    /// Wait for the interface to lose a valid IPv4 configuration.
+    #[cfg(feature = "ipv4")]
+    pub async fn wait_config_v4_down(&self) {
+        wait_iface(self.stack, self.handle, |i| !crate::is_config_v4_up(i)).await
+    }
+
+    /// Wait for the interface to obtain a valid IPv6 configuration.
+    ///
+    /// This does not include link-local addresses.
+    #[cfg(feature = "ipv6")]
+    pub async fn wait_config_v6_up(&self) {
+        wait_iface(self.stack, self.handle, |i| crate::is_config_v6_up(i)).await
+    }
+
+    /// Wait for the interface to lose a valid IPv6 configuration.
+    ///
+    /// This does not include link-local addresses.
+    #[cfg(feature = "ipv6")]
+    pub async fn wait_config_v6_down(&self) {
+        wait_iface(self.stack, self.handle, |i| !crate::is_config_v6_up(i)).await
     }
 }

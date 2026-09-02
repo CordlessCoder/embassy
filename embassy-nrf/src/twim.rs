@@ -16,13 +16,16 @@ use embassy_time::{Duration, Instant};
 use embedded_hal_1::i2c::Operation;
 pub use pac::twim::vals::Frequency;
 
-use crate::chip::EASY_DMA_SIZE;
 use crate::gpio::Pin as GpioPin;
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac::gpio::vals as gpiovals;
+use crate::pac::twim::regs::RxMaxcnt;
 use crate::pac::twim::vals;
 use crate::util::slice_in_ram;
 use crate::{gpio, interrupt, pac};
+
+/// The maximum buffer size (in bytes) that the TWIM EasyDMA can transfer in one operation.
+pub const DMA_SIZE: usize = crate::util::easy_dma_max!(RxMaxcnt, set_maxcnt, maxcnt);
 
 /// TWIM config.
 #[non_exhaustive]
@@ -62,27 +65,36 @@ impl Default for Config {
 }
 
 /// TWI error.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
     /// TX buffer was too long.
+    #[error("tx buffer was too long")]
     TxBufferTooLong,
     /// RX buffer was too long.
+    #[error("rx buffer was too long")]
     RxBufferTooLong,
     /// Data transmit failed.
+    #[error("data transmit failed")]
     Transmit,
     /// Data reception failed.
+    #[error("data reception failed")]
     Receive,
     /// The buffer is not in data RAM and is larger than the RAM buffer. It's most likely in flash, and nRF's DMA cannot access flash.
+    #[error("RAM buffer too small: buffer is likely in flash which nRF DMA cannot access")]
     RAMBufferTooSmall,
     /// Didn't receive an ACK bit after the address byte. Address might be wrong, or the i2c device chip might not be connected properly.
+    #[error("address NACK: no ACK received after address byte, address may be wrong or device not connected")]
     AddressNack,
     /// Didn't receive an ACK bit after a data byte.
+    #[error("data NACK: no ACK received after data byte")]
     DataNack,
     /// Overrun error.
+    #[error("overrun error")]
     Overrun,
     /// Timeout error.
+    #[error("timeout error")]
     Timeout,
 }
 
@@ -96,17 +108,28 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         let r = T::regs();
         let s = T::state();
 
-        if r.events_suspended().read() != 0 {
+        let suspended = r.events_suspended().read() != 0;
+        let stopped = r.events_stopped().read() != 0;
+        let error = r.events_error().read() != 0;
+
+        if suspended {
             s.end_waker.wake();
             r.intenclr().write(|w| w.set_suspended(true));
         }
-        if r.events_stopped().read() != 0 {
+        if stopped {
             s.end_waker.wake();
             r.intenclr().write(|w| w.set_stopped(true));
         }
-        if r.events_error().read() != 0 {
-            s.end_waker.wake();
+
+        // On error, instead of waking we will first issue a STOP (if it hasn't been issued yet).
+        if error {
             r.intenclr().write(|w| w.set_error(true));
+
+            // Explicitly issue a STOP if an error has occurred which has not yet resulted in a STOP.
+            // This can happen with for example an ANACK.
+            if !stopped {
+                r.tasks_stop().write_value(1);
+            }
         }
     }
 }
@@ -221,7 +244,7 @@ impl<'d> Twim<'d> {
             &*ram_buffer
         };
 
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::TxBufferTooLong);
         }
 
@@ -248,7 +271,7 @@ impl<'d> Twim<'d> {
         // NOTE: RAM slice check is not necessary, as a mutable
         // slice can only be built from data located in RAM.
 
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::RxBufferTooLong);
         }
 
@@ -356,28 +379,16 @@ impl<'d> Twim<'d> {
         Ok(())
     }
 
-    /// Wait for stop or error
-    async fn async_wait(&mut self) -> Result<(), Error> {
+    /// Wait for suspend or stop
+    async fn async_wait(&mut self) {
         poll_fn(|cx| {
             let r = self.r;
             let s = self.state;
 
             s.end_waker.register(cx.waker());
             if r.events_suspended().read() != 0 || r.events_stopped().read() != 0 {
-                r.events_stopped().write_value(0);
-
-                return Poll::Ready(Ok(()));
-            }
-
-            // stop if an error occurred
-            if r.events_error().read() != 0 {
-                r.events_error().write_value(0);
-                r.tasks_stop().write_value(1);
-                if let Err(e) = self.check_errorsrc() {
-                    return Poll::Ready(Err(e));
-                } else {
-                    return Poll::Ready(Err(Error::Timeout));
-                }
+                // Events are cleared when setting up the next operation.
+                return Poll::Ready(());
             }
 
             Poll::Pending
@@ -618,7 +629,7 @@ impl<'d> Twim<'d> {
         while !operations.is_empty() {
             let ops = self.setup_operations(address, operations, last_op, true)?;
             let (in_progress, rest) = operations.split_at_mut(ops);
-            self.async_wait().await?;
+            self.async_wait().await;
             self.check_operations(in_progress)?;
             last_op = in_progress.last();
             operations = rest;

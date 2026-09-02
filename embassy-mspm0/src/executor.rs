@@ -148,6 +148,8 @@ mod thread {
                         if SIGNAL_WORK_THREAD_MODE.load(Ordering::Relaxed) {
                             SIGNAL_WORK_THREAD_MODE.store(false, Ordering::Relaxed);
                         } else {
+                            embassy_executor::trace_idle();
+
                             #[cfg(feature = "low-power")]
                             crate::low_power::sleep(cs);
 

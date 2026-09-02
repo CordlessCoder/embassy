@@ -13,13 +13,17 @@ use embassy_sync::waitqueue::AtomicWaker;
 #[cfg(feature = "time")]
 use embassy_time::{Duration, Instant};
 
-use crate::chip::{EASY_DMA_SIZE, FORCE_COPY_BUFFER_SIZE};
+use crate::chip::FORCE_COPY_BUFFER_SIZE;
 use crate::gpio::Pin as GpioPin;
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac::gpio::vals as gpiovals;
+use crate::pac::twis::regs::RxMaxcnt;
 use crate::pac::twis::vals;
 use crate::util::slice_in_ram_or;
 use crate::{gpio, interrupt, pac};
+
+/// The maximum buffer size (in bytes) that the TWIS EasyDMA can transfer in one operation.
+pub const DMA_SIZE: usize = crate::util::easy_dma_max!(RxMaxcnt, set_maxcnt, maxcnt);
 
 /// TWIS config.
 #[non_exhaustive]
@@ -77,25 +81,33 @@ enum Status {
 }
 
 /// TWIS error.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, thiserror::Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error {
     /// TX buffer was too long.
+    #[error("tx buffer was too long")]
     TxBufferTooLong,
     /// RX buffer was too long.
+    #[error("rx buffer was too long")]
     RxBufferTooLong,
     /// Didn't receive an ACK bit after a data byte.
+    #[error("data NACK: no ACK received after data byte")]
     DataNack,
     /// Bus error.
+    #[error("bus error")]
     Bus,
     /// The buffer is not in data RAM. It's most likely in flash, and nRF's DMA cannot access flash.
+    #[error("buffer not in RAM: buffer is likely in flash which nRF DMA cannot access")]
     BufferNotInRAM,
     /// Overflow
+    #[error("overflow error")]
     Overflow,
     /// Overread
+    #[error("overread error")]
     OverRead,
     /// Timeout
+    #[error("timeout error")]
     Timeout,
 }
 
@@ -237,7 +249,7 @@ impl<'d> Twis<'d> {
     unsafe fn set_tx_buffer(&mut self, buffer: &[u8]) -> Result<(), Error> {
         slice_in_ram_or(buffer, Error::BufferNotInRAM)?;
 
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::TxBufferTooLong);
         }
 
@@ -264,7 +276,7 @@ impl<'d> Twis<'d> {
         // NOTE: RAM slice check is not necessary, as a mutable
         // slice can only be built from data located in RAM.
 
-        if buffer.len() > EASY_DMA_SIZE {
+        if buffer.len() > DMA_SIZE {
             return Err(Error::RxBufferTooLong);
         }
 
